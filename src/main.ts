@@ -3,6 +3,461 @@ import { createPerspective, lookAt, multiplyMat4 } from './camera'
 import { ChunkManager, BlockType, buildChunkMesh } from './chunks'
 import { generateRollingHills, createSimpleWorldConfig } from './worldgen'
 
+// Create sidebar
+const sidebar = document.createElement('div')
+sidebar.className = 'sidebar'
+
+// Block selection area
+const blockSelection = document.createElement('div')
+blockSelection.className = 'block-selection'
+const blockTitle = document.createElement('h3')
+blockTitle.textContent = 'Block Selection'
+blockSelection.appendChild(blockTitle)
+
+// Custom block type interface
+interface CustomBlock {
+  id: number
+  name: string
+  colors: { top: number[], bottom: number[], side: number[] }
+  texture?: HTMLImageElement
+}
+
+// Available block types (excluding Air)
+const availableBlocks = [
+  { type: BlockType.Grass, name: 'Grass' },
+  { type: BlockType.Dirt, name: 'Dirt' },
+  { type: BlockType.Stone, name: 'Stone' },
+  { type: BlockType.Plank, name: 'Plank' },
+  { type: BlockType.Snow, name: 'Snow' },
+  { type: BlockType.Sand, name: 'Sand' },
+  { type: BlockType.Water, name: 'Water' }
+]
+
+// Custom blocks storage
+const customBlocks: CustomBlock[] = []
+let nextCustomBlockId = 1000 // Start custom IDs from 1000
+
+let selectedBlockType = BlockType.Plank
+let selectedCustomBlock: CustomBlock | null = null
+const blockItems: HTMLDivElement[] = []
+
+// Create block grid container
+const blockGrid = document.createElement('div')
+blockGrid.className = 'block-grid'
+
+// Function to draw isometric block preview
+function drawIsometricBlock(canvas: HTMLCanvasElement, colors: { top: number[], side: number[], bottom: number[] }) {
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  const w = canvas.width
+  const h = canvas.height
+  ctx.clearRect(0, 0, w, h)
+
+  // Isometric block dimensions
+  const blockSize = Math.min(w, h) * 0.6
+  const cx = w / 2
+  const cy = h / 2 + 4
+
+  // Helper to convert RGB array to CSS color
+  const toRGB = (c: number[]) => `rgb(${Math.floor((c[0] ?? 0) * 255)}, ${Math.floor((c[1] ?? 0) * 255)}, ${Math.floor((c[2] ?? 0) * 255)})`
+
+  // Draw top face
+  ctx.beginPath()
+  ctx.moveTo(cx, cy - blockSize / 2)
+  ctx.lineTo(cx + blockSize / 2, cy - blockSize / 4)
+  ctx.lineTo(cx, cy)
+  ctx.lineTo(cx - blockSize / 2, cy - blockSize / 4)
+  ctx.closePath()
+  ctx.fillStyle = toRGB(colors.top)
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)'
+  ctx.lineWidth = 1
+  ctx.stroke()
+
+  // Draw left face
+  ctx.beginPath()
+  ctx.moveTo(cx - blockSize / 2, cy - blockSize / 4)
+  ctx.lineTo(cx, cy)
+  ctx.lineTo(cx, cy + blockSize / 2)
+  ctx.lineTo(cx - blockSize / 2, cy + blockSize / 4)
+  ctx.closePath()
+  const leftColor = colors.side.map(c => c * 0.7) // Darken left side
+  ctx.fillStyle = toRGB(leftColor)
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)'
+  ctx.stroke()
+
+  // Draw right face
+  ctx.beginPath()
+  ctx.moveTo(cx + blockSize / 2, cy - blockSize / 4)
+  ctx.lineTo(cx, cy)
+  ctx.lineTo(cx, cy + blockSize / 2)
+  ctx.lineTo(cx + blockSize / 2, cy + blockSize / 4)
+  ctx.closePath()
+  const rightColor = colors.side.map(c => c * 0.85) // Slightly darken right side
+  ctx.fillStyle = toRGB(rightColor)
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)'
+  ctx.stroke()
+}
+
+// Block palette for default blocks
+const blockPalette: Record<BlockType, { top: number[], bottom: number[], side: number[] } | undefined> = {
+  [BlockType.Air]: undefined,
+  [BlockType.Grass]: { top: [0.34, 0.68, 0.36], bottom: [0.40, 0.30, 0.16], side: [0.45, 0.58, 0.30] },
+  [BlockType.Dirt]: { top: [0.42, 0.32, 0.20], bottom: [0.38, 0.26, 0.16], side: [0.40, 0.30, 0.18] },
+  [BlockType.Stone]: { top: [0.58, 0.60, 0.64], bottom: [0.55, 0.57, 0.60], side: [0.56, 0.58, 0.62] },
+  [BlockType.Plank]: { top: [0.78, 0.68, 0.50], bottom: [0.72, 0.60, 0.42], side: [0.74, 0.63, 0.45] },
+  [BlockType.Snow]: { top: [0.92, 0.94, 0.96], bottom: [0.90, 0.92, 0.94], side: [0.88, 0.90, 0.93] },
+  [BlockType.Sand]: { top: [0.88, 0.82, 0.60], bottom: [0.86, 0.78, 0.56], side: [0.87, 0.80, 0.58] },
+  [BlockType.Water]: { top: [0.22, 0.40, 0.66], bottom: [0.20, 0.34, 0.60], side: [0.20, 0.38, 0.64] }
+}
+
+function renderBlockGrid() {
+  blockGrid.innerHTML = ''
+  blockItems.length = 0
+
+  // Render default blocks
+  availableBlocks.forEach(({ type, name }) => {
+    const blockItem = document.createElement('div')
+    blockItem.className = 'block-item'
+    if (type === selectedBlockType && !selectedCustomBlock) blockItem.classList.add('selected')
+
+    const previewCanvas = document.createElement('canvas')
+    previewCanvas.className = 'block-preview-3d'
+    previewCanvas.width = 48
+    previewCanvas.height = 48
+
+    const palette = blockPalette[type]
+    if (palette) {
+      drawIsometricBlock(previewCanvas, palette)
+    }
+
+    const blockName = document.createElement('span')
+    blockName.textContent = name
+
+    blockItem.appendChild(previewCanvas)
+    blockItem.appendChild(blockName)
+
+    blockItem.onclick = (e) => {
+      e.stopPropagation()
+      blockItems.forEach(item => item.classList.remove('selected'))
+      blockItem.classList.add('selected')
+      selectedBlockType = type
+      selectedCustomBlock = null
+      const paletteForPreview = blockPalette[type]
+      if (paletteForPreview) updateFacePreviews(paletteForPreview)
+    }
+    blockItem.addEventListener('mousedown', (e) => e.stopPropagation())
+
+    blockItems.push(blockItem)
+    blockGrid.appendChild(blockItem)
+  })
+
+  // Render custom blocks
+  customBlocks.forEach((customBlock) => {
+    const blockItem = document.createElement('div')
+    blockItem.className = 'block-item'
+    if (selectedCustomBlock?.id === customBlock.id) blockItem.classList.add('selected')
+
+    const previewCanvas = document.createElement('canvas')
+    previewCanvas.className = 'block-preview-3d'
+    previewCanvas.width = 48
+    previewCanvas.height = 48
+
+    if (customBlock.texture) {
+      drawIsometricBlockWithTexture(previewCanvas, customBlock.texture)
+    } else {
+      drawIsometricBlock(previewCanvas, customBlock.colors)
+    }
+
+    const blockName = document.createElement('span')
+    blockName.textContent = customBlock.name
+
+    blockItem.appendChild(previewCanvas)
+    blockItem.appendChild(blockName)
+
+    blockItem.onclick = (e) => {
+      e.stopPropagation()
+      blockItems.forEach(item => item.classList.remove('selected'))
+      blockItem.classList.add('selected')
+      selectedCustomBlock = customBlock
+      selectedBlockType = BlockType.Plank // Use any default as placeholder
+      updateFacePreviewsWithTexture(customBlock)
+    }
+    blockItem.addEventListener('mousedown', (e) => e.stopPropagation())
+
+    blockItems.push(blockItem)
+    blockGrid.appendChild(blockItem)
+  })
+
+  // Add "Add New Block" button
+  const addBlockBtn = document.createElement('div')
+  addBlockBtn.className = 'block-item add-block-btn'
+  const icon = document.createElement('div')
+  icon.className = 'icon'
+  icon.textContent = '+'
+  const label = document.createElement('span')
+  label.textContent = 'Add Block'
+  addBlockBtn.appendChild(icon)
+  addBlockBtn.appendChild(label)
+
+  addBlockBtn.onclick = (e) => {
+    e.stopPropagation()
+    const blockName = prompt('Enter block name:')
+    if (blockName && blockName.trim()) {
+      const newBlock: CustomBlock = {
+        id: nextCustomBlockId++,
+        name: blockName.trim(),
+        colors: { top: [0.5, 0.5, 0.5], bottom: [0.4, 0.4, 0.4], side: [0.45, 0.45, 0.45] }
+      }
+      customBlocks.push(newBlock)
+      renderBlockGrid()
+      console.log('Created custom block:', blockName)
+    }
+  }
+  addBlockBtn.addEventListener('mousedown', (e) => e.stopPropagation())
+
+  blockGrid.appendChild(addBlockBtn)
+}
+
+blockSelection.appendChild(blockGrid)
+renderBlockGrid()
+
+sidebar.appendChild(blockSelection)
+
+// Face viewer area
+const faceViewer = document.createElement('div')
+faceViewer.className = 'face-viewer'
+const faceTitle = document.createElement('h3')
+faceTitle.textContent = 'Block Faces'
+faceViewer.appendChild(faceTitle)
+
+const faceGrid = document.createElement('div')
+faceGrid.className = 'face-grid'
+const faceLabels = ['Top (+Y)', 'Bottom (-Y)', 'Front (+Z)', 'Back (-Z)', 'Right (+X)', 'Left (-X)']
+const facePreviews: HTMLCanvasElement[] = []
+faceLabels.forEach(label => {
+  const faceBox = document.createElement('div')
+  faceBox.className = 'face-box'
+  const faceLabel = document.createElement('label')
+  faceLabel.textContent = label
+  const facePreview = document.createElement('canvas')
+  facePreview.className = 'face-preview'
+  facePreview.width = 64
+  facePreview.height = 64
+  faceBox.appendChild(faceLabel)
+  faceBox.appendChild(facePreview)
+  faceGrid.appendChild(faceBox)
+  facePreviews.push(facePreview)
+})
+faceViewer.appendChild(faceGrid)
+
+// Function to draw isometric block with texture
+function drawIsometricBlockWithTexture(canvas: HTMLCanvasElement, texture: HTMLImageElement) {
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  const w = canvas.width
+  const h = canvas.height
+  ctx.clearRect(0, 0, w, h)
+
+  const blockSize = Math.min(w, h) * 0.6
+  const cx = w / 2
+  const cy = h / 2 + 4
+
+  // Create temporary canvases for each face with texture
+  const tempCanvas = document.createElement('canvas')
+  tempCanvas.width = 64
+  tempCanvas.height = 64
+  const tempCtx = tempCanvas.getContext('2d')!
+  tempCtx.drawImage(texture, 0, 0, 64, 64)
+
+  // Draw top face with texture
+  ctx.save()
+  ctx.beginPath()
+  ctx.moveTo(cx, cy - blockSize / 2)
+  ctx.lineTo(cx + blockSize / 2, cy - blockSize / 4)
+  ctx.lineTo(cx, cy)
+  ctx.lineTo(cx - blockSize / 2, cy - blockSize / 4)
+  ctx.closePath()
+  ctx.clip()
+  ctx.drawImage(texture, cx - blockSize / 2, cy - blockSize / 2, blockSize, blockSize / 2)
+  ctx.restore()
+  ctx.stroke()
+
+  // Draw left face (darkened)
+  ctx.save()
+  ctx.globalAlpha = 0.7
+  ctx.beginPath()
+  ctx.moveTo(cx - blockSize / 2, cy - blockSize / 4)
+  ctx.lineTo(cx, cy)
+  ctx.lineTo(cx, cy + blockSize / 2)
+  ctx.lineTo(cx - blockSize / 2, cy + blockSize / 4)
+  ctx.closePath()
+  ctx.clip()
+  ctx.drawImage(texture, cx - blockSize / 2, cy - blockSize / 4, blockSize / 2, blockSize)
+  ctx.restore()
+
+  // Draw right face (slightly darkened)
+  ctx.save()
+  ctx.globalAlpha = 0.85
+  ctx.beginPath()
+  ctx.moveTo(cx + blockSize / 2, cy - blockSize / 4)
+  ctx.lineTo(cx, cy)
+  ctx.lineTo(cx, cy + blockSize / 2)
+  ctx.lineTo(cx + blockSize / 2, cy + blockSize / 4)
+  ctx.closePath()
+  ctx.clip()
+  ctx.drawImage(texture, cx, cy - blockSize / 4, blockSize / 2, blockSize)
+  ctx.restore()
+}
+
+// Function to update face previews based on block palette
+function updateFacePreviews(palette: { top: number[], bottom: number[], side: number[] }) {
+  // Top, Bottom, Front (side), Back (side), Right (side), Left (side)
+  const faceColors = [palette.top, palette.bottom, palette.side, palette.side, palette.side, palette.side]
+
+  facePreviews.forEach((canvas, index) => {
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const color = faceColors[index]!
+    const rgb = `rgb(${Math.floor((color[0] ?? 0) * 255)}, ${Math.floor((color[1] ?? 0) * 255)}, ${Math.floor((color[2] ?? 0) * 255)})`
+    ctx.fillStyle = rgb
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+  })
+}
+
+// Function to update face previews with texture
+function updateFacePreviewsWithTexture(customBlock: CustomBlock) {
+  if (customBlock.texture) {
+    facePreviews.forEach((canvas) => {
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      ctx.drawImage(customBlock.texture!, 0, 0, canvas.width, canvas.height)
+    })
+  } else {
+    updateFacePreviews(customBlock.colors)
+  }
+}
+
+// Initialize face previews with default block
+const initialPalette = blockPalette[selectedBlockType]
+if (initialPalette) updateFacePreviews(initialPalette)
+
+// Texture generation area
+const textureGen = document.createElement('div')
+textureGen.className = 'texture-gen'
+const promptInput = document.createElement('input')
+promptInput.type = 'text'
+promptInput.placeholder = 'Enter texture prompt...'
+// Prevent canvas pointer lock when clicking input
+promptInput.addEventListener('mousedown', (e) => e.stopPropagation())
+promptInput.addEventListener('click', (e) => {
+  e.stopPropagation()
+  promptInput.focus()
+})
+const genButton = document.createElement('button')
+genButton.textContent = 'Generate Texture'
+genButton.disabled = true
+// Prevent canvas pointer lock when clicking button
+genButton.addEventListener('mousedown', (e) => e.stopPropagation())
+genButton.addEventListener('click', (e) => e.stopPropagation())
+genButton.onclick = async () => {
+  const prompt = promptInput.value.trim()
+  if (!prompt) return
+  genButton.disabled = true
+  genButton.textContent = 'Generating...'
+  try {
+    console.log('Generating texture with prompt:', prompt)
+
+    // Call FastAPI backend for texture generation
+    const response = await fetch('http://localhost:8000/api/generate-texture', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, width: 512, height: 512 })
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Unknown error' }))
+      throw new Error(error.detail || `HTTP ${response.status}`)
+    }
+
+    // Get texture metadata from response headers
+    const textureId = response.headers.get('X-Texture-ID')
+    const texturePrompt = response.headers.get('X-Texture-Prompt')
+
+    console.log(`Texture saved with ID: ${textureId}, prompt: "${texturePrompt}"`)
+
+    const blob = await response.blob()
+    const imageUrl = URL.createObjectURL(blob)
+
+    // Create image object for the texture
+    const textureImg = new Image()
+    textureImg.onload = () => {
+      // If a custom block is selected, apply texture to it
+      if (selectedCustomBlock) {
+        selectedCustomBlock.texture = textureImg
+        console.log(`Applied texture to custom block: ${selectedCustomBlock.name}`)
+
+        // Update face previews
+        updateFacePreviewsWithTexture(selectedCustomBlock)
+
+        // Re-render block grid to update preview
+        renderBlockGrid()
+      } else {
+        // Create new custom block with this texture if no custom block selected
+        const blockName = (prompt.split(',')[0] ?? 'Custom').trim() || 'Custom Block'
+        const newBlock: CustomBlock = {
+          id: nextCustomBlockId++,
+          name: blockName,
+          colors: { top: [0.5, 0.5, 0.5], bottom: [0.4, 0.4, 0.4], side: [0.45, 0.45, 0.45] },
+          texture: textureImg
+        }
+        customBlocks.push(newBlock)
+        selectedCustomBlock = newBlock
+        selectedBlockType = BlockType.Plank
+
+        console.log(`Created new custom block: ${blockName}`)
+
+        // Update face previews
+        updateFacePreviewsWithTexture(newBlock)
+
+        // Re-render block grid
+        renderBlockGrid()
+      }
+
+      URL.revokeObjectURL(imageUrl)
+    }
+    textureImg.onerror = () => {
+      console.error('Failed to load generated texture')
+      URL.revokeObjectURL(imageUrl)
+    }
+    textureImg.src = imageUrl
+
+    genButton.textContent = 'Generate Texture'
+    console.log('Texture generation complete')
+    console.log(`Texture saved to: textures/texture_${textureId}.png`)
+  } catch (err) {
+    console.error('Texture generation failed:', err)
+    genButton.textContent = 'Failed - Retry'
+    alert(`Texture generation failed: ${err instanceof Error ? err.message : 'Unknown error'}\n\nMake sure the backend server is running:\npython3 aio.py`)
+  } finally {
+    genButton.disabled = false
+  }
+}
+promptInput.addEventListener('input', () => {
+  genButton.disabled = !promptInput.value.trim()
+})
+textureGen.appendChild(promptInput)
+textureGen.appendChild(genButton)
+faceViewer.appendChild(textureGen)
+
+sidebar.appendChild(faceViewer)
+document.body.insertBefore(sidebar, document.body.firstChild)
+
+// Create main app container
 const root = document.getElementById('app') as HTMLDivElement
 const canvasShell = document.createElement('div')
 canvasShell.className = 'canvas-shell'
@@ -172,7 +627,6 @@ async function init() {
   generateRollingHills(chunk, worldConfig)
   console.log('Terrain generation complete')
   const chunkOriginOffset: Vec3 = [-chunk.size.x * worldScale / 2, 0, -chunk.size.z * worldScale / 2]
-  const placeBlockType = BlockType.Plank
   let meshDirty = true
   let vertexBuffer: GPUBuffer | null = null
   let vertexBufferSize = 0
@@ -340,7 +794,15 @@ async function init() {
     } else if (ev.button === 2) {
       const target = hit.previous
       if (isInsideChunk(target) && chunk.getBlock(target[0], target[1], target[2]) === BlockType.Air) {
-        chunk.setBlock(target[0], target[1], target[2], placeBlockType)
+        // Place either default block or custom block
+        if (selectedCustomBlock) {
+          // For custom blocks, use Plank as placeholder in chunk data
+          // In a full implementation, you'd need a custom block ID system
+          chunk.setBlock(target[0], target[1], target[2], BlockType.Plank)
+          console.log(`Placed custom block: ${selectedCustomBlock.name}`)
+        } else {
+          chunk.setBlock(target[0], target[1], target[2], selectedBlockType)
+        }
         meshDirty = true
       }
     }
