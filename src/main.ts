@@ -1,6 +1,7 @@
 import terrainWGSL from './pipelines/render/terrain.wgsl?raw'
 import { createPerspective, lookAt, multiplyMat4 } from './camera'
 import { ChunkManager, BlockType, buildChunkMesh } from './chunks'
+import { assertWorldSpec, createDefaultWorldSpec, createTracingContext, generateChunk } from './worldgen'
 
 const root = document.getElementById('app') as HTMLDivElement
 const canvasShell = document.createElement('div')
@@ -163,9 +164,14 @@ async function init() {
     ]
   })
 
-  const chunk = new ChunkManager({ x: 36, y: 28, z: 36 })
-  chunk.generateDefaultTerrain(7)
-  const chunkOriginOffset: Vec3 = [-chunk.size.x / 2, 0, -chunk.size.z / 2]
+  const worldSpec = createDefaultWorldSpec(7331)
+  assertWorldSpec(worldSpec)
+  const chunk = new ChunkManager(worldSpec.dimensions)
+  const worldScale = worldSpec.unitsPerBlock
+  const trace = createTracingContext(worldSpec.label ?? 'world')
+  generateChunk({ chunk, spec: worldSpec, trace })
+  ;(window as any).worldGenTrace = trace.serialize()
+  const chunkOriginOffset: Vec3 = [-chunk.size.x * worldScale / 2, 0, -chunk.size.z * worldScale / 2]
   const placeBlockType = BlockType.Plank
   let meshDirty = true
   let vertexBuffer: GPUBuffer | null = null
@@ -173,7 +179,7 @@ async function init() {
   let vertexCount = 0
 
   function rebuildMesh() {
-    const mesh = buildChunkMesh(chunk)
+    const mesh = buildChunkMesh(chunk, worldScale)
     vertexCount = mesh.vertexCount
     if (vertexCount === 0) return
     const byteLength = alignTo(mesh.vertexData.byteLength, 4)
@@ -190,9 +196,15 @@ async function init() {
   window.addEventListener('keyup', (ev) => { pressedKeys.delete(ev.code) })
   window.addEventListener('blur', () => pressedKeys.clear())
 
-  const cameraPos: Vec3 = [0, chunk.size.y * 0.6, chunk.size.z * 1.4]
-  let yaw = -Math.PI / 4
-  let pitch = -0.28
+  const cameraPos: Vec3 = [0, chunk.size.y * worldScale * 0.55, chunk.size.z * worldScale * 0.45]
+  const lookTarget: Vec3 = [0, chunk.size.y * worldScale * 0.35, 0]
+  const initialDir = normalize([
+    lookTarget[0] - cameraPos[0],
+    lookTarget[1] - cameraPos[1],
+    lookTarget[2] - cameraPos[2]
+  ])
+  let yaw = Math.atan2(initialDir[0], initialDir[2])
+  let pitch = Math.asin(initialDir[1])
   let pointerActive = false
   canvas.addEventListener('click', () => canvas.requestPointerLock())
   canvas.addEventListener('contextmenu', (ev) => ev.preventDefault())
@@ -209,7 +221,11 @@ async function init() {
   const worldUp: Vec3 = [0, 1, 0]
   type BlockPos = [number, number, number]
   type RaycastHit = { block: BlockPos; previous: BlockPos; normal: Vec3 }
-  const maxRayDistance = Math.sqrt(chunk.size.x ** 2 + chunk.size.y ** 2 + chunk.size.z ** 2)
+  const maxRayDistance = Math.sqrt(
+    (chunk.size.x * worldScale) ** 2 +
+    (chunk.size.y * worldScale) ** 2 +
+    (chunk.size.z * worldScale) ** 2
+  )
 
   function getForwardVector(): Vec3 {
     return normalize([
@@ -220,7 +236,11 @@ async function init() {
   }
 
   function worldToChunk(pos: Vec3): Vec3 {
-    return [pos[0] - chunkOriginOffset[0], pos[1], pos[2] - chunkOriginOffset[2]]
+    return [
+      (pos[0] - chunkOriginOffset[0]) / worldScale,
+      pos[1] / worldScale,
+      (pos[2] - chunkOriginOffset[2]) / worldScale
+    ]
   }
 
   function isInsideChunk([x, y, z]: BlockPos) {
@@ -240,10 +260,16 @@ async function init() {
       dir[2] > 0 ? 1 : dir[2] < 0 ? -1 : 0
     ]
 
+    const chunkDir: Vec3 = [
+      dir[0] / worldScale,
+      dir[1] / worldScale,
+      dir[2] / worldScale
+    ]
+
     const tDelta: Vec3 = [
-      step[0] !== 0 ? Math.abs(1 / dir[0]) : Number.POSITIVE_INFINITY,
-      step[1] !== 0 ? Math.abs(1 / dir[1]) : Number.POSITIVE_INFINITY,
-      step[2] !== 0 ? Math.abs(1 / dir[2]) : Number.POSITIVE_INFINITY
+      step[0] !== 0 ? Math.abs(1 / chunkDir[0]) : Number.POSITIVE_INFINITY,
+      step[1] !== 0 ? Math.abs(1 / chunkDir[1]) : Number.POSITIVE_INFINITY,
+      step[2] !== 0 ? Math.abs(1 / chunkDir[2]) : Number.POSITIVE_INFINITY
     ]
 
     let tMaxX = step[0] > 0 ? (voxel[0] + 1 - pos[0]) * tDelta[0] : step[0] < 0 ? (pos[0] - voxel[0]) * tDelta[0] : Number.POSITIVE_INFINITY
@@ -335,7 +361,8 @@ async function init() {
     right = normalize(right)
     const upVec = normalize(cross(right, forward))
 
-    const speed = (pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight')) ? 20 : 10
+    const speedBase = (pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight')) ? 20 : 10
+    const speed = speedBase * worldScale
     const move = speed * dt
     if (pressedKeys.has('KeyW')) addScaled(cameraPos, forward, move)
     if (pressedKeys.has('KeyS')) addScaled(cameraPos, forward, -move)
@@ -371,7 +398,7 @@ async function init() {
     const colorView = context.getCurrentTexture().createView()
     const depthView = depthTexture.createView()
     const pass = encoder.beginRenderPass({
-      colorAttachments: [{ view: colorView, clearValue: { r: 0.04, g: 0.05, b: 0.08, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+      colorAttachments: [{ view: colorView, clearValue: { r: 0.53, g: 0.81, b: 0.92, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
       depthStencilAttachment: { view: depthView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' }
     })
     if (vertexBuffer && vertexCount > 0) {

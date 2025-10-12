@@ -5,7 +5,10 @@ export enum BlockType {
   Grass = 1,
   Dirt = 2,
   Stone = 3,
-  Plank = 4
+  Plank = 4,
+  Snow = 5,
+  Sand = 6,
+  Water = 7
 }
 
 export type ChunkMesh = { vertexData: Float32Array; vertexCount: number }
@@ -124,6 +127,21 @@ const blockPalette: Record<BlockType, BlockPaletteEntry | undefined> = {
     top: [0.78, 0.68, 0.50],
     bottom: [0.72, 0.60, 0.42],
     side: [0.74, 0.63, 0.45]
+  },
+  [BlockType.Snow]: {
+    top: [0.92, 0.94, 0.96],
+    bottom: [0.90, 0.92, 0.94],
+    side: [0.88, 0.90, 0.93]
+  },
+  [BlockType.Sand]: {
+    top: [0.88, 0.82, 0.60],
+    bottom: [0.86, 0.78, 0.56],
+    side: [0.87, 0.80, 0.58]
+  },
+  [BlockType.Water]: {
+    top: [0.22, 0.40, 0.66],
+    bottom: [0.20, 0.34, 0.60],
+    side: [0.20, 0.38, 0.64]
   }
 }
 
@@ -144,6 +162,10 @@ export class ChunkManager {
   setBlock(x: number, y: number, z: number, type: BlockType) {
     if (!this.inBounds(x, y, z)) return
     this.blocks[this.index(x, y, z)] = type
+  }
+
+  snapshotBlocks() {
+    return new Uint8Array(this.blocks)
   }
 
   generateDefaultTerrain(seed = 1) {
@@ -206,7 +228,7 @@ export class ChunkManager {
   }
 }
 
-export function buildChunkMesh(chunk: ChunkManager): ChunkMesh {
+export function buildChunkMesh(chunk: ChunkManager, worldScale = 1): ChunkMesh {
   const vertices: number[] = []
   const { x: sx, y: sy, z: sz } = chunk.size
   const offsetX = -sx / 2
@@ -234,9 +256,9 @@ export function buildChunkMesh(chunk: ChunkManager): ChunkMesh {
             const idx = faceIndices[i]!
             const corner = face.corners[idx]!
             vertices.push(
-              baseX + corner[0],
-              baseY + corner[1],
-              baseZ + corner[2],
+              (baseX + corner[0]) * worldScale,
+              (baseY + corner[1]) * worldScale,
+              (baseZ + corner[2]) * worldScale,
               face.normal[0],
               face.normal[1],
               face.normal[2],
