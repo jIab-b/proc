@@ -1,0 +1,170 @@
+Evaluate the feasibility of using Minecraft style proc gen with modular predictable seeding + I build cameras in the scene that match snapshot views to text descriptions to train an llm to regenerate diverse array of scenes accurately from seeds / modifying proc gen functions and shader effects
+
+Short answer: yes—this is very feasible if you own the generator. Deterministic, Minecraft-style proc-gen with fixed seeds gives you perfect, cheap labels (the seed, function graph, and every parameter). If you instrument the engine to log cameras + render passes, you can supervise an LLM (or a small code-LLM) to (a) recover seeds/params from text or images and (b) author controlled variations (“same seed, higher ridge amplitude, swap palette to tundra”). The main difficulty isn’t technology—it’s designing the right mid-level interface between language and your low-level noise/shader parameters so the mapping is learnable and predictable.
+
+Here’s a concrete plan and what to watch out for.
+
+1) Representation: make the problem learnable
+
+Do not map prose directly to raw floats. Introduce a small, human-named schema that sits between text and the engine:
+
+High-level slots (categorical): biome, palette, terrain archetype (island, archipelago, mesa), feature counts (villages, rivers, caves), material set, time-of-day/weather.
+
+Mid-level knobs (bounded, quantized): elevation variance, ridge frequency, domain-warp strength, cave density, tree density, river width, erosion passes, chunk size, LOD policy.
+
+Low-level (engine-specific, optional): per-noise octave counts, lacunarity, gain, FBM type, shader toggle flags.
+
+Use discrete bins (e.g., 8–32 buckets) for continuous params. LLMs are much better at choosing from named buckets than emitting precise floats.
+
+Define a tiny scene DSL that is 100% deterministic: 
+
+
+World(
+  seed=742193,
+  biome="taiga",
+  palette="cold_blue",
+  terrain="ridged_islands",
+  knobs={
+    "elevation_var": "high",
+    "ridge_freq": "med",
+    "warp_strength": "low",
+    "river_count": 3,
+    "tree_density": "high",
+    "cave_density": "low"
+  },
+  shaders=["snowcap", "specular_water:v2"],
+  cameras=[
+    Cam(id="A", pose=SE3(...), fov=70, tag="coastline_overlook"),
+    Cam(id="B", pose=SE3(...), fov=50, tag="river_delta_close")
+  ]
+)
+
+
+Your renderer consumes only this DSL + seed to produce the same world every time.
+
+2) Data factory: generate perfect supervision
+
+Because everything is synthetic, you can label everything for free.
+
+For each sampled DSL:
+
+Render multi-view images per camera (RGB) and save intrinsics/extrinsics, plus depth/normal/segmentation (fast to add in a voxel/Minecraft-like renderer).
+
+Emit the exact DSL and a structured caption (template + a bit of variability) describing visible attributes in each view:
+
+Global: biome, palette, macro landforms, weather/time.
+
+Local per camera: visible features (river on left, cliffs, pine density), approximate counts, materials.
+
+Store: {seed, DSL json, camera list, per-view renders + passes, per-view caption, global caption}.
+
+This gives you multiple supervised tasks from the same sample:
+
+Text → DSL (categorical + discrete regressions).
+
+Text → seed (either predict seed bits or predict a latent that deterministically maps to seed; see §4).
+
+Text → code (program synthesis of the DSL).
+
+Image ↔ text contrastive (CLIP-like) on your domain to tighten semantics.
+
+Image/Depth → DSL (inverse graphics baseline).
+
+3) Cameras: make snapshot alignment robust
+
+You said you’ll “build cameras in the scene.” Great—treat cameras as first-class:
+
+Predefine semantic camera tags per archetype (e.g., “coastline_overlook”, “valley_floor”, “mesa_top”). Log FOV, pose, near/far, and a framing mask (rough rule-of-thirds placement for major features) so you can generate captions grounded in where things are (“river enters frame at lower-left”).
+
+Ensure coverage: at least 4–8 canonical views per world template. Add a stochastic explorer that picks extra poses along feature lines (river splines, ridge crests) to increase variety without breaking determinism.
+
+Save all camera metadata; later, at inference, the LLM can emit both DSL and a requested camera tag.
+
+4) What to predict exactly (three viable routes)
+
+A. Code-gen the DSL (recommended first).
+Train a small code-LLM (8–14B works well) on (caption -> DSL text) with function calls and named enums. Determinism comes “for free” because seeds and choices are explicit tokens. Use constrained decoding (JSON schema / grammar) to avoid invalid programs.
+
+B. Predict a param vector (+ seed) with a classifier head.
+Model outputs categorical logits for each slot, plus binned regressions for knobs. For the seed:
+
+Option 1: let the model emit the seed int (as a sequence of hex tokens). Works surprisingly well if you also add a verification loss (see below).
+
+Option 2: predict a latent z, then derive seed = hash(z, prompt). This yields deterministic but not necessarily original seeds. Useful when you only need consistent reproduction, not exact seed recovery.
+
+C. Two-stage: text → mid-level sketch → proc-param diffusion.
+First map text to a compact attribute sketch; then run a tiny diffusion/flow in parameter space (not images) to sample diverse consistent worlds. Much cheaper than pixel diffusion; perfect when you want “same description, 5 varied seeds.”
+
+5) Losses & training tricks that matter
+
+Multi-task: joint loss over categorical slots, binned knobs, and code tokens if you train both A & B (shared encoder, task-specific heads).
+
+Render verification (cycle loss): given predicted DSL, re-render a thumbnail (64–128px) and compute LPIPS/SSIM vs the source view(s). Backprop only through the encoder (don’t need differentiable rasterizer; just use the verification score as a scalar auxiliary loss). This crushes degenerate solutions and teaches the model that the tokens must “look right.”
+
+Contrastive alignment: train a small domain-CLIP on (render, caption) pairs so textual attributes bind tightly to visual signals from your engine.
+
+Curriculum: start with a restricted palette of biomes/knobs, then unlock more enums/bins. The mapping becomes far easier.
+
+6) Evaluation (be strict, it keeps the loop honest)
+
+Exact reproducibility rate: percentage where re-render of predicted DSL + seed matches source within tight LPIPS/SSIM.
+
+Attribute accuracy: F1 on biome/terrain/features, ±1-bin tolerance for knobs.
+
+Camera correctness: correct tag + FOV within tolerance; pose repro with angle/position thresholds.
+
+Diversity at fixed prompt: intra-set variance across 5–10 samples with controlled seed randomness.
+
+Edit success: given “same seed, +20% ridge, swap to tundra,” measure deltas in the correct direction on rendered proxies.
+
+7) Minimal viable prototype (straightforward)
+
+Engine hooks (Godot/Unity/your voxel engine):
+
+Deterministic seed plumbing for every noise/function.
+
+Single entry World(seed, biome, knobs, shaders, cameras) → renders + passes.
+
+Headless batch mode.
+
+Schema + DSL with JSON grammar + enums and 8–16 bins per continuous knob.
+
+Data: generate ~50k worlds × 6 views (300k images) with captions. Store seeds, DSL, cameras, passes.
+
+Model A (code-gen): a small instruction-tuned LLM with grammar-constrained decoding to emit DSL. Start with text-only; add image encoder later for inverse tasks.
+
+Verifier: thumbnail re-render + LPIPS/SSIM used as an auxiliary consistency score during training (no need to backprop through renderer).
+
+Inference API:
+
+describe -> DSL → render (deterministic).
+
+edit(DSL, edits) (delta prompts) → new DSL (same seed unless asked to change).
+
+variants(DSL, k) → sample parameter-space diffusion/flow for diversity while preserving high-level slots.
+
+8) Feasibility & risks (and mitigations)
+
+One-to-many mapping (many seeds fit the same caption).
+Mitigate by training the model to emit a valid DSL (not necessarily the original), and judge by render-similarity + attribute correctness rather than exact seed recovery. If exact recovery matters, include seed tokens during training and increase caption specificity with auto-generated numeric hints (“two narrow rivers, high cliffs”).
+
+Number handling (LLMs and floats).
+Use enums/bins and grammar-constrained decoding. For freeform numbers (e.g., “200m cliffs”), project to bins via a learned mapper.
+
+Over-coupling to your renderer’s quirks.
+Add light augmentations and alternative shader variants so the model generalizes across minor renderer changes.
+
+Camera ambiguity.
+Use named camera tags in captions and supervise the tag prediction explicitly; for freeform camera text at inference, map to nearest tag.
+
+9) Stretch goals (big wins for little cost)
+
+Bidirectional mapping (inverse graphics): train an encoder from a single render (RGB+depth) → DSL. Great for “edit this screenshot as text.”
+
+Program synthesis with tools: let the LLM call library functions (add_river(count=2, width=“narrow”)) and check with the verifier loop; retry until score passes a threshold (tool-calling RL / rejection sampling).
+
+Parameter-space diffusion: 64–256-dim latent over your knobs, trained with rectified flow; text conditions through cross-attention from a small text encoder. Ultra-cheap sampling and diverse outputs.
+
+Verdict
+
+High feasibility and high leverage. Because you control seeding and the proc-gen graph, you can build a perfectly labeled synthetic dataset, a deterministic DSL, and a fast verification loop. Train a small grammar-constrained code-LLM (text → DSL) plus a thumbnail verifier, and you’ll already be able to regenerate scenes exactly from seeds and make precise, text-driven edits to proc-gen/shader knobs. From there, add parameter-space diffusion for diversity and an inverse encoder for “edit from image.”

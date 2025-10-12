@@ -1,7 +1,7 @@
 import terrainWGSL from './pipelines/render/terrain.wgsl?raw'
 import { createPerspective, lookAt, multiplyMat4 } from './camera'
 import { ChunkManager, BlockType, buildChunkMesh } from './chunks'
-import { assertWorldSpec, createDefaultWorldSpec, createTracingContext, generateChunk } from './worldgen'
+import { generateRollingHills, createSimpleWorldConfig } from './worldgen'
 
 const root = document.getElementById('app') as HTMLDivElement
 const canvasShell = document.createElement('div')
@@ -164,13 +164,13 @@ async function init() {
     ]
   })
 
-  const worldSpec = createDefaultWorldSpec(7331)
-  assertWorldSpec(worldSpec)
-  const chunk = new ChunkManager(worldSpec.dimensions)
-  const worldScale = worldSpec.unitsPerBlock
-  const trace = createTracingContext(worldSpec.label ?? 'world')
-  generateChunk({ chunk, spec: worldSpec, trace })
-  ;(window as any).worldGenTrace = trace.serialize()
+  const worldConfig = createSimpleWorldConfig(Math.floor(Math.random() * 1000000))
+  const chunk = new ChunkManager(worldConfig.dimensions)
+  const worldScale = 2  // Units per block for rendering
+
+  console.log('Generating rolling hills terrain...')
+  generateRollingHills(chunk, worldConfig)
+  console.log('Terrain generation complete')
   const chunkOriginOffset: Vec3 = [-chunk.size.x * worldScale / 2, 0, -chunk.size.z * worldScale / 2]
   const placeBlockType = BlockType.Plank
   let meshDirty = true
