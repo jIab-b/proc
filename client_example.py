@@ -72,7 +72,7 @@ def _parse_resp_json(obj: dict) -> Optional[bytes | str]:
     return None
 
 
-async def fal_generate_edit(png_grid: bytes, prompt: str) -> Optional[bytes]:
+async def fal_generate_edit(png_grid: bytes, prompt: str, width: int, height: int) -> Optional[bytes]:
     api_key = os.environ.get("FAL_API_KEY") or os.environ.get("FAL_KEY")
     if not api_key:
         print("[fal] missing FAL_API_KEY", flush=True)
@@ -82,11 +82,27 @@ async def fal_generate_edit(png_grid: bytes, prompt: str) -> Optional[bytes]:
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
     public_url = await _upload_public_image(png_grid)
     attempts = []
+    image_size = {"width": width, "height": height}
+
     if public_url:
         attempts.extend(
             [
-                ("shape_urls", {"prompt": prompt, "image_urls": [public_url]}),
-                ("shape_url_single", {"prompt": prompt, "image_url": public_url}),
+                (
+                    "shape_urls",
+                    {
+                        "prompt": prompt,
+                        "image_urls": [public_url],
+                        "image_size": image_size,
+                    },
+                ),
+                (
+                    "shape_url_single",
+                    {
+                        "prompt": prompt,
+                        "image_url": public_url,
+                        "image_size": image_size,
+                    },
+                ),
             ]
         )
     else:
@@ -100,6 +116,7 @@ async def fal_generate_edit(png_grid: bytes, prompt: str) -> Optional[bytes]:
                 {
                     "prompt": prompt,
                     "image_urls": [f"data:image/png;base64,{b64}"],
+                    "image_size": image_size,
                 },
             ),
             (
@@ -107,6 +124,7 @@ async def fal_generate_edit(png_grid: bytes, prompt: str) -> Optional[bytes]:
                 {
                     "prompt": prompt,
                     "image": {"data": b64, "mime_type": "image/png"},
+                    "image_size": image_size,
                 },
             ),
             (
@@ -114,6 +132,7 @@ async def fal_generate_edit(png_grid: bytes, prompt: str) -> Optional[bytes]:
                 {
                     "prompt": prompt,
                     "images": [{"data": b64, "mime_type": "image/png"}],
+                    "image_size": image_size,
                 },
             ),
         ]

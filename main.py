@@ -4,6 +4,7 @@ FastAPI backend server for WebGPU Minecraft Editor with fal.ai texture generatio
 """
 import os
 import json
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
@@ -12,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, FileResponse
 from pydantic import BaseModel
+from PIL import Image, ImageDraw
 
 # Load environment variables from .env file
 def load_env():
@@ -31,7 +33,7 @@ def load_env():
 load_env()
 
 # Import fal.ai client functions
-from client_example import fal_text_to_image
+from client_example import fal_generate_edit
 
 
 app = FastAPI(title="WebGPU Minecraft Editor API")
@@ -54,12 +56,22 @@ class TexturePrompt(BaseModel):
 
 TEXTURES_DIR = Path("textures")
 METADATA_FILE = TEXTURES_DIR / "metadata.json"
+UPLOAD_DIR = TEXTURES_DIR / ".up"
+DOWNLOAD_DIR = TEXTURES_DIR / ".down"
 
-# Ensure textures directory exists
+ATLAS_ROWS = 4
+ATLAS_COLS = 3
+ATLAS_TILE = 64
+ATLAS_WIDTH = ATLAS_COLS * ATLAS_TILE  # 192px
+ATLAS_HEIGHT = ATLAS_ROWS * ATLAS_TILE  # 256px
+
+# Ensure textures directory structure exists
 TEXTURES_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR.mkdir(exist_ok=True)
+DOWNLOAD_DIR.mkdir(exist_ok=True)
 if not METADATA_FILE.exists():
     with open(METADATA_FILE, "w") as f:
-        json.dump({"textures": [], "next_id": 1}, f, indent=2)
+        json.dump({"textures": [], "next_id": 1, "next_sequence": 1}, f, indent=2)
 
 
 def load_metadata():
@@ -74,30 +86,89 @@ def save_metadata(metadata):
         json.dump(metadata, f, indent=2)
 
 
-def save_texture(image_data: bytes, prompt: str, full_prompt: str) -> dict:
-    """Save texture to disk and update metadata"""
-    metadata = load_metadata()
-    texture_id = metadata["next_id"]
+def compute_uv_rect(row: int, col: int) -> dict:
+    """Return normalized UV rectangle for a given cell."""
+    u0 = col / ATLAS_COLS
+    v0 = row / ATLAS_ROWS
+    u1 = (col + 1) / ATLAS_COLS
+    v1 = (row + 1) / ATLAS_ROWS
+    return {
+        "row": row,
+        "col": col,
+        "u0": u0,
+        "v0": v0,
+        "u1": u1,
+        "v1": v1
+    }
 
-    # Save image file
+
+def build_default_uv_map() -> dict:
+    """Generate a UV map for each column in the atlas."""
+    uv_map: dict[str, dict[str, dict]] = {}
+    for col in range(ATLAS_COLS):
+        uv_map[f"column_{col}"] = {
+            "top": compute_uv_rect(0, col),
+            "side": compute_uv_rect(1, col),
+            "side_secondary": compute_uv_rect(2, col),
+            "bottom": compute_uv_rect(3, col)
+        }
+    return uv_map
+
+
+def generate_checkerboard(rows: int = ATLAS_ROWS, cols: int = ATLAS_COLS, tile: int = ATLAS_TILE) -> Image.Image:
+    """Create a checkerboard atlas template."""
+    width = cols * tile
+    height = rows * tile
+    img = Image.new("RGB", (width, height), color=(32, 32, 32))
+    draw = ImageDraw.Draw(img)
+    colors = [(54, 79, 107), (38, 56, 76)]
+    for row in range(rows):
+        for col in range(cols):
+            x0 = col * tile
+            y0 = row * tile
+            x1 = x0 + tile
+            y1 = y0 + tile
+            color = colors[(row + col) % 2]
+            draw.rectangle([x0, y0, x1, y1], fill=color)
+            draw.rectangle([x0, y0, x1, y1], outline=(96, 128, 160))
+    return img
+
+
+def save_texture(
+    metadata: dict,
+    image_data: bytes,
+    prompt: str,
+    full_prompt: str,
+    sequence: int,
+    upload_filename: str,
+    download_filename: str,
+    atlas_info: dict
+) -> dict:
+    """Persist generated texture, update metadata, and return entry."""
+    texture_id = metadata.get("next_id", 1)
+
     filename = f"texture_{texture_id}.png"
     filepath = TEXTURES_DIR / filename
 
     with open(filepath, "wb") as f:
         f.write(image_data)
 
-    # Update metadata
     texture_entry = {
         "id": texture_id,
         "filename": filename,
         "prompt": prompt,
         "full_prompt": full_prompt,
         "created_at": datetime.now().isoformat(),
-        "size_bytes": len(image_data)
+        "size_bytes": len(image_data),
+        "sequence": sequence,
+        "upload_file": upload_filename,
+        "download_file": download_filename,
+        "atlas": atlas_info
     }
 
-    metadata["textures"].append(texture_entry)
+    metadata.setdefault("textures", []).append(texture_entry)
     metadata["next_id"] = texture_id + 1
+    metadata["next_sequence"] = sequence + 1
 
     save_metadata(metadata)
 
@@ -158,18 +229,39 @@ async def generate_texture(request: TexturePrompt):
             detail="FAL_API_KEY not configured. Set FAL_API_KEY environment variable."
         )
 
-    # Prefix prompt with minecraft style instruction
-    full_prompt = f"generate a minecraft style texture {request.prompt}"
+    # Build structured prompt for grid-based atlas generation
+    full_prompt = (
+        "Fill each tile of this 4-row by 3-column 64x64 checkerboard texture atlas with "
+        "consistent Minecraft-style block faces. Row 0 holds top faces, rows 1-2 hold side faces, "
+        "and row 3 holds bottom faces. Focus on clean pixel art details, aligned edges, and blocks "
+        f"that match this description: {request.prompt}"
+    )
 
-    print(f"[API] Generating texture: {full_prompt}")
-    print(f"[API] Dimensions: {request.width}x{request.height}")
+    print(f"[API] Generating texture atlas: {full_prompt}")
+    print(f"[API] Atlas dimensions: {ATLAS_WIDTH}x{ATLAS_HEIGHT}")
 
     try:
-        # Generate texture using fal.ai
-        image_data = await fal_text_to_image(
+        metadata = load_metadata()
+        sequence = metadata.get("next_sequence", 1)
+
+        upload_filename = f"{sequence:05d}_upload.png"
+        download_filename = f"{sequence:05d}_download.png"
+        upload_path = UPLOAD_DIR / upload_filename
+        download_path = DOWNLOAD_DIR / download_filename
+
+        checkerboard_image = generate_checkerboard()
+        with BytesIO() as buf:
+            checkerboard_image.save(buf, format="PNG")
+            checkerboard_bytes = buf.getvalue()
+
+        with open(upload_path, "wb") as f:
+            f.write(checkerboard_bytes)
+
+        image_data = await fal_generate_edit(
+            png_grid=checkerboard_bytes,
             prompt=full_prompt,
-            width=request.width,
-            height=request.height
+            width=ATLAS_WIDTH,
+            height=ATLAS_HEIGHT
         )
 
         if not image_data:
@@ -178,11 +270,30 @@ async def generate_texture(request: TexturePrompt):
                 detail="Texture generation failed - no image data returned"
             )
 
-        print(f"[API] Texture generated successfully ({len(image_data)} bytes)")
+        with open(download_path, "wb") as f:
+            f.write(image_data)
 
-        # Save texture to disk
-        texture_entry = save_texture(image_data, request.prompt, full_prompt)
-        print(f"[API] Texture saved: {texture_entry['filename']} (ID: {texture_entry['id']})")
+        atlas_metadata = {
+            "rows": ATLAS_ROWS,
+            "cols": ATLAS_COLS,
+            "tile_size": ATLAS_TILE,
+            "width": ATLAS_WIDTH,
+            "height": ATLAS_HEIGHT,
+            "uv_map": build_default_uv_map(),
+            "sequence": sequence
+        }
+
+        texture_entry = save_texture(
+            metadata,
+            image_data,
+            request.prompt,
+            full_prompt,
+            sequence,
+            upload_filename,
+            download_filename,
+            atlas_metadata
+        )
+        print(f"[API] Texture atlas saved: {texture_entry['filename']} (ID: {texture_entry['id']})")
 
         # Return PNG image
         return Response(
@@ -192,7 +303,11 @@ async def generate_texture(request: TexturePrompt):
                 "Content-Length": str(len(image_data)),
                 "Cache-Control": "no-cache",
                 "X-Texture-ID": str(texture_entry["id"]),
-                "X-Texture-Prompt": request.prompt
+                "X-Texture-Prompt": request.prompt,
+                "X-Atlas-Rows": str(ATLAS_ROWS),
+                "X-Atlas-Cols": str(ATLAS_COLS),
+                "X-Atlas-Tile": str(ATLAS_TILE),
+                "X-Atlas-Sequence": str(sequence)
             }
         )
 

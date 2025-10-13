@@ -15,11 +15,20 @@ blockTitle.textContent = 'Block Selection'
 blockSelection.appendChild(blockTitle)
 
 // Custom block type interface
+interface TextureAtlasInfo {
+  rows: number
+  cols: number
+  tileSize: number
+  column: number
+  sequence?: number
+}
+
 interface CustomBlock {
   id: number
   name: string
   colors: { top: number[], bottom: number[], side: number[] }
   texture?: HTMLImageElement
+  atlas?: TextureAtlasInfo
 }
 
 // Available block types (excluding Air)
@@ -167,7 +176,7 @@ function renderBlockGrid() {
     previewCanvas.height = 48
 
     if (customBlock.texture) {
-      drawIsometricBlockWithTexture(previewCanvas, customBlock.texture)
+      drawIsometricBlockWithTexture(previewCanvas, customBlock.texture, customBlock.atlas)
     } else {
       drawIsometricBlock(previewCanvas, customBlock.colors)
     }
@@ -255,7 +264,11 @@ faceLabels.forEach(label => {
 faceViewer.appendChild(faceGrid)
 
 // Function to draw isometric block with texture
-function drawIsometricBlockWithTexture(canvas: HTMLCanvasElement, texture: HTMLImageElement) {
+function drawIsometricBlockWithTexture(
+  canvas: HTMLCanvasElement,
+  texture: HTMLImageElement,
+  atlas?: TextureAtlasInfo
+) {
   const ctx = canvas.getContext('2d')
   if (!ctx) return
 
@@ -267,12 +280,22 @@ function drawIsometricBlockWithTexture(canvas: HTMLCanvasElement, texture: HTMLI
   const cx = w / 2
   const cy = h / 2 + 4
 
-  // Create temporary canvases for each face with texture
-  const tempCanvas = document.createElement('canvas')
-  tempCanvas.width = 64
-  tempCanvas.height = 64
-  const tempCtx = tempCanvas.getContext('2d')!
-  tempCtx.drawImage(texture, 0, 0, 64, 64)
+  const cols = Math.max(1, atlas ? atlas.cols : 1)
+  const rows = Math.max(1, atlas ? atlas.rows : 1)
+  const column = atlas ? atlas.column : 0
+  const cellWidth = texture.width / cols
+  const cellHeight = texture.height / rows
+
+  const getSource = (row: number) => {
+    const clampedRow = Math.min(rows - 1, Math.max(0, row))
+    const clampedCol = Math.min(cols - 1, Math.max(0, column))
+    return {
+      sx: clampedCol * cellWidth,
+      sy: clampedRow * cellHeight,
+      sw: cellWidth,
+      sh: cellHeight
+    }
+  }
 
   // Draw top face with texture
   ctx.save()
@@ -283,7 +306,18 @@ function drawIsometricBlockWithTexture(canvas: HTMLCanvasElement, texture: HTMLI
   ctx.lineTo(cx - blockSize / 2, cy - blockSize / 4)
   ctx.closePath()
   ctx.clip()
-  ctx.drawImage(texture, cx - blockSize / 2, cy - blockSize / 2, blockSize, blockSize / 2)
+  const topSrc = getSource(0)
+  ctx.drawImage(
+    texture,
+    topSrc.sx,
+    topSrc.sy,
+    topSrc.sw,
+    topSrc.sh,
+    cx - blockSize / 2,
+    cy - blockSize / 2,
+    blockSize,
+    blockSize / 2
+  )
   ctx.restore()
   ctx.stroke()
 
@@ -297,7 +331,18 @@ function drawIsometricBlockWithTexture(canvas: HTMLCanvasElement, texture: HTMLI
   ctx.lineTo(cx - blockSize / 2, cy + blockSize / 4)
   ctx.closePath()
   ctx.clip()
-  ctx.drawImage(texture, cx - blockSize / 2, cy - blockSize / 4, blockSize / 2, blockSize)
+  const sideSrc = getSource(Math.min(rows - 1, 1))
+  ctx.drawImage(
+    texture,
+    sideSrc.sx,
+    sideSrc.sy,
+    sideSrc.sw,
+    sideSrc.sh,
+    cx - blockSize / 2,
+    cy - blockSize / 4,
+    blockSize / 2,
+    blockSize
+  )
   ctx.restore()
 
   // Draw right face (slightly darkened)
@@ -310,7 +355,18 @@ function drawIsometricBlockWithTexture(canvas: HTMLCanvasElement, texture: HTMLI
   ctx.lineTo(cx + blockSize / 2, cy + blockSize / 4)
   ctx.closePath()
   ctx.clip()
-  ctx.drawImage(texture, cx, cy - blockSize / 4, blockSize / 2, blockSize)
+  const sideAltSrc = getSource(rows > 2 ? Math.min(rows - 1, 2) : Math.min(rows - 1, 1))
+  ctx.drawImage(
+    texture,
+    sideAltSrc.sx,
+    sideAltSrc.sy,
+    sideAltSrc.sw,
+    sideAltSrc.sh,
+    cx,
+    cy - blockSize / 4,
+    blockSize / 2,
+    blockSize
+  )
   ctx.restore()
 }
 
@@ -331,15 +387,35 @@ function updateFacePreviews(palette: { top: number[], bottom: number[], side: nu
 
 // Function to update face previews with texture
 function updateFacePreviewsWithTexture(customBlock: CustomBlock) {
-  if (customBlock.texture) {
-    facePreviews.forEach((canvas) => {
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return
-      ctx.drawImage(customBlock.texture!, 0, 0, canvas.width, canvas.height)
-    })
-  } else {
+  const texture = customBlock.texture
+  if (!texture) {
     updateFacePreviews(customBlock.colors)
+    return
   }
+
+  const atlas = customBlock.atlas
+  const cols = Math.max(1, atlas ? atlas.cols : 1)
+  const rows = Math.max(1, atlas ? atlas.rows : 1)
+  const column = atlas ? atlas.column : 0
+  const cellWidth = texture.width / cols
+  const cellHeight = texture.height / rows
+
+  const resolveRow = (faceIndex: number) => {
+    if (faceIndex === 0) return 0 // Top
+    if (faceIndex === 1) return rows - 1 // Bottom
+    if (faceIndex === 2 || faceIndex === 3) return Math.min(rows - 1, 1) // Front/Back
+    return Math.min(rows - 1, rows > 2 ? 2 : 1) // Right/Left
+  }
+
+  facePreviews.forEach((canvas, index) => {
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const row = Math.min(rows - 1, Math.max(0, resolveRow(index)))
+    const sx = Math.min(cols - 1, Math.max(0, column)) * cellWidth
+    const sy = row * cellHeight
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(texture, sx, sy, cellWidth, cellHeight, 0, 0, canvas.width, canvas.height)
+  })
 }
 
 // Initialize face previews with default block
@@ -376,7 +452,7 @@ genButton.onclick = async () => {
     const response = await fetch('http://localhost:8000/api/generate-texture', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, width: 512, height: 512 })
+      body: JSON.stringify({ prompt, width: 192, height: 256 })
     })
 
     if (!response.ok) {
@@ -387,6 +463,18 @@ genButton.onclick = async () => {
     // Get texture metadata from response headers
     const textureId = response.headers.get('X-Texture-ID')
     const texturePrompt = response.headers.get('X-Texture-Prompt')
+    const atlasRows = Number.parseInt(response.headers.get('X-Atlas-Rows') ?? '4', 10)
+    const atlasCols = Number.parseInt(response.headers.get('X-Atlas-Cols') ?? '3', 10)
+    const atlasTile = Number.parseInt(response.headers.get('X-Atlas-Tile') ?? '64', 10)
+    const atlasSequence = Number.parseInt(response.headers.get('X-Atlas-Sequence') ?? '0', 10)
+
+    const atlasInfo: TextureAtlasInfo = {
+      rows: Number.isFinite(atlasRows) && atlasRows > 0 ? atlasRows : 4,
+      cols: Number.isFinite(atlasCols) && atlasCols > 0 ? atlasCols : 3,
+      tileSize: Number.isFinite(atlasTile) && atlasTile > 0 ? atlasTile : 64,
+      column: 0,
+      sequence: Number.isFinite(atlasSequence) ? atlasSequence : undefined
+    }
 
     console.log(`Texture saved with ID: ${textureId}, prompt: "${texturePrompt}"`)
 
@@ -396,9 +484,11 @@ genButton.onclick = async () => {
     // Create image object for the texture
     const textureImg = new Image()
     textureImg.onload = () => {
+      const atlasConfig: TextureAtlasInfo = { ...atlasInfo }
       // If a custom block is selected, apply texture to it
       if (selectedCustomBlock) {
         selectedCustomBlock.texture = textureImg
+        selectedCustomBlock.atlas = atlasConfig
         console.log(`Applied texture to custom block: ${selectedCustomBlock.name}`)
 
         // Update face previews
@@ -413,7 +503,8 @@ genButton.onclick = async () => {
           id: nextCustomBlockId++,
           name: blockName,
           colors: { top: [0.5, 0.5, 0.5], bottom: [0.4, 0.4, 0.4], side: [0.45, 0.45, 0.45] },
-          texture: textureImg
+          texture: textureImg,
+          atlas: atlasConfig
         }
         customBlocks.push(newBlock)
         selectedCustomBlock = newBlock
