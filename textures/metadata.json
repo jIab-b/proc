@@ -146,8 +146,176 @@
         },
         "sequence": 1
       }
+    },
+    {
+      "id": 5,
+      "filename": "texture_5.png",
+      "prompt": "sandy desert textures",
+      "full_prompt": "Fill each tile of this 4-row by 3-column 64x64 checkerboard texture atlas with consistent Minecraft-style block faces. Row 0 holds top faces, rows 1-2 hold side faces, and row 3 holds bottom faces. Focus on clean pixel art details, aligned edges, and blocks that match this description: sandy desert textures",
+      "created_at": "2025-10-13T16:59:42.603102",
+      "size_bytes": 238750,
+      "sequence": 2,
+      "upload_file": "00002_upload.png",
+      "download_file": "00002_download.png",
+      "atlas": {
+        "rows": 4,
+        "cols": 3,
+        "tile_size": 64,
+        "width": 192,
+        "height": 256,
+        "uv_map": {
+          "column_0": {
+            "top": {
+              "row": 0,
+              "col": 0,
+              "u0": 0.0,
+              "v0": 0.0,
+              "u1": 0.3333333333333333,
+              "v1": 0.25
+            },
+            "side": {
+              "row": 1,
+              "col": 0,
+              "u0": 0.0,
+              "v0": 0.25,
+              "u1": 0.3333333333333333,
+              "v1": 0.5
+            },
+            "side_secondary": {
+              "row": 2,
+              "col": 0,
+              "u0": 0.0,
+              "v0": 0.5,
+              "u1": 0.3333333333333333,
+              "v1": 0.75
+            },
+            "bottom": {
+              "row": 3,
+              "col": 0,
+              "u0": 0.0,
+              "v0": 0.75,
+              "u1": 0.3333333333333333,
+              "v1": 1.0
+            }
+          },
+          "column_1": {
+            "top": {
+              "row": 0,
+              "col": 1,
+              "u0": 0.3333333333333333,
+              "v0": 0.0,
+              "u1": 0.6666666666666666,
+              "v1": 0.25
+            },
+            "side": {
+              "row": 1,
+              "col": 1,
+              "u0": 0.3333333333333333,
+              "v0": 0.25,
+              "u1": 0.6666666666666666,
+              "v1": 0.5
+            },
+            "side_secondary": {
+              "row": 2,
+              "col": 1,
+              "u0": 0.3333333333333333,
+              "v0": 0.5,
+              "u1": 0.6666666666666666,
+              "v1": 0.75
+            },
+            "bottom": {
+              "row": 3,
+              "col": 1,
+              "u0": 0.3333333333333333,
+              "v0": 0.75,
+              "u1": 0.6666666666666666,
+              "v1": 1.0
+            }
+          },
+          "column_2": {
+            "top": {
+              "row": 0,
+              "col": 2,
+              "u0": 0.6666666666666666,
+              "v0": 0.0,
+              "u1": 1.0,
+              "v1": 0.25
+            },
+            "side": {
+              "row": 1,
+              "col": 2,
+              "u0": 0.6666666666666666,
+              "v0": 0.25,
+              "u1": 1.0,
+              "v1": 0.5
+            },
+            "side_secondary": {
+              "row": 2,
+              "col": 2,
+              "u0": 0.6666666666666666,
+              "v0": 0.5,
+              "u1": 1.0,
+              "v1": 0.75
+            },
+            "bottom": {
+              "row": 3,
+              "col": 2,
+              "u0": 0.6666666666666666,
+              "v0": 0.75,
+              "u1": 1.0,
+              "v1": 1.0
+            }
+          }
+        },
+        "sequence": 2,
+        "tiles": {
+          "top": {
+            "col": 1,
+            "row": 0,
+            "filename": "1_0.png",
+            "path": "2/1_0.png",
+            "layer": 0
+          },
+          "bottom": {
+            "col": 1,
+            "row": 3,
+            "filename": "1_3.png",
+            "path": "2/1_3.png",
+            "layer": 1
+          },
+          "north": {
+            "col": 1,
+            "row": 1,
+            "filename": "1_1.png",
+            "path": "2/1_1.png",
+            "layer": 2
+          },
+          "south": {
+            "col": 1,
+            "row": 2,
+            "filename": "1_2.png",
+            "path": "2/1_2.png",
+            "layer": 3
+          },
+          "east": {
+            "col": 2,
+            "row": 1,
+            "filename": "2_1.png",
+            "path": "2/2_1.png",
+            "layer": 4
+          },
+          "west": {
+            "col": 0,
+            "row": 1,
+            "filename": "0_1.png",
+            "path": "2/0_1.png",
+            "layer": 5
+          }
+        },
+        "directory": "2"
+      }
     }
   ],
-  "next_id": 5,
-  "next_sequence": 2
+  "next_id": 6,
+  "next_sequence": 3
 }

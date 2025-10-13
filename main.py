@@ -12,6 +12,7 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
 
@@ -65,6 +66,16 @@ ATLAS_TILE = 64
 ATLAS_WIDTH = ATLAS_COLS * ATLAS_TILE  # 192px
 ATLAS_HEIGHT = ATLAS_ROWS * ATLAS_TILE  # 256px
 
+FACE_TILE_COORDINATES = {
+    "top": (1, 0),
+    "bottom": (1, 3),
+    "north": (1, 1),
+    "south": (1, 2),
+    "east": (2, 1),
+    "west": (0, 1),
+}
+FACE_TILE_ORDER = ["top", "bottom", "north", "south", "east", "west"]
+
 # Ensure textures directory structure exists
 TEXTURES_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -72,6 +83,8 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 if not METADATA_FILE.exists():
     with open(METADATA_FILE, "w") as f:
         json.dump({"textures": [], "next_id": 1, "next_sequence": 1}, f, indent=2)
+
+app.mount("/textures", StaticFiles(directory=str(TEXTURES_DIR)), name="texture-files")
 
 
 def load_metadata():
@@ -116,12 +129,16 @@ def build_default_uv_map() -> dict:
 
 
 def generate_checkerboard(rows: int = ATLAS_ROWS, cols: int = ATLAS_COLS, tile: int = ATLAS_TILE) -> Image.Image:
-    """Create a checkerboard atlas template."""
+    """Create a light translucent checkerboard atlas template."""
     width = cols * tile
     height = rows * tile
-    img = Image.new("RGB", (width, height), color=(32, 32, 32))
+    img = Image.new("RGBA", (width, height), color=(0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    colors = [(54, 79, 107), (38, 56, 76)]
+    colors = [
+        (250, 252, 255, 48),
+        (227, 233, 240, 64)
+    ]
+    border = (255, 255, 255, 72)
     for row in range(rows):
         for col in range(cols):
             x0 = col * tile
@@ -129,9 +146,35 @@ def generate_checkerboard(rows: int = ATLAS_ROWS, cols: int = ATLAS_COLS, tile: 
             x1 = x0 + tile
             y1 = y0 + tile
             color = colors[(row + col) % 2]
-            draw.rectangle([x0, y0, x1, y1], fill=color)
-            draw.rectangle([x0, y0, x1, y1], outline=(96, 128, 160))
+            draw.rectangle([x0, y0, x1, y1], fill=color, outline=border)
     return img
+
+
+def slice_face_tiles(atlas_image: Image.Image, sequence: int) -> dict:
+    """Extract configured face tiles from the atlas into individual files."""
+    sequence_dir = TEXTURES_DIR / str(sequence)
+    sequence_dir.mkdir(parents=True, exist_ok=True)
+
+    face_tiles: dict[str, dict] = {}
+    for layer, face in enumerate(FACE_TILE_ORDER):
+        col, row = FACE_TILE_COORDINATES[face]
+        left = col * ATLAS_TILE
+        upper = row * ATLAS_TILE
+        right = left + ATLAS_TILE
+        lower = upper + ATLAS_TILE
+        tile = atlas_image.crop((left, upper, right, lower))
+        filename = f"{col}_{row}.png"
+        filepath = sequence_dir / filename
+        tile.save(filepath)
+        face_tiles[face] = {
+            "col": col,
+            "row": row,
+            "filename": filename,
+            "path": str(filepath.relative_to(TEXTURES_DIR)),
+            "layer": layer
+        }
+
+    return face_tiles
 
 
 def save_texture(
@@ -153,6 +196,11 @@ def save_texture(
     with open(filepath, "wb") as f:
         f.write(image_data)
 
+    with Image.open(BytesIO(image_data)) as atlas_img:
+        atlas_rgba = atlas_img.convert("RGBA")
+    face_tiles = slice_face_tiles(atlas_rgba, sequence)
+    atlas_rgba.close()
+
     texture_entry = {
         "id": texture_id,
         "filename": filename,
@@ -163,7 +211,7 @@ def save_texture(
         "sequence": sequence,
         "upload_file": upload_filename,
         "download_file": download_filename,
-        "atlas": atlas_info
+        "atlas": {**atlas_info, "tiles": face_tiles, "directory": str(sequence)}
     }
 
     metadata.setdefault("textures", []).append(texture_entry)

@@ -13,6 +13,12 @@ export enum BlockType {
 
 export type ChunkMesh = { vertexData: Float32Array; vertexCount: number }
 
+export type BlockFaceKey = 'top' | 'bottom' | 'north' | 'south' | 'east' | 'west'
+
+export type BlockTextureFaceIndices = Record<BlockFaceKey, number>
+
+const blockTextureLayers: Partial<Record<BlockType, BlockTextureFaceIndices>> = {}
+
 const enum FaceIndex {
   PX,
   NX,
@@ -27,6 +33,54 @@ type FaceDefinition = {
   offset: [number, number, number];
   corners: [number, number, number][];
   colorSlot: 'top' | 'bottom' | 'side';
+}
+
+const faceIndexToKey: Record<FaceIndex, BlockFaceKey> = {
+  [FaceIndex.PX]: 'east',
+  [FaceIndex.NX]: 'west',
+  [FaceIndex.PY]: 'top',
+  [FaceIndex.NY]: 'bottom',
+  [FaceIndex.PZ]: 'south',
+  [FaceIndex.NZ]: 'north'
+}
+
+const faceUVs: Record<FaceIndex, [number, number][]> = {
+  [FaceIndex.PX]: [
+    [0, 1],
+    [0, 0],
+    [1, 0],
+    [1, 1]
+  ],
+  [FaceIndex.NX]: [
+    [1, 1],
+    [0, 1],
+    [0, 0],
+    [1, 0]
+  ],
+  [FaceIndex.PY]: [
+    [0, 1],
+    [0, 0],
+    [1, 0],
+    [1, 1]
+  ],
+  [FaceIndex.NY]: [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1]
+  ],
+  [FaceIndex.PZ]: [
+    [0, 1],
+    [1, 1],
+    [1, 0],
+    [0, 0]
+  ],
+  [FaceIndex.NZ]: [
+    [1, 1],
+    [1, 0],
+    [0, 0],
+    [0, 1]
+  ]
 }
 
 type BlockPaletteEntry = {
@@ -240,6 +294,7 @@ export function buildChunkMesh(chunk: ChunkManager, worldScale = 1): ChunkMesh {
         const block = chunk.getBlock(x, y, z)
         if (block === BlockType.Air) continue
         const palette = blockPalette[block]!
+        const textureConfig = blockTextureLayers[block]
 
         for (let f = 0; f < 6; f++) {
           const face = faceDefs[f as FaceIndex]
@@ -249,12 +304,16 @@ export function buildChunkMesh(chunk: ChunkManager, worldScale = 1): ChunkMesh {
           if (chunk.getBlock(nx, ny, nz) !== BlockType.Air) continue
 
           const color = palette[face.colorSlot]
+          const faceKey = faceIndexToKey[f as FaceIndex]
+          const textureLayer = textureConfig ? textureConfig[faceKey] ?? -1 : -1
+          const uvs = faceUVs[f as FaceIndex]
           const baseX = x + offsetX
           const baseY = y
           const baseZ = z + offsetZ
           for (let i = 0; i < faceIndices.length; i++) {
             const idx = faceIndices[i]!
             const corner = face.corners[idx]!
+            const uv = uvs[idx]!
             vertices.push(
               (baseX + corner[0]) * worldScale,
               (baseY + corner[1]) * worldScale,
@@ -264,7 +323,10 @@ export function buildChunkMesh(chunk: ChunkManager, worldScale = 1): ChunkMesh {
               face.normal[2],
               color[0],
               color[1],
-              color[2]
+              color[2],
+              uv[0],
+              uv[1],
+              textureLayer
             )
           }
         }
@@ -273,8 +335,16 @@ export function buildChunkMesh(chunk: ChunkManager, worldScale = 1): ChunkMesh {
   }
 
   const vertexData = new Float32Array(vertices)
-  const vertexCount = vertexData.length / 9
+  const vertexCount = vertexData.length / 12
   return { vertexData, vertexCount }
+}
+
+export function setBlockTextureIndices(block: BlockType, config: BlockTextureFaceIndices | null) {
+  if (!config) {
+    delete blockTextureLayers[block]
+    return
+  }
+  blockTextureLayers[block] = { ...config }
 }
 
 function mix(a: number, b: number, t: number) {

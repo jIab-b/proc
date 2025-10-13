@@ -1,6 +1,6 @@
 import terrainWGSL from './pipelines/render/terrain.wgsl?raw'
 import { createPerspective, lookAt, multiplyMat4 } from './camera'
-import { ChunkManager, BlockType, buildChunkMesh } from './chunks'
+import { ChunkManager, BlockType, BlockFaceKey, buildChunkMesh, setBlockTextureIndices } from './chunks'
 import { generateRollingHills, createSimpleWorldConfig } from './worldgen'
 
 // Create sidebar
@@ -29,6 +29,23 @@ interface CustomBlock {
   colors: { top: number[], bottom: number[], side: number[] }
   texture?: HTMLImageElement
   atlas?: TextureAtlasInfo
+  faceBitmaps?: Partial<Record<BlockFaceKey, ImageBitmap>>
+}
+
+type FaceBitmapMap = Partial<Record<BlockFaceKey, ImageBitmap>>
+
+const blockFaceOrder: BlockFaceKey[] = ['top', 'bottom', 'north', 'south', 'east', 'west']
+const faceLayerIndex: Record<BlockFaceKey, number> = blockFaceOrder.reduce((acc, face, index) => {
+  acc[face] = index
+  return acc
+}, {} as Record<BlockFaceKey, number>)
+const faceTileCoordinates: Record<BlockFaceKey, [number, number]> = {
+  top: [1, 0],
+  bottom: [1, 3],
+  north: [1, 1],
+  south: [1, 2],
+  east: [2, 1],
+  west: [0, 1]
 }
 
 // Available block types (excluding Air)
@@ -176,7 +193,7 @@ function renderBlockGrid() {
     previewCanvas.height = 48
 
     if (customBlock.texture) {
-      drawIsometricBlockWithTexture(previewCanvas, customBlock.texture, customBlock.atlas)
+      drawIsometricBlockWithTexture(previewCanvas, customBlock.texture, customBlock.atlas, customBlock.faceBitmaps)
     } else {
       drawIsometricBlock(previewCanvas, customBlock.colors)
     }
@@ -267,7 +284,8 @@ faceViewer.appendChild(faceGrid)
 function drawIsometricBlockWithTexture(
   canvas: HTMLCanvasElement,
   texture: HTMLImageElement,
-  atlas?: TextureAtlasInfo
+  atlas?: TextureAtlasInfo,
+  faceBitmaps?: FaceBitmapMap
 ) {
   const ctx = canvas.getContext('2d')
   if (!ctx) return
@@ -279,6 +297,11 @@ function drawIsometricBlockWithTexture(
   const blockSize = Math.min(w, h) * 0.6
   const cx = w / 2
   const cy = h / 2 + 4
+
+  const bitmapTop = faceBitmaps?.top
+  const bitmapWest = faceBitmaps?.west
+  const bitmapSouth = faceBitmaps?.south
+  const useBitmaps = Boolean(bitmapTop && bitmapWest && bitmapSouth)
 
   const cols = Math.max(1, atlas ? atlas.cols : 1)
   const rows = Math.max(1, atlas ? atlas.rows : 1)
@@ -306,18 +329,32 @@ function drawIsometricBlockWithTexture(
   ctx.lineTo(cx - blockSize / 2, cy - blockSize / 4)
   ctx.closePath()
   ctx.clip()
-  const topSrc = getSource(0)
-  ctx.drawImage(
-    texture,
-    topSrc.sx,
-    topSrc.sy,
-    topSrc.sw,
-    topSrc.sh,
-    cx - blockSize / 2,
-    cy - blockSize / 2,
-    blockSize,
-    blockSize / 2
-  )
+  if (useBitmaps && bitmapTop) {
+    ctx.drawImage(
+      bitmapTop,
+      0,
+      0,
+      bitmapTop.width,
+      bitmapTop.height,
+      cx - blockSize / 2,
+      cy - blockSize / 2,
+      blockSize,
+      blockSize / 2
+    )
+  } else {
+    const topSrc = getSource(0)
+    ctx.drawImage(
+      texture,
+      topSrc.sx,
+      topSrc.sy,
+      topSrc.sw,
+      topSrc.sh,
+      cx - blockSize / 2,
+      cy - blockSize / 2,
+      blockSize,
+      blockSize / 2
+    )
+  }
   ctx.restore()
   ctx.stroke()
 
@@ -331,18 +368,32 @@ function drawIsometricBlockWithTexture(
   ctx.lineTo(cx - blockSize / 2, cy + blockSize / 4)
   ctx.closePath()
   ctx.clip()
-  const sideSrc = getSource(Math.min(rows - 1, 1))
-  ctx.drawImage(
-    texture,
-    sideSrc.sx,
-    sideSrc.sy,
-    sideSrc.sw,
-    sideSrc.sh,
-    cx - blockSize / 2,
-    cy - blockSize / 4,
-    blockSize / 2,
-    blockSize
-  )
+  if (useBitmaps && bitmapWest) {
+    ctx.drawImage(
+      bitmapWest,
+      0,
+      0,
+      bitmapWest.width,
+      bitmapWest.height,
+      cx - blockSize / 2,
+      cy - blockSize / 4,
+      blockSize / 2,
+      blockSize
+    )
+  } else {
+    const sideSrc = getSource(Math.min(rows - 1, 1))
+    ctx.drawImage(
+      texture,
+      sideSrc.sx,
+      sideSrc.sy,
+      sideSrc.sw,
+      sideSrc.sh,
+      cx - blockSize / 2,
+      cy - blockSize / 4,
+      blockSize / 2,
+      blockSize
+    )
+  }
   ctx.restore()
 
   // Draw right face (slightly darkened)
@@ -355,18 +406,32 @@ function drawIsometricBlockWithTexture(
   ctx.lineTo(cx + blockSize / 2, cy + blockSize / 4)
   ctx.closePath()
   ctx.clip()
-  const sideAltSrc = getSource(rows > 2 ? Math.min(rows - 1, 2) : Math.min(rows - 1, 1))
-  ctx.drawImage(
-    texture,
-    sideAltSrc.sx,
-    sideAltSrc.sy,
-    sideAltSrc.sw,
-    sideAltSrc.sh,
-    cx,
-    cy - blockSize / 4,
-    blockSize / 2,
-    blockSize
-  )
+  if (useBitmaps && bitmapSouth) {
+    ctx.drawImage(
+      bitmapSouth,
+      0,
+      0,
+      bitmapSouth.width,
+      bitmapSouth.height,
+      cx,
+      cy - blockSize / 4,
+      blockSize / 2,
+      blockSize
+    )
+  } else {
+    const sideAltSrc = getSource(rows > 2 ? Math.min(rows - 1, 2) : Math.min(rows - 1, 1))
+    ctx.drawImage(
+      texture,
+      sideAltSrc.sx,
+      sideAltSrc.sy,
+      sideAltSrc.sw,
+      sideAltSrc.sh,
+      cx,
+      cy - blockSize / 4,
+      blockSize / 2,
+      blockSize
+    )
+  }
   ctx.restore()
 }
 
@@ -387,6 +452,22 @@ function updateFacePreviews(palette: { top: number[], bottom: number[], side: nu
 
 // Function to update face previews with texture
 function updateFacePreviewsWithTexture(customBlock: CustomBlock) {
+  const previewFaces: BlockFaceKey[] = ['top', 'bottom', 'north', 'south', 'east', 'west']
+  const faceBitmaps = customBlock.faceBitmaps
+  if (faceBitmaps && previewFaces.every(face => Boolean(faceBitmaps[face]))) {
+    facePreviews.forEach((canvas, index) => {
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      const face = previewFaces[index]
+      if (!face) return
+      const bitmap = faceBitmaps[face]
+      if (!bitmap) return
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    })
+    return
+  }
+
   const texture = customBlock.texture
   if (!texture) {
     updateFacePreviews(customBlock.colors)
@@ -483,21 +564,16 @@ genButton.onclick = async () => {
 
     // Create image object for the texture
     const textureImg = new Image()
-    textureImg.onload = () => {
+    textureImg.onload = async () => {
       const atlasConfig: TextureAtlasInfo = { ...atlasInfo }
-      // If a custom block is selected, apply texture to it
+      let targetBlock: CustomBlock
+
       if (selectedCustomBlock) {
         selectedCustomBlock.texture = textureImg
         selectedCustomBlock.atlas = atlasConfig
+        targetBlock = selectedCustomBlock
         console.log(`Applied texture to custom block: ${selectedCustomBlock.name}`)
-
-        // Update face previews
-        updateFacePreviewsWithTexture(selectedCustomBlock)
-
-        // Re-render block grid to update preview
-        renderBlockGrid()
       } else {
-        // Create new custom block with this texture if no custom block selected
         const blockName = (prompt.split(',')[0] ?? 'Custom').trim() || 'Custom Block'
         const newBlock: CustomBlock = {
           id: nextCustomBlockId++,
@@ -509,16 +585,28 @@ genButton.onclick = async () => {
         customBlocks.push(newBlock)
         selectedCustomBlock = newBlock
         selectedBlockType = BlockType.Plank
-
+        targetBlock = newBlock
         console.log(`Created new custom block: ${blockName}`)
-
-        // Update face previews
-        updateFacePreviewsWithTexture(newBlock)
-
-        // Re-render block grid
-        renderBlockGrid()
       }
 
+      const sequence = atlasConfig.sequence
+      if (typeof sequence === 'number' && Number.isFinite(sequence) && sequence > 0) {
+        try {
+          const bitmaps = await fetchFaceBitmaps(sequence)
+          const previous = targetBlock.faceBitmaps
+          if (previous) {
+            blockFaceOrder.forEach(face => previous[face]?.close?.())
+          }
+          targetBlock.faceBitmaps = bitmaps
+          applyFaceBitmapsToGPU(bitmaps)
+          console.log(`Loaded face tile set for sequence ${sequence}`)
+        } catch (bitmapErr) {
+          console.error('Failed to load per-face tiles:', bitmapErr)
+        }
+      }
+
+      updateFacePreviewsWithTexture(targetBlock)
+      renderBlockGrid()
       URL.revokeObjectURL(imageUrl)
     }
     textureImg.onerror = () => {
@@ -529,7 +617,9 @@ genButton.onclick = async () => {
 
     genButton.textContent = 'Generate Texture'
     console.log('Texture generation complete')
-    console.log(`Texture saved to: textures/texture_${textureId}.png`)
+    if (atlasInfo.sequence) {
+      console.log(`Texture tiles saved to textures/${atlasInfo.sequence}`)
+    }
   } catch (err) {
     console.error('Texture generation failed:', err)
     genButton.textContent = 'Failed - Retry'
@@ -668,11 +758,36 @@ async function init() {
   resize()
 
   const cameraBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+  const tileLayerCount = blockFaceOrder.length
+  const tileSampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' })
+  let tileTextureSize = 1
+  let tileArrayTexture = device.createTexture({
+    size: { width: tileTextureSize, height: tileTextureSize, depthOrArrayLayers: Math.max(1, tileLayerCount) },
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+  })
+  let tileArrayView = tileArrayTexture.createView({ dimension: '2d-array', baseArrayLayer: 0, arrayLayerCount: Math.max(1, tileLayerCount) })
+
   const renderBGL = device.createBindGroupLayout({
     entries: [
-      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }
+      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } }
     ]
   })
+
+  let renderBindGroup: GPUBindGroup
+  const refreshRenderBindGroup = () => {
+    renderBindGroup = device.createBindGroup({
+      layout: renderBGL,
+      entries: [
+        { binding: 0, resource: { buffer: cameraBuffer } },
+        { binding: 1, resource: tileSampler },
+        { binding: 2, resource: tileArrayView }
+      ]
+    })
+  }
+  refreshRenderBindGroup()
 
   device.pushErrorScope('validation')
   const shaderModule = device.createShaderModule({ code: terrainWGSL })
@@ -688,11 +803,13 @@ async function init() {
       entryPoint: 'vs_main',
       buffers: [
         {
-          arrayStride: 9 * 4,
+          arrayStride: 12 * 4,
           attributes: [
             { shaderLocation: 0, offset: 0, format: 'float32x3' },
             { shaderLocation: 1, offset: 12, format: 'float32x3' },
-            { shaderLocation: 2, offset: 24, format: 'float32x3' }
+            { shaderLocation: 2, offset: 24, format: 'float32x3' },
+            { shaderLocation: 3, offset: 36, format: 'float32x2' },
+            { shaderLocation: 4, offset: 44, format: 'float32' }
           ]
         }
       ]
@@ -703,16 +820,10 @@ async function init() {
   })
   await device.popErrorScope().catch((e: unknown) => log(`Render pipeline error: ${String(e)}`))
 
-  const renderBindGroup = device.createBindGroup({
-    layout: renderBGL,
-    entries: [
-      { binding: 0, resource: { buffer: cameraBuffer } }
-    ]
-  })
-
   const worldConfig = createSimpleWorldConfig(Math.floor(Math.random() * 1000000))
   const chunk = new ChunkManager(worldConfig.dimensions)
   const worldScale = 2  // Units per block for rendering
+  setBlockTextureIndices(BlockType.Plank, null)
 
   console.log('Generating rolling hills terrain...')
   generateRollingHills(chunk, worldConfig)
@@ -726,6 +837,7 @@ async function init() {
   function rebuildMesh() {
     const mesh = buildChunkMesh(chunk, worldScale)
     vertexCount = mesh.vertexCount
+    console.log('Rebuild mesh vertexCount', vertexCount)
     if (vertexCount === 0) return
     const byteLength = alignTo(mesh.vertexData.byteLength, 4)
     if (!vertexBuffer || byteLength > vertexBufferSize) {
@@ -734,6 +846,58 @@ async function init() {
       vertexBufferSize = byteLength
     }
     device.queue.writeBuffer(vertexBuffer, 0, mesh.vertexData.buffer, mesh.vertexData.byteOffset, mesh.vertexData.byteLength)
+  }
+
+  const tileBaseUrl = 'http://localhost:8000/textures'
+
+  async function fetchFaceBitmaps(sequence: number) {
+    const entries = await Promise.all(blockFaceOrder.map(async (face) => {
+      const [col, row] = faceTileCoordinates[face]
+      const url = `${tileBaseUrl}/${sequence}/${col}_${row}.png`
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error(`Failed to load face tile ${face} (${col}_${row})`)
+      }
+      const blob = await response.blob()
+      const bitmap = await createImageBitmap(blob)
+      return [face, bitmap] as const
+    }))
+    const result: Record<BlockFaceKey, ImageBitmap> = {} as Record<BlockFaceKey, ImageBitmap>
+    for (const [face, bitmap] of entries) {
+      result[face] = bitmap
+    }
+    return result
+  }
+
+  function applyFaceBitmapsToGPU(bitmaps: Record<BlockFaceKey, ImageBitmap>) {
+    const sampleFace = blockFaceOrder.find(face => Boolean(bitmaps[face]))
+    if (!sampleFace) return
+    const sampleBitmap = bitmaps[sampleFace]!
+    const size = sampleBitmap.width
+    if (!tileArrayTexture || tileTextureSize !== size) {
+      ;(tileArrayTexture as any)?.destroy?.()
+      tileArrayTexture = device.createTexture({
+        size: { width: size, height: size, depthOrArrayLayers: tileLayerCount },
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+      })
+      tileArrayView = tileArrayTexture.createView({ dimension: '2d-array', baseArrayLayer: 0, arrayLayerCount: tileLayerCount })
+      tileTextureSize = size
+      refreshRenderBindGroup()
+    }
+
+    blockFaceOrder.forEach((face, layer) => {
+      const bitmap = bitmaps[face]
+      if (!bitmap) return
+      device.queue.copyExternalImageToTexture(
+        { source: bitmap },
+        { texture: tileArrayTexture, origin: { x: 0, y: 0, z: layer } },
+        { width: bitmap.width, height: bitmap.height, depthOrArrayLayers: 1 }
+      )
+    })
+
+    setBlockTextureIndices(BlockType.Plank, faceLayerIndex)
+    meshDirty = true
   }
 
   const pressedKeys = new Set<string>()
@@ -955,6 +1119,9 @@ async function init() {
       depthStencilAttachment: { view: depthView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' }
     })
     if (vertexBuffer && vertexCount > 0) {
+      if (!renderBindGroup) {
+        console.warn('renderBindGroup missing before draw')
+      }
       pass.setPipeline(pipeline)
       pass.setBindGroup(0, renderBindGroup)
       pass.setVertexBuffer(0, vertexBuffer)
