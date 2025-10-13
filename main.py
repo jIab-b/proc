@@ -137,6 +137,31 @@ def build_default_uv_map() -> dict:
     return uv_map
 
 
+def discover_existing_sequences(metadata: dict) -> set[int]:
+    """Return all sequence numbers referenced in metadata or on disk."""
+    sequences: set[int] = set()
+
+    for texture in metadata.get("textures", []):
+        seq = texture.get("sequence")
+        if isinstance(seq, int) and seq > 0:
+            sequences.add(seq)
+
+    for entry in TEXTURES_DIR.iterdir():
+        if entry.is_dir() and entry.name.isdigit():
+            sequences.add(int(entry.name))
+
+    return sequences
+
+
+def next_available_sequence(metadata: dict) -> int:
+    """Compute the next unused sequence id, considering disk state."""
+    used = discover_existing_sequences(metadata)
+    candidate = max(metadata.get("next_sequence", 1), 1)
+    while candidate in used:
+        candidate += 1
+    return candidate
+
+
 def generate_checkerboard(rows: int = ATLAS_ROWS, cols: int = ATLAS_COLS, tile: int = ATLAS_TILE) -> Image.Image:
     """Create a light translucent checkerboard atlas template."""
     width = cols * tile
@@ -225,7 +250,7 @@ def save_texture(
 
     metadata.setdefault("textures", []).append(texture_entry)
     metadata["next_id"] = texture_id + 1
-    metadata["next_sequence"] = sequence + 1
+    metadata["next_sequence"] = next_available_sequence(metadata)
 
     save_metadata(metadata)
 
@@ -267,6 +292,54 @@ async def get_texture(texture_id: int):
     return FileResponse(filepath, media_type="image/png")
 
 
+@app.delete("/api/textures/{texture_id}")
+async def delete_texture(texture_id: int):
+    """Delete a texture by ID and remove all associated files"""
+    metadata = load_metadata()
+    texture = next((t for t in metadata["textures"] if t["id"] == texture_id), None)
+
+    if not texture:
+        raise HTTPException(status_code=404, detail="Texture not found")
+
+    try:
+        # Delete main texture file
+        texture_file = TEXTURES_DIR / texture["filename"]
+        if texture_file.exists():
+            texture_file.unlink()
+
+        # Delete upload file if it exists
+        if "upload_file" in texture:
+            upload_file = UPLOAD_DIR / texture["upload_file"]
+            if upload_file.exists():
+                upload_file.unlink()
+
+        # Delete download file if it exists
+        if "download_file" in texture:
+            download_file = DOWNLOAD_DIR / texture["download_file"]
+            if download_file.exists():
+                download_file.unlink()
+
+        # Delete face tiles directory if it exists
+        if "sequence" in texture and texture["sequence"]:
+            sequence_dir = TEXTURES_DIR / str(texture["sequence"])
+            if sequence_dir.exists() and sequence_dir.is_dir():
+                import shutil
+                shutil.rmtree(sequence_dir)
+
+        # Remove from metadata
+        metadata["textures"] = [t for t in metadata["textures"] if t["id"] != texture_id]
+        save_metadata(metadata)
+
+        print(f"[API] Deleted texture {texture_id}: {texture.get('prompt', 'Unknown')}")
+        return {"message": "Texture deleted successfully"}
+
+    except Exception as e:
+        print(f"[API] Error deleting texture {texture_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to delete texture: {str(e)}")
+
+
 @app.post("/api/generate-texture")
 async def generate_texture(request: TexturePrompt):
     """
@@ -299,7 +372,7 @@ async def generate_texture(request: TexturePrompt):
 
     try:
         metadata = load_metadata()
-        sequence = metadata.get("next_sequence", 1)
+        sequence = next_available_sequence(metadata)
 
         upload_filename = f"{sequence:05d}_upload.png"
         download_filename = f"{sequence:05d}_download.png"

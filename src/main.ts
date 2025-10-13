@@ -30,6 +30,7 @@ interface CustomBlock {
   texture?: HTMLImageElement
   atlas?: TextureAtlasInfo
   faceBitmaps?: Partial<Record<BlockFaceKey, ImageBitmap>>
+  textureId?: number // Store original server texture ID for deletion
 }
 
 type FaceBitmapMap = Partial<Record<BlockFaceKey, ImageBitmap>>
@@ -209,6 +210,16 @@ function renderBlockGrid() {
 
     blockItem.onclick = (e) => {
       e.stopPropagation()
+
+      // Check if Shift key is held for delete
+      if (e.shiftKey) {
+        const confirmDelete = confirm(`Delete "${customBlock.name}"? This will also remove the texture files.`)
+        if (confirmDelete) {
+          deleteCustomBlock(customBlock)
+        }
+        return
+      }
+
       blockItems.forEach(item => item.classList.remove('selected'))
       blockItem.classList.add('selected')
       selectedCustomBlock = customBlock
@@ -252,7 +263,65 @@ function renderBlockGrid() {
 }
 
 blockSelection.appendChild(blockGrid)
+
+// Add helper text
+const helperText = document.createElement('div')
+helperText.className = 'helper-text'
+helperText.textContent = 'Shift+Click on custom tiles to delete them'
+blockSelection.appendChild(helperText)
+
 renderBlockGrid()
+
+// Function to delete a custom block
+async function deleteCustomBlock(customBlock: CustomBlock) {
+  try {
+    // If it has a textureId, try to delete from server
+    if (customBlock.textureId) {
+      const response = await fetch(`http://localhost:8000/api/textures/${customBlock.textureId}`, {
+        method: 'DELETE'
+      })
+
+      if (!response.ok) {
+        console.warn(`Failed to delete texture from server: ${response.status}`)
+        // Continue with local deletion even if server deletion fails
+      } else {
+        console.log(`Deleted texture ${customBlock.textureId} from server`)
+      }
+    }
+
+    // Clean up face bitmaps
+    if (customBlock.faceBitmaps) {
+      blockFaceOrder.forEach(face => {
+        const bitmap = customBlock.faceBitmaps![face]
+        if (bitmap && bitmap.close) {
+          bitmap.close()
+        }
+      })
+    }
+
+    // Remove from custom blocks array
+    const index = customBlocks.findIndex(block => block.id === customBlock.id)
+    if (index !== -1) {
+      customBlocks.splice(index, 1)
+    }
+
+    // Clear selection if this block was selected
+    if (selectedCustomBlock?.id === customBlock.id) {
+      selectedCustomBlock = null
+      selectedBlockType = BlockType.Plank
+      const initialPalette = blockPalette[selectedBlockType]
+      if (initialPalette) updateFacePreviews(initialPalette)
+    }
+
+    // Re-render block grid
+    renderBlockGrid()
+
+    console.log(`Deleted custom block: ${customBlock.name}`)
+  } catch (err) {
+    console.error('Error deleting custom block:', err)
+    alert('Failed to delete texture. Please try again.')
+  }
+}
 
 sidebar.appendChild(blockSelection)
 
@@ -648,6 +717,79 @@ faceViewer.appendChild(textureGen)
 
 sidebar.appendChild(faceViewer)
 document.body.insertBefore(sidebar, document.body.firstChild)
+
+// Load existing textures from server on startup
+async function loadExistingTextures() {
+  try {
+    const response = await fetch('http://localhost:8000/api/textures')
+    if (!response.ok) {
+      console.warn('Failed to load existing textures from server')
+      return
+    }
+
+    const data = await response.json()
+    const textures = data.textures || []
+
+    console.log(`Loading ${textures.length} existing textures from server`)
+
+    for (const texture of textures) {
+      // Skip textures without sequence info (older format)
+      if (!texture.sequence || !texture.atlas) {
+        console.log(`Skipping texture ${texture.id} (no sequence info)`)
+        continue
+      }
+
+      // Create custom block from existing texture
+      const textureImg = new Image()
+      textureImg.onload = async () => {
+        const blockName = texture.prompt.split(',')[0]?.trim() || `Texture ${texture.id}`
+
+        const customBlock: CustomBlock = {
+          id: nextCustomBlockId++,
+          name: blockName,
+          colors: { top: [0.5, 0.5, 0.5], bottom: [0.4, 0.4, 0.4], side: [0.45, 0.45, 0.45] },
+          texture: textureImg,
+          atlas: {
+            rows: texture.atlas.rows || 4,
+            cols: texture.atlas.cols || 3,
+            tileSize: texture.atlas.tile_size || 64,
+            column: 0,
+            sequence: texture.sequence
+          },
+          textureId: texture.id // Store original texture ID for deletion
+        }
+
+        // Load face bitmaps if available
+        if (texture.sequence && requestFaceBitmaps) {
+          try {
+            const bitmaps = await requestFaceBitmaps(texture.sequence)
+            customBlock.faceBitmaps = bitmaps
+            console.log(`Loaded face tiles for existing texture: ${blockName}`)
+          } catch (err) {
+            console.warn(`Failed to load face tiles for ${blockName}:`, err)
+          }
+        }
+
+        customBlocks.push(customBlock)
+        renderBlockGrid()
+        console.log(`Added existing texture as block: ${blockName}`)
+      }
+
+      textureImg.onerror = () => {
+        console.error(`Failed to load existing texture ${texture.id}`)
+      }
+
+      // Load the texture image
+      textureImg.src = `http://localhost:8000/api/textures/${texture.id}`
+    }
+
+  } catch (err) {
+    console.error('Error loading existing textures:', err)
+  }
+}
+
+// Load existing textures after a short delay to ensure server is ready
+setTimeout(loadExistingTextures, 1000)
 
 // Create main app container
 const root = document.getElementById('app') as HTMLDivElement
