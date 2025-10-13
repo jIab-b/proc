@@ -41,9 +41,9 @@ const faceLayerIndex: Record<BlockFaceKey, number> = blockFaceOrder.reduce((acc,
   return acc
 }, {} as Record<BlockFaceKey, number>)
 const faceTileCoordinates: Record<BlockFaceKey, [number, number]> = {
-  top: [1, 0],
+  top: [1, 1],
   bottom: [1, 3],
-  north: [1, 1],
+  north: [1, 0],
   south: [1, 2],
   east: [2, 1],
   west: [0, 1]

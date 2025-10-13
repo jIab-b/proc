@@ -76,9 +76,9 @@ ATLAS_WIDTH = ATLAS_COLS * ATLAS_TILE  # 192px
 ATLAS_HEIGHT = ATLAS_ROWS * ATLAS_TILE  # 256px
 
 FACE_TILE_COORDINATES = {
-    "top": (1, 0),
+    "top": (1, 1),
     "bottom": (1, 3),
-    "north": (1, 1),
+    "north": (1, 0),
     "south": (1, 2),
     "east": (2, 1),
     "west": (0, 1),
@@ -224,12 +224,7 @@ def save_texture(
     """Persist generated texture, update metadata, and return entry."""
     texture_id = metadata.get("next_id", 1)
 
-    filename = f"texture_{texture_id}.png"
-    filepath = TEXTURES_DIR / filename
-
-    with open(filepath, "wb") as f:
-        f.write(image_data)
-
+    # Only save individual face tiles, not the redundant atlas file
     with Image.open(BytesIO(image_data)) as atlas_img:
         atlas_rgba = atlas_img.convert("RGBA")
     face_tiles = slice_face_tiles(atlas_rgba, sequence)
@@ -237,7 +232,7 @@ def save_texture(
 
     texture_entry = {
         "id": texture_id,
-        "filename": filename,
+        "filename": "",  # No longer saving atlas file
         "prompt": prompt,
         "full_prompt": full_prompt,
         "created_at": datetime.now().isoformat(),
