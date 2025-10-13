@@ -42,12 +42,13 @@ app = FastAPI(title="WebGPU Minecraft Editor API")
 # Enable CORS for Vite dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=[
         "Content-Length",
+        "Content-Type",
         "X-Texture-ID",
         "X-Texture-Prompt",
         "X-Atlas-Rows",
@@ -93,7 +94,47 @@ if not METADATA_FILE.exists():
     with open(METADATA_FILE, "w") as f:
         json.dump({"textures": [], "next_id": 1, "next_sequence": 1}, f, indent=2)
 
-app.mount("/textures", StaticFiles(directory=str(TEXTURES_DIR)), name="texture-files")
+# Custom static file handler with CORS headers for texture tiles
+@app.options("/textures/{file_path:path}")
+async def options_texture_file(file_path: str):
+    """Handle CORS preflight for texture files"""
+    return Response(
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400"
+        }
+    )
+
+@app.get("/textures/{file_path:path}")
+async def get_texture_file(file_path: str):
+    """Serve texture files with proper CORS headers"""
+    file_path = file_path.lstrip('/')
+    full_path = TEXTURES_DIR / file_path
+
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="Texture file not found")
+
+    if not full_path.is_file():
+        raise HTTPException(status_code=404, detail="Not a file")
+
+    # Check if it's a PNG file
+    if full_path.suffix.lower() != '.png':
+        raise HTTPException(status_code=400, detail="Only PNG files are supported")
+
+    return FileResponse(
+        full_path,
+        media_type="image/png",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
 
 
 def load_metadata():
@@ -185,21 +226,48 @@ def generate_checkerboard(rows: int = ATLAS_ROWS, cols: int = ATLAS_COLS, tile: 
 
 
 def slice_face_tiles(atlas_image: Image.Image, sequence: int) -> dict:
-    """Extract configured face tiles from the atlas into individual files."""
+    """Extract configured face tiles from the atlas into individual files with precise 64x64 pixel boundaries."""
     sequence_dir = TEXTURES_DIR / str(sequence)
     sequence_dir.mkdir(parents=True, exist_ok=True)
 
     face_tiles: dict[str, dict] = {}
+
+    # Verify atlas dimensions
+    if atlas_image.width != ATLAS_WIDTH or atlas_image.height != ATLAS_HEIGHT:
+        print(f"[API] Warning: Atlas dimensions {atlas_image.width}x{atlas_image.height} != expected {ATLAS_WIDTH}x{ATLAS_HEIGHT}")
+
+    print(f"[API] Extracting tiles with precise {ATLAS_TILE}x{ATLAS_TILE} pixel boundaries")
+
     for layer, face in enumerate(FACE_TILE_ORDER):
         col, row = FACE_TILE_COORDINATES[face]
+
+        # Calculate exact pixel coordinates
         left = col * ATLAS_TILE
         upper = row * ATLAS_TILE
         right = left + ATLAS_TILE
         lower = upper + ATLAS_TILE
+
+        # Ensure coordinates are within image bounds
+        if right > atlas_image.width or lower > atlas_image.height:
+            print(f"[API] Warning: Tile coordinates ({left},{upper},{right},{lower}) exceed atlas bounds")
+            continue
+
+        print(f"[API] Extracting {face} tile: col={col}, row={row}, pixels=({left},{upper} to {right-1},{lower-1})")
+
+        # Extract tile with exact 64x64 pixel boundaries
         tile = atlas_image.crop((left, upper, right, lower))
+
+        # Verify tile dimensions
+        if tile.width != ATLAS_TILE or tile.height != ATLAS_TILE:
+            print(f"[API] Error: Extracted tile size {tile.width}x{tile.height} != {ATLAS_TILE}x{ATLAS_TILE}")
+            continue
+
         filename = f"{col}_{row}.png"
         filepath = sequence_dir / filename
-        tile.save(filepath)
+
+        # Save as PNG without compression artifacts
+        tile.save(filepath, "PNG", optimize=False)
+
         face_tiles[face] = {
             "col": col,
             "row": row,
@@ -207,6 +275,8 @@ def slice_face_tiles(atlas_image: Image.Image, sequence: int) -> dict:
             "path": str(filepath.relative_to(TEXTURES_DIR)),
             "layer": layer
         }
+
+        print(f"[API] Saved {face} tile to {filepath}")
 
     return face_tiles
 
@@ -271,6 +341,18 @@ async def list_textures():
     return metadata
 
 
+@app.options("/api/textures/{texture_id}")
+async def options_get_texture(texture_id: int):
+    """Handle CORS preflight for texture retrieval"""
+    return Response(
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400"
+        }
+    )
+
 @app.get("/api/textures/{texture_id}")
 async def get_texture(texture_id: int):
     """Get a specific texture by ID"""
@@ -280,11 +362,57 @@ async def get_texture(texture_id: int):
     if not texture:
         raise HTTPException(status_code=404, detail="Texture not found")
 
-    filepath = TEXTURES_DIR / texture["filename"]
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="Texture file not found")
+    # Try to serve the download file (the generated atlas)
+    if "download_file" in texture and texture["download_file"]:
+        filepath = DOWNLOAD_DIR / texture["download_file"]
+        if filepath.exists():
+            return FileResponse(
+                filepath,
+                media_type="image/png",
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, OPTIONS",
+                    "Access-Control-Allow-Headers": "*",
+                    "Cache-Control": "no-cache, no-store, must-revalidate"
+                }
+            )
 
-    return FileResponse(filepath, media_type="image/png")
+    # Fallback: if no download file, try to reconstruct from individual tiles
+    if "sequence" in texture and texture["sequence"]:
+        try:
+            sequence_dir = TEXTURES_DIR / str(texture["sequence"])
+            if sequence_dir.exists():
+                # Create a new atlas from individual tiles
+                atlas_image = Image.new("RGBA", (ATLAS_WIDTH, ATLAS_HEIGHT), color=(0, 0, 0, 0))
+
+                for face, tile_info in texture["atlas"]["tiles"].items():
+                    tile_path = sequence_dir / tile_info["filename"]
+                    if tile_path.exists():
+                        tile_img = Image.open(tile_path)
+                        col, row = tile_info["col"], tile_info["row"]
+                        atlas_image.paste(tile_img, (col * ATLAS_TILE, row * ATLAS_TILE))
+                        tile_img.close()
+
+                # Save to bytes and return
+                img_bytes = BytesIO()
+                atlas_image.save(img_bytes, format="PNG")
+                atlas_image.close()
+                img_bytes.seek(0)
+
+                return Response(
+                    content=img_bytes.getvalue(),
+                    media_type="image/png",
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "GET, OPTIONS",
+                        "Access-Control-Allow-Headers": "*",
+                        "Cache-Control": "no-cache, no-store, must-revalidate"
+                    }
+                )
+        except Exception as e:
+            print(f"[API] Error reconstructing atlas for texture {texture_id}: {e}")
+
+    raise HTTPException(status_code=404, detail="Texture file not found")
 
 
 @app.delete("/api/textures/{texture_id}")
@@ -335,6 +463,18 @@ async def delete_texture(texture_id: int):
         raise HTTPException(status_code=500, detail=f"Failed to delete texture: {str(e)}")
 
 
+@app.options("/api/generate-texture")
+async def options_generate_texture():
+    """Handle CORS preflight for texture generation"""
+    return Response(
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400"
+        }
+    )
+
 @app.post("/api/generate-texture")
 async def generate_texture(request: TexturePrompt):
     """
@@ -356,10 +496,13 @@ async def generate_texture(request: TexturePrompt):
 
     # Build structured prompt for grid-based atlas generation
     full_prompt = (
-        "Fill each tile of this 4-row by 3-column 64x64 checkerboard texture atlas with "
-        "consistent Minecraft-style block faces. Row 0 holds top faces, rows 1-2 hold side faces, "
-        "and row 3 holds bottom faces. Focus on clean pixel art details, aligned edges, and blocks "
-        f"that match this description: {request.prompt}"
+        "Create a precise 4-row by 3-column Minecraft texture atlas exactly 192x256 pixels. "
+        "Each tile must be exactly 64x64 pixels with pixel-perfect boundaries. "
+        "Tile coordinates: (0,0) to (63,63) = top-left, (64,0) to (127,63) = top-middle, (128,0) to (191,63) = top-right, "
+        "incrementing by exactly 64 pixels horizontally and vertically. "
+        "Row 0 (y:0-63): top faces. Row 1 (y:64-127): side faces. Row 2 (y:128-191): secondary side faces. Row 3 (y:192-255): bottom faces. "
+        "Ensure perfect 64x64 pixel alignment for each tile. Focus on clean pixel art with sharp edges. "
+        f"Style: blocks that match this description: {request.prompt}"
     )
 
     print(f"[API] Generating texture atlas: {full_prompt}")
@@ -426,7 +569,12 @@ async def generate_texture(request: TexturePrompt):
             media_type="image/png",
             headers={
                 "Content-Length": str(len(image_data)),
-                "Cache-Control": "no-cache",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
                 "X-Texture-ID": str(texture_entry["id"]),
                 "X-Texture-Prompt": request.prompt,
                 "X-Atlas-Rows": str(ATLAS_ROWS),

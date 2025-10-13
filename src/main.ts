@@ -31,6 +31,7 @@ interface CustomBlock {
   atlas?: TextureAtlasInfo
   faceBitmaps?: Partial<Record<BlockFaceKey, ImageBitmap>>
   textureId?: number // Store original server texture ID for deletion
+  textureLayer?: number // GPU texture layer index for this custom block
 }
 
 type FaceBitmapMap = Partial<Record<BlockFaceKey, ImageBitmap>>
@@ -50,7 +51,11 @@ const faceTileCoordinates: Record<BlockFaceKey, [number, number]> = {
 }
 
 let requestFaceBitmaps: ((sequence: number) => Promise<Record<BlockFaceKey, ImageBitmap>>) | null = null
-let uploadFaceBitmapsToGPU: ((bitmaps: Record<BlockFaceKey, ImageBitmap>) => void) | null = null
+let uploadFaceBitmapsToGPU: ((bitmaps: Record<BlockFaceKey, ImageBitmap>, customBlock: CustomBlock) => void) | null = null
+
+// Custom texture management
+const customTextureLayers = new Map<number, Record<BlockFaceKey, ImageBitmap>>() // blockId -> face bitmaps
+let nextTextureLayer = 0 // Next available GPU texture layer for custom blocks
 
 // Available block types (excluding Air)
 const availableBlocks = [
@@ -674,7 +679,7 @@ genButton.onclick = async () => {
             }
             targetBlock.faceBitmaps = bitmaps
             if (uploadFaceBitmapsToGPU) {
-              uploadFaceBitmapsToGPU(bitmaps)
+              uploadFaceBitmapsToGPU(bitmaps, targetBlock)
               console.log(`Loaded face tile set for sequence ${sequence}`)
             } else {
               console.warn('GPU upload hook missing; custom block will use palette colors')
@@ -759,15 +764,24 @@ async function loadExistingTextures() {
           textureId: texture.id // Store original texture ID for deletion
         }
 
-        // Load face bitmaps if available
-        if (texture.sequence && requestFaceBitmaps) {
+        // Load face bitmaps if available (with limit to prevent memory issues)
+        const MAX_CUSTOM_BLOCKS = 8
+        if (texture.sequence && requestFaceBitmaps && nextTextureLayer < MAX_CUSTOM_BLOCKS) {
           try {
             const bitmaps = await requestFaceBitmaps(texture.sequence)
             customBlock.faceBitmaps = bitmaps
-            console.log(`Loaded face tiles for existing texture: ${blockName}`)
+            // Assign texture layer for existing texture
+            customBlock.textureLayer = nextTextureLayer++
+            customTextureLayers.set(customBlock.id, bitmaps)
+            if (uploadFaceBitmapsToGPU) {
+              uploadFaceBitmapsToGPU(bitmaps, customBlock)
+              console.log(`Loaded face tiles for existing texture: ${blockName}`)
+            }
           } catch (err) {
             console.warn(`Failed to load face tiles for ${blockName}:`, err)
           }
+        } else if (nextTextureLayer >= MAX_CUSTOM_BLOCKS) {
+          console.warn(`Maximum custom blocks (${MAX_CUSTOM_BLOCKS}) reached. Skipping texture: ${blockName}`)
         }
 
         customBlocks.push(customBlock)
@@ -779,7 +793,8 @@ async function loadExistingTextures() {
         console.error(`Failed to load existing texture ${texture.id}`)
       }
 
-      // Load the texture image
+      // Load the texture image with proper CORS handling
+      textureImg.crossOrigin = "anonymous"
       textureImg.src = `http://localhost:8000/api/textures/${texture.id}`
     }
 
@@ -789,7 +804,13 @@ async function loadExistingTextures() {
 }
 
 // Load existing textures after a short delay to ensure server is ready
-setTimeout(loadExistingTextures, 1000)
+setTimeout(() => {
+  loadExistingTextures().catch(err => {
+    console.error('Failed to load existing textures:', err)
+    // Retry after 2 seconds
+    setTimeout(loadExistingTextures, 2000)
+  })
+}, 1000)
 
 // Create main app container
 const root = document.getElementById('app') as HTMLDivElement
@@ -1007,13 +1028,29 @@ async function init() {
     const entries = await Promise.all(blockFaceOrder.map(async (face) => {
       const [col, row] = faceTileCoordinates[face]
       const url = `${tileBaseUrl}/${sequence}/${col}_${row}.png`
-      const response = await fetch(url)
-      if (!response.ok) {
-        throw new Error(`Failed to load face tile ${face} (${col}_${row})`)
+      try {
+        const response = await fetch(url, {
+          mode: 'cors',
+          credentials: 'omit'
+        })
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error(`HTTP ${response.status} for ${url}: ${errorText}`)
+          throw new Error(`Failed to load face tile ${face} (${col}_${row}) - HTTP ${response.status}`)
+        }
+        const blob = await response.blob()
+        if (!blob.type.startsWith('image/')) {
+          throw new Error(`Invalid response type for ${face}: ${blob.type}`)
+        }
+        const bitmap = await createImageBitmap(blob, {
+          premultiplyAlpha: 'none',
+          colorSpaceConversion: 'none'
+        })
+        return [face, bitmap] as const
+      } catch (err) {
+        console.error(`Failed to fetch ${url}:`, err)
+        throw err
       }
-      const blob = await response.blob()
-      const bitmap = await createImageBitmap(blob)
-      return [face, bitmap] as const
     }))
     const result: Record<BlockFaceKey, ImageBitmap> = {} as Record<BlockFaceKey, ImageBitmap>
     for (const [face, bitmap] of entries) {
@@ -1022,35 +1059,70 @@ async function init() {
     return result
   }
 
-  function applyFaceBitmapsToGPU(bitmaps: Record<BlockFaceKey, ImageBitmap>) {
+  function applyFaceBitmapsToGPU(bitmaps: Record<BlockFaceKey, ImageBitmap>, customBlock: CustomBlock) {
     const sampleFace = blockFaceOrder.find(face => Boolean(bitmaps[face]))
     if (!sampleFace) return
     const sampleBitmap = bitmaps[sampleFace]!
     const size = sampleBitmap.width
-    if (!tileArrayTexture || tileTextureSize !== size) {
+
+    // Limit custom blocks to prevent memory issues
+    const MAX_CUSTOM_BLOCKS = 8
+    const currentCustomLayers = Math.min(customBlocks.length, MAX_CUSTOM_BLOCKS) * blockFaceOrder.length
+    const totalLayers = tileLayerCount + currentCustomLayers
+
+    if (!tileArrayTexture || tileTextureSize !== size || tileArrayTexture.depthOrArrayLayers !== totalLayers) {
       ;(tileArrayTexture as any)?.destroy?.()
       tileArrayTexture = device.createTexture({
-        size: { width: size, height: size, depthOrArrayLayers: tileLayerCount },
+        size: { width: size, height: size, depthOrArrayLayers: totalLayers },
         format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
       })
-      tileArrayView = tileArrayTexture.createView({ dimension: '2d-array', baseArrayLayer: 0, arrayLayerCount: tileLayerCount })
+      tileArrayView = tileArrayTexture.createView({ dimension: '2d-array', baseArrayLayer: 0, arrayLayerCount: totalLayers })
       tileTextureSize = size
       refreshRenderBindGroup()
     }
 
-    blockFaceOrder.forEach((face, layer) => {
+    // Assign texture layer for this custom block (with limit)
+    if (customBlock.textureLayer === undefined) {
+      if (nextTextureLayer >= MAX_CUSTOM_BLOCKS) {
+        console.warn(`Maximum custom blocks (${MAX_CUSTOM_BLOCKS}) reached. Cannot add more custom textures.`)
+        return
+      }
+      customBlock.textureLayer = nextTextureLayer++
+    }
+
+    const baseLayer = tileLayerCount + (customBlock.textureLayer * blockFaceOrder.length)
+
+    blockFaceOrder.forEach((face, index) => {
       const bitmap = bitmaps[face]
       if (!bitmap) return
       device.queue.copyExternalImageToTexture(
         { source: bitmap },
-        { texture: tileArrayTexture, origin: { x: 0, y: 0, z: layer } },
+        { texture: tileArrayTexture, origin: { x: 0, y: 0, z: baseLayer + index } },
         { width: bitmap.width, height: bitmap.height, depthOrArrayLayers: 1 }
       )
     })
 
-    setBlockTextureIndices(BlockType.Plank, faceLayerIndex)
+    // Store bitmaps for this custom block
+    customTextureLayers.set(customBlock.id, bitmaps)
+
+    // Update texture indices for all custom blocks
+    updateAllCustomTextureIndices()
     meshDirty = true
+  }
+
+  function updateAllCustomTextureIndices() {
+    customBlocks.forEach(block => {
+      if (block.textureLayer !== undefined) {
+        const baseLayer = tileLayerCount + (block.textureLayer * blockFaceOrder.length)
+        const textureIndices: Record<BlockFaceKey, number> = {}
+        blockFaceOrder.forEach((face, index) => {
+          textureIndices[face] = baseLayer + index
+        })
+        // For now, we'll use BlockType.Plank as placeholder but with correct texture layers
+        setBlockTextureIndices(BlockType.Plank, textureIndices)
+      }
+    })
   }
 
   requestFaceBitmaps = fetchFaceBitmaps
@@ -1206,13 +1278,23 @@ async function init() {
       const target = hit.previous
       if (isInsideChunk(target) && chunk.getBlock(target[0], target[1], target[2]) === BlockType.Air) {
         // Place either default block or custom block
-        if (selectedCustomBlock) {
-          // For custom blocks, use Plank as placeholder in chunk data
-          // In a full implementation, you'd need a custom block ID system
+        if (selectedCustomBlock && selectedCustomBlock.textureLayer !== undefined) {
+          // Place custom block - use Plank as placeholder but set custom texture indices
           chunk.setBlock(target[0], target[1], target[2], BlockType.Plank)
-          console.log(`Placed custom block: ${selectedCustomBlock.name}`)
+
+          // Set custom texture indices for this specific block
+          const baseLayer = tileLayerCount + (selectedCustomBlock.textureLayer * blockFaceOrder.length)
+          const textureIndices: Record<BlockFaceKey, number> = {}
+          blockFaceOrder.forEach((face, index) => {
+            textureIndices[face] = baseLayer + index
+          })
+          setBlockTextureIndices(BlockType.Plank, textureIndices)
+
+          console.log(`Placed custom block: ${selectedCustomBlock.name} with texture layer ${selectedCustomBlock.textureLayer}`)
         } else {
           chunk.setBlock(target[0], target[1], target[2], selectedBlockType)
+          // Reset to default texture indices for non-custom blocks
+          setBlockTextureIndices(selectedBlockType, null)
         }
         meshDirty = true
       }
