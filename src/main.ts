@@ -48,6 +48,9 @@ const faceTileCoordinates: Record<BlockFaceKey, [number, number]> = {
   west: [0, 1]
 }
 
+let requestFaceBitmaps: ((sequence: number) => Promise<Record<BlockFaceKey, ImageBitmap>>) | null = null
+let uploadFaceBitmapsToGPU: ((bitmaps: Record<BlockFaceKey, ImageBitmap>) => void) | null = null
+
 // Available block types (excluding Air)
 const availableBlocks = [
   { type: BlockType.Grass, name: 'Grass' },
@@ -547,14 +550,14 @@ genButton.onclick = async () => {
     const atlasRows = Number.parseInt(response.headers.get('X-Atlas-Rows') ?? '4', 10)
     const atlasCols = Number.parseInt(response.headers.get('X-Atlas-Cols') ?? '3', 10)
     const atlasTile = Number.parseInt(response.headers.get('X-Atlas-Tile') ?? '64', 10)
-    const atlasSequence = Number.parseInt(response.headers.get('X-Atlas-Sequence') ?? '0', 10)
+    const atlasSequence = Number.parseInt(response.headers.get('X-Atlas-Sequence') ?? '-1', 10)
 
     const atlasInfo: TextureAtlasInfo = {
       rows: Number.isFinite(atlasRows) && atlasRows > 0 ? atlasRows : 4,
       cols: Number.isFinite(atlasCols) && atlasCols > 0 ? atlasCols : 3,
       tileSize: Number.isFinite(atlasTile) && atlasTile > 0 ? atlasTile : 64,
       column: 0,
-      sequence: Number.isFinite(atlasSequence) ? atlasSequence : undefined
+      sequence: Number.isFinite(atlasSequence) && atlasSequence > 0 ? atlasSequence : undefined
     }
 
     console.log(`Texture saved with ID: ${textureId}, prompt: "${texturePrompt}"`)
@@ -592,14 +595,22 @@ genButton.onclick = async () => {
       const sequence = atlasConfig.sequence
       if (typeof sequence === 'number' && Number.isFinite(sequence) && sequence > 0) {
         try {
-          const bitmaps = await fetchFaceBitmaps(sequence)
-          const previous = targetBlock.faceBitmaps
-          if (previous) {
-            blockFaceOrder.forEach(face => previous[face]?.close?.())
+          if (!requestFaceBitmaps) {
+            console.warn('GPU texture loader not ready yet')
+          } else {
+            const bitmaps = await requestFaceBitmaps(sequence)
+            const previous = targetBlock.faceBitmaps
+            if (previous) {
+              blockFaceOrder.forEach(face => previous[face]?.close?.())
+            }
+            targetBlock.faceBitmaps = bitmaps
+            if (uploadFaceBitmapsToGPU) {
+              uploadFaceBitmapsToGPU(bitmaps)
+              console.log(`Loaded face tile set for sequence ${sequence}`)
+            } else {
+              console.warn('GPU upload hook missing; custom block will use palette colors')
+            }
           }
-          targetBlock.faceBitmaps = bitmaps
-          applyFaceBitmapsToGPU(bitmaps)
-          console.log(`Loaded face tile set for sequence ${sequence}`)
         } catch (bitmapErr) {
           console.error('Failed to load per-face tiles:', bitmapErr)
         }
@@ -899,6 +910,9 @@ async function init() {
     setBlockTextureIndices(BlockType.Plank, faceLayerIndex)
     meshDirty = true
   }
+
+  requestFaceBitmaps = fetchFaceBitmaps
+  uploadFaceBitmapsToGPU = applyFaceBitmapsToGPU
 
   const pressedKeys = new Set<string>()
   window.addEventListener('keydown', (ev) => { if (!ev.repeat) pressedKeys.add(ev.code) })

@@ -46,6 +46,15 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[
+        "Content-Length",
+        "X-Texture-ID",
+        "X-Texture-Prompt",
+        "X-Atlas-Rows",
+        "X-Atlas-Cols",
+        "X-Atlas-Tile",
+        "X-Atlas-Sequence"
+    ],
 )
 
 
