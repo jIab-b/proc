@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { selectedBlockType, selectedCustomBlock, customBlocks, nextCustomBlockId, selectedFace } from '../stores'
+  import { selectedBlockType, selectedCustomBlock, customBlocks, selectedFace } from '../stores'
   import { availableBlocks, blockPalette, drawIsometricBlock, drawIsometricBlockWithTexture, BLOCKS_ENDPOINT, blockFaceOrder } from '../blockUtils'
   import { BlockType } from '../chunks'
   import type { CustomBlock } from '../stores'
@@ -63,15 +63,15 @@
     const blockName = prompt('Enter block name:')
     if (!blockName || !blockName.trim()) return
 
+    const nextId = ($customBlocks.reduce((max, block) => Math.max(max, block.id), 999) + 1)
     const newBlock: CustomBlock = {
-      id: $nextCustomBlockId,
+      id: nextId,
       name: blockName.trim(),
       colors: { top: [0.5, 0.5, 0.5], bottom: [0.4, 0.4, 0.4], side: [0.45, 0.45, 0.45] },
       faceBitmaps: {},
       faceTiles: {}
     }
 
-    nextCustomBlockId.update(n => n + 1)
     customBlocks.update(blocks => [...blocks, newBlock])
     console.log('Created custom block:', blockName)
   }

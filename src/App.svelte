@@ -2,7 +2,7 @@
   import Sidebar from './lib/Sidebar.svelte'
   import WebGPUCanvas from './lib/WebGPUCanvas.svelte'
   import { onMount } from 'svelte'
-  import { customBlocks, gpuHooks, nextTextureLayer } from './stores'
+  import { customBlocks, gpuHooks } from './stores'
   import { TEXTURES_ENDPOINT, blockFaceOrder, TILE_BASE_URL, fetchTileBitmap } from './blockUtils'
   import type { CustomBlock, FaceTileInfo } from './stores'
   import type { BlockFaceKey } from './chunks'
@@ -87,7 +87,6 @@
         loadedCount++
       }
 
-      nextTextureLayer.set(loadedCount)
     } catch (err) {
       console.error('Error loading existing textures:', err)
     }

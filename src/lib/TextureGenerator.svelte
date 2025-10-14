@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { texturePrompt, selectedFace, selectedCustomBlock, customBlocks, nextCustomBlockId, gpuHooks } from '../stores'
+  import { texturePrompt, selectedFace, selectedCustomBlock, customBlocks, gpuHooks } from '../stores'
   import { GENERATE_TILE_ENDPOINT, blockFaceOrder } from '../blockUtils'
   import type { CustomBlock, FaceTileInfo } from '../stores'
   import type { BlockFaceKey } from '../chunks'
@@ -57,15 +57,15 @@
 
       let targetBlock = $selectedCustomBlock
       if (!targetBlock) {
+        const nextId = ($customBlocks.reduce((max, block) => Math.max(max, block.id), 999) + 1)
         const newBlock: CustomBlock = {
-          id: $nextCustomBlockId,
+          id: nextId,
           name: blockData?.name || targetName,
           colors: { top: [0.5, 0.5, 0.5], bottom: [0.4, 0.4, 0.4], side: [0.45, 0.45, 0.45] },
           faceBitmaps: {},
           faceTiles: {},
           remoteId: blockData?.id
         }
-        nextCustomBlockId.update(n => n + 1)
         customBlocks.update(blocks => [...blocks, newBlock])
         selectedCustomBlock.set(newBlock)
         targetBlock = newBlock

@@ -2,14 +2,6 @@ import { writable } from 'svelte/store'
 import type { BlockFaceKey } from './chunks'
 import { BlockType } from './chunks'
 
-export interface TextureAtlasInfo {
-  rows: number
-  cols: number
-  tileSize: number
-  column: number
-  sequence?: number
-}
-
 export interface FaceTileInfo {
   sequence: number
   path: string
@@ -48,10 +40,3 @@ export const gpuHooks = writable<GPUHooks>({
   requestFaceBitmaps: null,
   uploadFaceBitmapsToGPU: null
 })
-
-// ID counters
-export const nextCustomBlockId = writable<number>(1000)
-export const nextTextureLayer = writable<number>(0)
-
-// Custom texture layers map
-export const customTextureLayers = writable<Map<number, Record<BlockFaceKey, ImageBitmap>>>(new Map())
