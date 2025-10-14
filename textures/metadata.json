@@ -503,8 +503,176 @@
         },
         "directory": "6"
       }
+    },
+    {
+      "id": 7,
+      "filename": "",
+      "prompt": "crashing water waves",
+      "full_prompt": "Create a precise 4-row by 3-column Minecraft texture atlas exactly 192x256 pixels. Each tile must be exactly 64x64 pixels with pixel-perfect boundaries. Tile coordinates: (0,0) to (63,63) = top-left, (64,0) to (127,63) = top-middle, (128,0) to (191,63) = top-right, incrementing by exactly 64 pixels horizontally and vertically. Row 0 (y:0-63): top faces. Row 1 (y:64-127): side faces. Row 2 (y:128-191): secondary side faces. Row 3 (y:192-255): bottom faces. Ensure perfect 64x64 pixel alignment for each tile. Focus on clean pixel art with sharp edges. Style: blocks that match this description: crashing water waves",
+      "created_at": "2025-10-14T07:03:40.674357",
+      "size_bytes": 239803,
+      "sequence": 7,
+      "upload_file": "00007_upload.png",
+      "download_file": "00007_download.png",
+      "atlas": {
+        "rows": 4,
+        "cols": 3,
+        "tile_size": 64,
+        "width": 192,
+        "height": 256,
+        "uv_map": {
+          "column_0": {
+            "top": {
+              "row": 0,
+              "col": 0,
+              "u0": 0.0,
+              "v0": 0.0,
+              "u1": 0.3333333333333333,
+              "v1": 0.25
+            },
+            "side": {
+              "row": 1,
+              "col": 0,
+              "u0": 0.0,
+              "v0": 0.25,
+              "u1": 0.3333333333333333,
+              "v1": 0.5
+            },
+            "side_secondary": {
+              "row": 2,
+              "col": 0,
+              "u0": 0.0,
+              "v0": 0.5,
+              "u1": 0.3333333333333333,
+              "v1": 0.75
+            },
+            "bottom": {
+              "row": 3,
+              "col": 0,
+              "u0": 0.0,
+              "v0": 0.75,
+              "u1": 0.3333333333333333,
+              "v1": 1.0
+            }
+          },
+          "column_1": {
+            "top": {
+              "row": 0,
+              "col": 1,
+              "u0": 0.3333333333333333,
+              "v0": 0.0,
+              "u1": 0.6666666666666666,
+              "v1": 0.25
+            },
+            "side": {
+              "row": 1,
+              "col": 1,
+              "u0": 0.3333333333333333,
+              "v0": 0.25,
+              "u1": 0.6666666666666666,
+              "v1": 0.5
+            },
+            "side_secondary": {
+              "row": 2,
+              "col": 1,
+              "u0": 0.3333333333333333,
+              "v0": 0.5,
+              "u1": 0.6666666666666666,
+              "v1": 0.75
+            },
+            "bottom": {
+              "row": 3,
+              "col": 1,
+              "u0": 0.3333333333333333,
+              "v0": 0.75,
+              "u1": 0.6666666666666666,
+              "v1": 1.0
+            }
+          },
+          "column_2": {
+            "top": {
+              "row": 0,
+              "col": 2,
+              "u0": 0.6666666666666666,
+              "v0": 0.0,
+              "u1": 1.0,
+              "v1": 0.25
+            },
+            "side": {
+              "row": 1,
+              "col": 2,
+              "u0": 0.6666666666666666,
+              "v0": 0.25,
+              "u1": 1.0,
+              "v1": 0.5
+            },
+            "side_secondary": {
+              "row": 2,
+              "col": 2,
+              "u0": 0.6666666666666666,
+              "v0": 0.5,
+              "u1": 1.0,
+              "v1": 0.75
+            },
+            "bottom": {
+              "row": 3,
+              "col": 2,
+              "u0": 0.6666666666666666,
+              "v0": 0.75,
+              "u1": 1.0,
+              "v1": 1.0
+            }
+          }
+        },
+        "sequence": 7,
+        "tiles": {
+          "top": {
+            "col": 1,
+            "row": 1,
+            "filename": "1_1.png",
+            "path": "7/1_1.png",
+            "layer": 0
+          },
+          "bottom": {
+            "col": 1,
+            "row": 3,
+            "filename": "1_3.png",
+            "path": "7/1_3.png",
+            "layer": 1
+          },
+          "north": {
+            "col": 1,
+            "row": 0,
+            "filename": "1_0.png",
+            "path": "7/1_0.png",
+            "layer": 2
+          },
+          "south": {
+            "col": 1,
+            "row": 2,
+            "filename": "1_2.png",
+            "path": "7/1_2.png",
+            "layer": 3
+          },
+          "east": {
+            "col": 2,
+            "row": 1,
+            "filename": "2_1.png",
+            "path": "7/2_1.png",
+            "layer": 4
+          },
+          "west": {
+            "col": 0,
+            "row": 1,
+            "filename": "0_1.png",
+            "path": "7/0_1.png",
+            "layer": 5
+          }
+        },
+        "directory": "7"
+      }
     }
   ],
-  "next_id": 7,
-  "next_sequence": 7
+  "next_id": 8,
+  "next_sequence": 8
 }

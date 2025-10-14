@@ -9,12 +9,16 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
     "noEmit": true,
-    
+
     "baseUrl": ".",
     "paths": {
       "@gpu/*": ["src/gpu/*"],
       "@pipelines/*": ["src/pipelines/*"]
-    }
+    },
+
+    // Svelte support
+    "types": ["svelte"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["node_modules"]
 }

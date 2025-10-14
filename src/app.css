@@ -1,0 +1,21 @@
+/* Scrollbar Styling */
+.block-selection::-webkit-scrollbar,
+.face-viewer::-webkit-scrollbar {
+  width: 6px;
+}
+
+.block-selection::-webkit-scrollbar-track,
+.face-viewer::-webkit-scrollbar-track {
+  background: rgba(10, 15, 25, 0.5);
+}
+
+.block-selection::-webkit-scrollbar-thumb,
+.face-viewer::-webkit-scrollbar-thumb {
+  background: rgba(100, 120, 150, 0.5);
+  border-radius: 3px;
+}
+
+.block-selection::-webkit-scrollbar-thumb:hover,
+.face-viewer::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 140, 170, 0.7);
+}
