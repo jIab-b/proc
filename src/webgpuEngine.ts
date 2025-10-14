@@ -2,12 +2,32 @@
 import terrainWGSL from './pipelines/render/terrain.wgsl?raw'
 import { createPerspective, lookAt, multiplyMat4 } from './camera'
 import { ChunkManager, BlockType, type BlockFaceKey, buildChunkMesh, setBlockTextureIndices } from './chunks'
-import { blockFaceOrder, TILE_BASE_URL } from './blockUtils'
+import { API_BASE_URL, blockFaceOrder, TILE_BASE_URL } from './blockUtils'
 import type { CustomBlock, FaceTileInfo } from './stores'
 import { get } from 'svelte/store'
 import { customBlocks as customBlocksStore, gpuHooks } from './stores'
 
 type Vec3 = [number, number, number]
+
+type CameraSnapshot = {
+  position: Vec3
+  forward: Vec3
+  up: Vec3
+  right: Vec3
+  viewMatrix: Float32Array
+  projectionMatrix: Float32Array
+  viewProjectionMatrix: Float32Array
+  fovYRadians: number
+  aspect: number
+  near: number
+  far: number
+}
+
+type CapturedView = {
+  id: string
+  createdAt: string
+  snapshot: CameraSnapshot
+}
 
 function normalize(v: Vec3): Vec3 {
   const len = Math.hypot(v[0], v[1], v[2])
@@ -33,8 +53,51 @@ function alignTo(n: number, alignment: number) {
   return Math.ceil(n / alignment) * alignment
 }
 
+function cloneVec3(vec: Vec3): Vec3 {
+  return [vec[0], vec[1], vec[2]]
+}
+
+function cloneMat4(mat: Float32Array): Float32Array {
+  return new Float32Array(mat)
+}
+
+function snapshotCamera(state: CameraSnapshot): CameraSnapshot {
+  return {
+    position: cloneVec3(state.position),
+    forward: cloneVec3(state.forward),
+    up: cloneVec3(state.up),
+    right: cloneVec3(state.right),
+    viewMatrix: cloneMat4(state.viewMatrix),
+    projectionMatrix: cloneMat4(state.projectionMatrix),
+    viewProjectionMatrix: cloneMat4(state.viewProjectionMatrix),
+    fovYRadians: state.fovYRadians,
+    aspect: state.aspect,
+    near: state.near,
+    far: state.far
+  }
+}
+
+function projectToScreen(point: Vec3, viewProj: Float32Array, width: number, height: number): [number, number] | null {
+  const x = point[0]
+  const y = point[1]
+  const z = point[2]
+  const clipX = viewProj[0]! * x + viewProj[4]! * y + viewProj[8]! * z + viewProj[12]!
+  const clipY = viewProj[1]! * x + viewProj[5]! * y + viewProj[9]! * z + viewProj[13]!
+  const clipZ = viewProj[2]! * x + viewProj[6]! * y + viewProj[10]! * z + viewProj[14]!
+  const clipW = viewProj[3]! * x + viewProj[7]! * y + viewProj[11]! * z + viewProj[15]!
+  if (clipW <= 0) return null
+  const ndcX = clipX / clipW
+  const ndcY = clipY / clipW
+  const ndcZ = clipZ / clipW
+  if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1 || ndcZ < -1 || ndcZ > 1) return null
+  const screenX = (ndcX * 0.5 + 0.5) * width
+  const screenY = (-ndcY * 0.5 + 0.5) * height
+  return [screenX, screenY]
+}
+
 export interface WebGPUEngineOptions {
   canvas: HTMLCanvasElement
+  overlayCanvas?: HTMLCanvasElement | null
   onBlockSelect: (blockType: BlockType) => void
   getSelectedBlock: () => { type: BlockType; custom: CustomBlock | null }
 }
@@ -49,9 +112,12 @@ const faceTileCoordinates: Record<BlockFaceKey, [number, number]> = {
 }
 
 const MAX_CUSTOM_BLOCKS = 8
+const MAP_MODE_READ = 0x0001
 
 export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   const { canvas, getSelectedBlock } = options
+  const overlayCanvas = options.overlayCanvas ?? null
+  const overlayCtx = overlayCanvas ? overlayCanvas.getContext('2d') : null
 
   if (!('gpu' in navigator)) throw new Error('WebGPU not supported')
   const gpu = (navigator as any).gpu as any
@@ -68,6 +134,11 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   const context = canvas.getContext('webgpu') as unknown as GPUCanvasContext
   const format = gpu.getPreferredCanvasFormat()
   context.configure({ device, format, alphaMode: 'opaque' })
+
+  const capturedViews: CapturedView[] = []
+  let latestCamera: CameraSnapshot | null = null
+  let exportingDataset = false
+  let rafHandle: number | null = null
 
   let depthTexture = device.createTexture({
     size: { width: canvas.width || 1, height: canvas.height || 1, depthOrArrayLayers: 1 },
@@ -86,6 +157,11 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     context.configure({ device, format, alphaMode: 'opaque' })
     depthTexture.destroy()
     depthTexture = device.createTexture({ size: { width, height, depthOrArrayLayers: 1 }, format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT })
+    if (overlayCanvas) {
+      overlayCanvas.width = width
+      overlayCanvas.height = height
+    }
+    renderCaptureOverlay()
   }
 
   window.addEventListener('resize', resize)
@@ -266,6 +342,267 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     })
   }
 
+  function renderCaptureOverlay() {
+    if (!overlayCtx || !overlayCanvas) return
+    const width = overlayCanvas.width || canvas.width
+    const height = overlayCanvas.height || canvas.height
+    overlayCtx.clearRect(0, 0, width, height)
+    const camera = latestCamera
+    if (!camera || capturedViews.length === 0) return
+
+    overlayCtx.save()
+    overlayCtx.lineWidth = 1
+    overlayCtx.textAlign = 'left'
+    overlayCtx.textBaseline = 'middle'
+    overlayCtx.font = '12px sans-serif'
+
+    capturedViews.forEach((view, index) => {
+      const screen = projectToScreen(view.snapshot.position, camera.viewProjectionMatrix, width, height)
+      if (!screen) return
+      overlayCtx.fillStyle = 'rgba(255, 64, 64, 0.9)'
+      overlayCtx.strokeStyle = 'rgba(0, 0, 0, 0.6)'
+      overlayCtx.beginPath()
+      overlayCtx.arc(screen[0], screen[1], 4, 0, Math.PI * 2)
+      overlayCtx.fill()
+      overlayCtx.stroke()
+
+      overlayCtx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+      overlayCtx.fillText(String(index + 1), screen[0] + 6, screen[1])
+    })
+
+    overlayCtx.restore()
+  }
+
+  function captureCurrentView() {
+    if (!latestCamera) {
+      console.warn('Capture requested before camera state initialized.')
+      return
+    }
+    const snapshot = snapshotCamera(latestCamera)
+    const id = `view_${String(capturedViews.length + 1).padStart(3, '0')}`
+    capturedViews.push({
+      id,
+      createdAt: new Date().toISOString(),
+      snapshot
+    })
+    console.log(`[capture] Stored camera view ${id} at position`, snapshot.position)
+    renderCaptureOverlay()
+  }
+
+  function clearCapturedViews() {
+    if (capturedViews.length === 0) {
+      console.log('[capture] No stored views to clear.')
+      return
+    }
+    capturedViews.length = 0
+    console.log('[capture] Cleared all stored camera views.')
+    renderCaptureOverlay()
+  }
+
+  function dataUrlToBase64(dataUrl: string): string {
+    const prefix = 'data:image/png;base64,'
+    return dataUrl.startsWith(prefix) ? dataUrl.slice(prefix.length) : dataUrl
+  }
+
+  async function renderSnapshotToBase64(snapshot: CameraSnapshot, width: number, height: number): Promise<string> {
+    if (!vertexBuffer || vertexCount === 0) {
+      throw new Error('No geometry available to render for capture.')
+    }
+
+    device.queue.writeBuffer(cameraBuffer, 0, snapshot.viewProjectionMatrix)
+
+    const colorTexture = device.createTexture({
+      size: { width, height, depthOrArrayLayers: 1 },
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+    })
+    const captureDepth = device.createTexture({
+      size: { width, height, depthOrArrayLayers: 1 },
+      format: 'depth24plus',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT
+    })
+
+    const encoder = device.createCommandEncoder()
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: colorTexture.createView(),
+        clearValue: { r: 0.53, g: 0.81, b: 0.92, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store'
+      }],
+      depthStencilAttachment: {
+        view: captureDepth.createView(),
+        depthClearValue: 1,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store'
+      }
+    })
+
+    pass.setPipeline(pipeline)
+    pass.setBindGroup(0, renderBindGroup)
+    pass.setVertexBuffer(0, vertexBuffer)
+    pass.draw(vertexCount, 1, 0, 0)
+    pass.end()
+
+    device.queue.submit([encoder.finish()])
+    await device.queue.onSubmittedWorkDone()
+
+    const bytesPerPixel = 4
+    const bytesPerRow = alignTo(width * bytesPerPixel, 256)
+    const outputBuffer = device.createBuffer({
+      size: bytesPerRow * height,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    })
+
+    const copyEncoder = device.createCommandEncoder()
+    copyEncoder.copyTextureToBuffer(
+      { texture: colorTexture },
+      { buffer: outputBuffer, bytesPerRow, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: 1 }
+    )
+    device.queue.submit([copyEncoder.finish()])
+    await device.queue.onSubmittedWorkDone()
+
+    await outputBuffer.mapAsync(MAP_MODE_READ)
+    const mapped = outputBuffer.getMappedRange()
+    const source = new Uint8Array(mapped)
+    const imageBytes = new Uint8ClampedArray(width * height * bytesPerPixel)
+    for (let row = 0; row < height; row++) {
+      const srcOffset = row * bytesPerRow
+      const dstOffset = row * width * bytesPerPixel
+      imageBytes.set(source.subarray(srcOffset, srcOffset + width * bytesPerPixel), dstOffset)
+    }
+    outputBuffer.unmap()
+    outputBuffer.destroy()
+    colorTexture.destroy()
+    captureDepth.destroy()
+
+    const exportCanvas = document.createElement('canvas')
+    exportCanvas.width = width
+    exportCanvas.height = height
+    const ctx = exportCanvas.getContext('2d')
+    if (!ctx) throw new Error('Failed to create 2D context for dataset export')
+    const imageData = new ImageData(imageBytes, width, height)
+    ctx.putImageData(imageData, 0, 0)
+    const dataUrl = exportCanvas.toDataURL('image/png')
+    exportCanvas.remove()
+    return dataUrlToBase64(dataUrl)
+  }
+
+  async function exportCapturedDataset() {
+    if (exportingDataset) {
+      console.warn('Dataset export already in progress; ignoring duplicate request.')
+      return
+    }
+    if (capturedViews.length === 0) {
+      console.warn('No captured views to export.')
+      return
+    }
+    if (!latestCamera) {
+      console.warn('Camera state unavailable; cannot export dataset yet.')
+      return
+    }
+
+    exportingDataset = true
+    try {
+      if (rafHandle !== null) {
+        cancelAnimationFrame(rafHandle)
+        rafHandle = null
+      }
+
+      await device.queue.onSubmittedWorkDone()
+      if (meshDirty) {
+        rebuildMesh()
+        meshDirty = false
+      }
+
+      const originalCamera = snapshotCamera(latestCamera)
+      const width = canvas.width
+      const height = canvas.height
+      const exportedAt = new Date().toISOString()
+      const payload = {
+        formatVersion: '1.0',
+        exportedAt,
+        imageSize: { width, height },
+        viewCount: capturedViews.length,
+        views: [] as Array<{
+          id: string
+          index: number
+          capturedAt: string
+          position: Vec3
+          forward: Vec3
+          up: Vec3
+          right: Vec3
+          intrinsics: {
+            fovYDegrees: number
+            aspect: number
+            near: number
+            far: number
+          }
+          viewMatrix: number[]
+          projectionMatrix: number[]
+          viewProjectionMatrix: number[]
+          rgbBase64: string
+          depthBase64: string | null
+          normalBase64: string | null
+        }>
+      }
+
+      for (let i = 0; i < capturedViews.length; i++) {
+        const view = capturedViews[i]!
+        const rgbBase64 = await renderSnapshotToBase64(view.snapshot, width, height)
+        payload.views.push({
+          id: view.id,
+          index: i,
+          capturedAt: view.createdAt,
+          position: view.snapshot.position,
+          forward: view.snapshot.forward,
+          up: view.snapshot.up,
+          right: view.snapshot.right,
+          intrinsics: {
+            fovYDegrees: (view.snapshot.fovYRadians * 180) / Math.PI,
+            aspect: view.snapshot.aspect,
+            near: view.snapshot.near,
+            far: view.snapshot.far
+          },
+          viewMatrix: Array.from(view.snapshot.viewMatrix),
+          projectionMatrix: Array.from(view.snapshot.projectionMatrix),
+          viewProjectionMatrix: Array.from(view.snapshot.viewProjectionMatrix),
+          rgbBase64,
+          depthBase64: null,
+          normalBase64: null
+        })
+      }
+
+      device.queue.writeBuffer(cameraBuffer, 0, originalCamera.viewProjectionMatrix)
+      latestCamera = originalCamera
+
+      const response = await fetch(`${API_BASE_URL}/api/export-dataset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+
+      if (!response.ok) {
+        const detail = await response.text()
+        throw new Error(`Export failed (${response.status}): ${detail}`)
+      }
+
+      const result = await response.json().catch(() => null)
+      console.log('[capture] Dataset saved', result || 'OK')
+      capturedViews.length = 0
+      renderCaptureOverlay()
+    } catch (err) {
+      console.error('Failed to export captured dataset', err)
+    } finally {
+      exportingDataset = false
+      lastFrameTime = performance.now()
+      if (rafHandle === null) {
+        rafHandle = requestAnimationFrame(frame)
+      }
+    }
+  }
+
   // Set GPU hooks
   gpuHooks.set({
     requestFaceBitmaps: fetchFaceBitmaps,
@@ -275,14 +612,36 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   const pressedKeys = new Set<string>()
   let pointerActive = false
   let paused = true
-  window.addEventListener('keydown', (ev) => {
+  function handleKeyDown(ev: KeyboardEvent) {
     if (pointerActive && ev.code !== 'Escape') ev.preventDefault()
-    if (!ev.repeat) pressedKeys.add(ev.code)
-  })
-  window.addEventListener('keyup', (ev) => {
+    if (ev.repeat) {
+      pressedKeys.add(ev.code)
+      return
+    }
+
+    if (ev.code === 'KeyR') {
+      captureCurrentView()
+      return
+    }
+    if (ev.code === 'KeyP') {
+      clearCapturedViews()
+      return
+    }
+    if (ev.code === 'KeyG') {
+      void exportCapturedDataset()
+      return
+    }
+
+    pressedKeys.add(ev.code)
+  }
+
+  function handleKeyUp(ev: KeyboardEvent) {
     if (pointerActive && ev.code !== 'Escape') ev.preventDefault()
     pressedKeys.delete(ev.code)
-  })
+  }
+
+  window.addEventListener('keydown', handleKeyDown)
+  window.addEventListener('keyup', handleKeyUp)
   window.addEventListener('blur', () => pressedKeys.clear())
 
   const cameraPos: Vec3 = [0, chunk.size.y * worldScale * 0.55, chunk.size.z * worldScale * 0.45]
@@ -457,7 +816,10 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
 
   function updateCamera(dt: number) {
     const aspect = canvas.width / Math.max(1, canvas.height)
-    const proj = createPerspective((60 * Math.PI) / 180, aspect, 0.1, 500.0)
+    const fovYRadians = (60 * Math.PI) / 180
+    const near = 0.1
+    const far = 500.0
+    const proj = createPerspective(fovYRadians, aspect, near, far)
 
     const forward = getForwardVector()
 
@@ -487,7 +849,21 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     ]
     const view = lookAt(cameraPos, target, upVec)
     const viewProj = multiplyMat4(proj, view)
-    device.queue.writeBuffer(cameraBuffer, 0, viewProj.buffer, viewProj.byteOffset, viewProj.byteLength)
+    device.queue.writeBuffer(cameraBuffer, 0, viewProj)
+
+    latestCamera = {
+      position: cloneVec3(cameraPos),
+      forward: cloneVec3(forward),
+      up: cloneVec3(upVec),
+      right: cloneVec3(right),
+      viewMatrix: cloneMat4(view),
+      projectionMatrix: cloneMat4(proj),
+      viewProjectionMatrix: cloneMat4(viewProj),
+      fovYRadians,
+      aspect,
+      near,
+      far
+    }
   }
 
   let lastFrameTime = performance.now()
@@ -520,10 +896,11 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     }
     pass.end()
     device.queue.submit([encoder.finish()])
-    requestAnimationFrame(frame)
+    renderCaptureOverlay()
+    rafHandle = requestAnimationFrame(frame)
   }
 
-  requestAnimationFrame(frame)
+  rafHandle = requestAnimationFrame(frame)
 }
 
 function createSimpleWorldConfig(seed: number = Date.now()) {

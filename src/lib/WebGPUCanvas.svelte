@@ -5,11 +5,13 @@
   import { BlockType } from '../chunks'
 
   let canvasEl: HTMLCanvasElement
+  let overlayCanvasEl: HTMLCanvasElement
 
   onMount(async () => {
     try {
       await initWebGPUEngine({
         canvas: canvasEl,
+        overlayCanvas: overlayCanvasEl,
         onBlockSelect: (blockType) => {
           selectedBlockType.set(blockType)
         },
@@ -29,6 +31,7 @@
 <div class="canvas-container">
   <div class="canvas-shell">
     <canvas bind:this={canvasEl}></canvas>
+    <canvas class="capture-overlay" bind:this={overlayCanvasEl}></canvas>
   </div>
 
   <div class="log-ui">
@@ -49,6 +52,7 @@
   }
 
   .canvas-shell {
+    position: relative;
     width: 100%;
     height: 100%;
     max-width: 1120px;
@@ -68,6 +72,16 @@
     height: 100%;
     border-radius: 10px;
     background: #10161d;
+  }
+
+  .capture-overlay {
+    position: absolute;
+    inset: 12px;
+    width: calc(100% - 24px);
+    height: calc(100% - 24px);
+    pointer-events: none;
+    background: transparent;
+    display: block;
   }
 
   .log-ui {

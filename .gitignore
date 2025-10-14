@@ -7,3 +7,4 @@ textures/.down/
 .env
 *.pyc
 textures/
+datasets/

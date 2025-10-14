@@ -2,11 +2,12 @@
 """
 FastAPI backend server for WebGPU Minecraft Editor with fal.ai texture generation.
 """
+import base64
 import os
 import json
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
@@ -65,10 +66,49 @@ class TexturePrompt(BaseModel):
     height: Optional[int] = 512
 
 
+class ImageSize(BaseModel):
+    width: int
+    height: int
+
+
+class Intrinsics(BaseModel):
+    fovYDegrees: float
+    aspect: float
+    near: float
+    far: float
+
+
+class ViewCapture(BaseModel):
+    id: str
+    index: int
+    capturedAt: str
+    position: List[float]
+    forward: List[float]
+    up: List[float]
+    right: List[float]
+    intrinsics: Intrinsics
+    viewMatrix: List[float]
+    projectionMatrix: List[float]
+    viewProjectionMatrix: List[float]
+    rgbBase64: str
+    depthBase64: Optional[str] = None
+    normalBase64: Optional[str] = None
+
+
+class DatasetUpload(BaseModel):
+    formatVersion: str
+    exportedAt: str
+    imageSize: ImageSize
+    viewCount: int
+    views: List[ViewCapture]
+
+
 TEXTURES_DIR = Path("textures")
 METADATA_FILE = TEXTURES_DIR / "metadata.json"
 UPLOAD_DIR = TEXTURES_DIR / ".up"
 DOWNLOAD_DIR = TEXTURES_DIR / ".down"
+DATASETS_DIR = (Path.cwd() / "datasets").resolve()
+DATASET_REGISTRY_FILE = DATASETS_DIR / "registry.json"
 
 ATLAS_ROWS = 4
 ATLAS_COLS = 3
@@ -93,6 +133,11 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 if not METADATA_FILE.exists():
     with open(METADATA_FILE, "w") as f:
         json.dump({"textures": [], "next_id": 1, "next_sequence": 1}, f, indent=2)
+
+DATASETS_DIR.mkdir(exist_ok=True)
+if not DATASET_REGISTRY_FILE.exists():
+    with open(DATASET_REGISTRY_FILE, "w") as f:
+        json.dump({"next_sequence": 1, "datasets": []}, f, indent=2)
 
 # Custom static file handler with CORS headers for texture tiles
 @app.options("/textures/{file_path:path}")
@@ -147,6 +192,26 @@ def save_metadata(metadata):
     """Save texture metadata to JSON file"""
     with open(METADATA_FILE, "w") as f:
         json.dump(metadata, f, indent=2)
+
+
+def load_dataset_registry():
+    """Load dataset registry from JSON file"""
+    try:
+        with open(DATASET_REGISTRY_FILE, "r") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {"next_sequence": 1, "datasets": []}
+    if "next_sequence" not in data:
+        data["next_sequence"] = 1
+    if "datasets" not in data or not isinstance(data["datasets"], list):
+        data["datasets"] = []
+    return data
+
+
+def save_dataset_registry(registry):
+    """Persist dataset registry"""
+    with open(DATASET_REGISTRY_FILE, "w") as f:
+        json.dump(registry, f, indent=2)
 
 
 def compute_uv_rect(row: int, col: int) -> dict:
@@ -592,6 +657,90 @@ async def generate_texture(request: TexturePrompt):
             status_code=500,
             detail=f"Texture generation error: {str(e)}"
         )
+
+
+@app.post("/api/export-dataset")
+async def export_dataset(payload: DatasetUpload):
+    if not payload.views:
+        raise HTTPException(status_code=400, detail="No views supplied")
+
+    try:
+        registry = load_dataset_registry()
+        sequence = int(registry.get("next_sequence", 1))
+        dataset_dir = (DATASETS_DIR / str(sequence)).resolve()
+        while dataset_dir.exists():
+            sequence += 1
+            dataset_dir = (DATASETS_DIR / str(sequence)).resolve()
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        images_dir = dataset_dir / "images"
+        images_dir.mkdir(exist_ok=True)
+
+        metadata_views = []
+        for view in payload.views:
+            try:
+                image_bytes = base64.b64decode(view.rgbBase64)
+            except Exception as err:
+                raise HTTPException(status_code=400, detail=f"Invalid base64 for view {view.id}: {err}")
+
+            image_filename = f"{view.index:03d}_{view.id}.png"
+            image_path = images_dir / image_filename
+            with open(image_path, "wb") as img_file:
+                img_file.write(image_bytes)
+
+            metadata_views.append({
+                "id": view.id,
+                "index": view.index,
+                "capturedAt": view.capturedAt,
+                "position": view.position,
+                "forward": view.forward,
+                "up": view.up,
+                "right": view.right,
+                "intrinsics": view.intrinsics.dict(),
+                "viewMatrix": view.viewMatrix,
+                "projectionMatrix": view.projectionMatrix,
+                "viewProjectionMatrix": view.viewProjectionMatrix,
+                "rgbPath": str(image_path.relative_to(dataset_dir)),
+                "depthPath": None,
+                "normalPath": None
+            })
+
+        metadata = {
+            "formatVersion": payload.formatVersion,
+            "exportedAt": payload.exportedAt,
+            "imageSize": payload.imageSize.dict(),
+            "viewCount": payload.viewCount,
+            "views": metadata_views
+        }
+
+        metadata_path = dataset_dir / "metadata.json"
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        registry_entry = {
+            "sequence": sequence,
+            "exportedAt": payload.exportedAt,
+            "imageCount": len(metadata_views),
+            "metadata": str(metadata_path.relative_to(DATASETS_DIR)),
+            "imagesDir": str(images_dir.relative_to(DATASETS_DIR))
+        }
+        registry.setdefault("datasets", []).append(registry_entry)
+        registry["next_sequence"] = sequence + 1
+        save_dataset_registry(registry)
+
+        dataset_dir_rel = dataset_dir.relative_to(Path.cwd())
+        metadata_rel = metadata_path.relative_to(Path.cwd())
+
+        return {
+            "status": "ok",
+            "datasetSequence": sequence,
+            "datasetDir": str(dataset_dir_rel),
+            "metadataFile": str(metadata_rel),
+            "imageCount": len(metadata_views)
+        }
+    except HTTPException:
+        raise
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=f"Failed to export dataset: {err}") from err
 
 
 if __name__ == "__main__":
