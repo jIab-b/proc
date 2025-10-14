@@ -472,6 +472,19 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       const dstOffset = row * width * bytesPerPixel
       imageBytes.set(source.subarray(srcOffset, srcOffset + width * bytesPerPixel), dstOffset)
     }
+
+    if (format === 'bgra8unorm' || format === 'bgra8unorm-srgb') {
+      for (let i = 0; i < imageBytes.length; i += 4) {
+        const r = imageBytes[i] ?? 0
+        const g = imageBytes[i + 1] ?? 0
+        const b = imageBytes[i + 2] ?? 0
+        const a = imageBytes[i + 3] ?? 255
+        imageBytes[i] = b
+        imageBytes[i + 1] = g
+        imageBytes[i + 2] = r
+        imageBytes[i + 3] = a
+      }
+    }
     outputBuffer.unmap()
     outputBuffer.destroy()
     colorTexture.destroy()
