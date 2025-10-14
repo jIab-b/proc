@@ -273,8 +273,16 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   })
 
   const pressedKeys = new Set<string>()
-  window.addEventListener('keydown', (ev) => { if (!ev.repeat) pressedKeys.add(ev.code) })
-  window.addEventListener('keyup', (ev) => { pressedKeys.delete(ev.code) })
+  let pointerActive = false
+  let paused = true
+  window.addEventListener('keydown', (ev) => {
+    if (pointerActive && ev.code !== 'Escape') ev.preventDefault()
+    if (!ev.repeat) pressedKeys.add(ev.code)
+  })
+  window.addEventListener('keyup', (ev) => {
+    if (pointerActive && ev.code !== 'Escape') ev.preventDefault()
+    pressedKeys.delete(ev.code)
+  })
   window.addEventListener('blur', () => pressedKeys.clear())
 
   const cameraPos: Vec3 = [0, chunk.size.y * worldScale * 0.55, chunk.size.z * worldScale * 0.45]
@@ -286,8 +294,6 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   ])
   let yaw = Math.atan2(initialDir[0], initialDir[2])
   let pitch = Math.asin(initialDir[1])
-  let pointerActive = false
-  let paused = true
   canvas.addEventListener('click', () => canvas.requestPointerLock())
   canvas.addEventListener('contextmenu', (ev) => ev.preventDefault())
   document.addEventListener('pointerlockchange', () => {
