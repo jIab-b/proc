@@ -171,7 +171,6 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   function rebuildMesh() {
     const mesh = buildChunkMesh(chunk, worldScale)
     vertexCount = mesh.vertexCount
-    console.log('Rebuild mesh vertexCount', vertexCount)
     if (vertexCount === 0) return
     const byteLength = alignTo(mesh.vertexData.byteLength, 4)
     if (!vertexBuffer || byteLength > vertexBufferSize) {
@@ -288,9 +287,15 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   let yaw = Math.atan2(initialDir[0], initialDir[2])
   let pitch = Math.asin(initialDir[1])
   let pointerActive = false
+  let paused = true
   canvas.addEventListener('click', () => canvas.requestPointerLock())
   canvas.addEventListener('contextmenu', (ev) => ev.preventDefault())
-  document.addEventListener('pointerlockchange', () => { pointerActive = document.pointerLockElement === canvas })
+  document.addEventListener('pointerlockchange', () => {
+    pointerActive = document.pointerLockElement === canvas
+    paused = !pointerActive
+    pressedKeys.clear()
+    lastFrameTime = performance.now()
+  })
   window.addEventListener('mousemove', (ev) => {
     if (!pointerActive) return
     const sensitivity = 0.0025
@@ -410,6 +415,7 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
 
   function handleMouseDown(ev: MouseEvent) {
     if (ev.button !== 0 && ev.button !== 2) return
+    if (paused || !pointerActive) return
     ev.preventDefault()
     const hit = raycast(cameraPos, getForwardVector())
     if (!hit) return
@@ -457,14 +463,16 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     const upVec = normalize(cross(right, forward))
 
     const speedBase = (pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight')) ? 20 : 10
-    const speed = speedBase * worldScale
+    const speed = paused ? 0 : speedBase * worldScale
     const move = speed * dt
-    if (pressedKeys.has('KeyW')) addScaled(cameraPos, forward, move)
-    if (pressedKeys.has('KeyS')) addScaled(cameraPos, forward, -move)
-    if (pressedKeys.has('KeyA')) addScaled(cameraPos, right, -move)
-    if (pressedKeys.has('KeyD')) addScaled(cameraPos, right, move)
-    if (pressedKeys.has('KeyE') || pressedKeys.has('Space')) addScaled(cameraPos, upVec, move)
-    if (pressedKeys.has('KeyQ') || pressedKeys.has('ControlLeft')) addScaled(cameraPos, upVec, -move)
+    if (move !== 0) {
+      if (pressedKeys.has('KeyW')) addScaled(cameraPos, forward, move)
+      if (pressedKeys.has('KeyS')) addScaled(cameraPos, forward, -move)
+      if (pressedKeys.has('KeyA')) addScaled(cameraPos, right, -move)
+      if (pressedKeys.has('KeyD')) addScaled(cameraPos, right, move)
+      if (pressedKeys.has('KeyE') || pressedKeys.has('Space')) addScaled(cameraPos, upVec, move)
+      if (pressedKeys.has('KeyQ') || pressedKeys.has('ControlLeft')) addScaled(cameraPos, upVec, -move)
+    }
 
     const target: Vec3 = [
       cameraPos[0] + forward[0],
@@ -478,8 +486,7 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
 
   let lastFrameTime = performance.now()
 
-  function frame() {
-    const now = performance.now()
+  function frame(now: number) {
     const dt = Math.min(0.1, (now - lastFrameTime) / 1000)
     lastFrameTime = now
 
@@ -516,7 +523,7 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
 function createSimpleWorldConfig(seed: number = Date.now()) {
   return {
     seed,
-    dimensions: { x: 128, y: 64, z: 128 }
+    dimensions: { x: 64, y: 48, z: 64 }
   }
 }
 
