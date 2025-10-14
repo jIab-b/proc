@@ -140,6 +140,14 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   let exportingDataset = false
   let rafHandle: number | null = null
 
+  const generateCaptureSessionId = () => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+    return `capture_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`
+  }
+  let captureSessionId = generateCaptureSessionId()
+
   let depthTexture = device.createTexture({
     size: { width: canvas.width || 1, height: canvas.height || 1, depthOrArrayLayers: 1 },
     format: 'depth24plus',
@@ -392,11 +400,12 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   function clearCapturedViews() {
     if (capturedViews.length === 0) {
       console.log('[capture] No stored views to clear.')
-      return
+    } else {
+      capturedViews.length = 0
+      console.log('[capture] Cleared all stored camera views.')
     }
-    capturedViews.length = 0
-    console.log('[capture] Cleared all stored camera views.')
     renderCaptureOverlay()
+    captureSessionId = generateCaptureSessionId()
   }
 
   function dataUrlToBase64(dataUrl: string): string {
@@ -533,11 +542,13 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       const width = canvas.width
       const height = canvas.height
       const exportedAt = new Date().toISOString()
+      const captureId = captureSessionId
       const payload = {
         formatVersion: '1.0',
         exportedAt,
         imageSize: { width, height },
         viewCount: capturedViews.length,
+        captureId,
         views: [] as Array<{
           id: string
           index: number
@@ -605,6 +616,7 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       console.log('[capture] Dataset saved', result || 'OK')
       capturedViews.length = 0
       renderCaptureOverlay()
+      captureSessionId = generateCaptureSessionId()
     } catch (err) {
       console.error('Failed to export captured dataset', err)
     } finally {

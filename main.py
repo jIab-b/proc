@@ -5,6 +5,7 @@ FastAPI backend server for WebGPU Minecraft Editor with fal.ai texture generatio
 import base64
 import os
 import json
+import shutil
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, List
@@ -100,6 +101,7 @@ class DatasetUpload(BaseModel):
     exportedAt: str
     imageSize: ImageSize
     viewCount: int
+    captureId: str
     views: List[ViewCapture]
 
 
@@ -666,11 +668,21 @@ async def export_dataset(payload: DatasetUpload):
 
     try:
         registry = load_dataset_registry()
-        sequence = int(registry.get("next_sequence", 1))
-        dataset_dir = (DATASETS_DIR / str(sequence)).resolve()
-        while dataset_dir.exists():
-            sequence += 1
+        existing_entry = next((d for d in registry.get("datasets", []) if d.get("captureId") == payload.captureId), None)
+
+        if existing_entry:
+            sequence = int(existing_entry.get("sequence"))
             dataset_dir = (DATASETS_DIR / str(sequence)).resolve()
+            if dataset_dir.exists():
+                shutil.rmtree(dataset_dir)
+            registry["datasets"] = [d for d in registry.get("datasets", []) if d.get("captureId") != payload.captureId]
+        else:
+            sequence = int(registry.get("next_sequence", 1))
+            dataset_dir = (DATASETS_DIR / str(sequence)).resolve()
+            while dataset_dir.exists():
+                sequence += 1
+                dataset_dir = (DATASETS_DIR / str(sequence)).resolve()
+
         dataset_dir.mkdir(parents=True, exist_ok=True)
         images_dir = dataset_dir / "images"
         images_dir.mkdir(exist_ok=True)
@@ -709,6 +721,7 @@ async def export_dataset(payload: DatasetUpload):
             "exportedAt": payload.exportedAt,
             "imageSize": payload.imageSize.dict(),
             "viewCount": payload.viewCount,
+            "captureId": payload.captureId,
             "views": metadata_views
         }
 
@@ -721,10 +734,12 @@ async def export_dataset(payload: DatasetUpload):
             "exportedAt": payload.exportedAt,
             "imageCount": len(metadata_views),
             "metadata": str(metadata_path.relative_to(DATASETS_DIR)),
-            "imagesDir": str(images_dir.relative_to(DATASETS_DIR))
+            "imagesDir": str(images_dir.relative_to(DATASETS_DIR)),
+            "captureId": payload.captureId
         }
-        registry.setdefault("datasets", []).append(registry_entry)
-        registry["next_sequence"] = sequence + 1
+        datasets_list = registry.setdefault("datasets", [])
+        datasets_list.append(registry_entry)
+        registry["next_sequence"] = max(sequence + 1, int(registry.get("next_sequence", sequence + 1)))
         save_dataset_registry(registry)
 
         dataset_dir_rel = dataset_dir.relative_to(Path.cwd())
@@ -735,7 +750,8 @@ async def export_dataset(payload: DatasetUpload):
             "datasetSequence": sequence,
             "datasetDir": str(dataset_dir_rel),
             "metadataFile": str(metadata_rel),
-            "imageCount": len(metadata_views)
+            "imageCount": len(metadata_views),
+            "captureId": payload.captureId
         }
     except HTTPException:
         raise
