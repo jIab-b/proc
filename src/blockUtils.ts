@@ -2,6 +2,8 @@ import type { BlockFaceKey } from './chunks'
 import { BlockType } from './chunks'
 import type { CustomBlock, FaceTileInfo } from './stores'
 
+export { blockPalette } from './chunks'
+
 // API endpoints
 export const API_BASE_URL = 'http://localhost:8000'
 export const TEXTURES_ENDPOINT = `${API_BASE_URL}/api/textures`
@@ -16,18 +18,6 @@ export const faceLayerIndex: Record<BlockFaceKey, number> = blockFaceOrder.reduc
   acc[face] = index
   return acc
 }, {} as Record<BlockFaceKey, number>)
-
-// Block palette for default blocks
-export const blockPalette: Record<BlockType, { top: number[], bottom: number[], side: number[] } | undefined> = {
-  [BlockType.Air]: undefined,
-  [BlockType.Grass]: { top: [0.34, 0.68, 0.36], bottom: [0.40, 0.30, 0.16], side: [0.45, 0.58, 0.30] },
-  [BlockType.Dirt]: { top: [0.42, 0.32, 0.20], bottom: [0.38, 0.26, 0.16], side: [0.40, 0.30, 0.18] },
-  [BlockType.Stone]: { top: [0.58, 0.60, 0.64], bottom: [0.55, 0.57, 0.60], side: [0.56, 0.58, 0.62] },
-  [BlockType.Plank]: { top: [0.78, 0.68, 0.50], bottom: [0.72, 0.60, 0.42], side: [0.74, 0.63, 0.45] },
-  [BlockType.Snow]: { top: [0.92, 0.94, 0.96], bottom: [0.90, 0.92, 0.94], side: [0.88, 0.90, 0.93] },
-  [BlockType.Sand]: { top: [0.88, 0.82, 0.60], bottom: [0.86, 0.78, 0.56], side: [0.87, 0.80, 0.58] },
-  [BlockType.Water]: { top: [0.22, 0.40, 0.66], bottom: [0.20, 0.34, 0.60], side: [0.20, 0.38, 0.64] }
-}
 
 // Available block types (excluding Air)
 export const availableBlocks = [

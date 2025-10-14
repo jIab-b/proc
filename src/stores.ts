@@ -1,4 +1,4 @@
-import { writable, derived } from 'svelte/store'
+import { writable } from 'svelte/store'
 import type { BlockFaceKey } from './chunks'
 import { BlockType } from './chunks'
 
@@ -37,15 +37,6 @@ export const selectedFace = writable<BlockFaceKey | null>(null)
 
 // Texture generation state
 export const texturePrompt = writable<string>('')
-export const isGenerating = writable<boolean>(false)
-
-// Derived store for whether generate button should be enabled
-export const canGenerate = derived(
-  [texturePrompt, selectedFace, isGenerating],
-  ([$prompt, $face, $generating]) => {
-    return $prompt.trim().length > 0 && $face !== null && !$generating
-  }
-)
 
 // GPU hooks (set by WebGPU engine)
 export interface GPUHooks {

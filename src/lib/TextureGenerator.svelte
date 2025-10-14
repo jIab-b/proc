@@ -1,12 +1,14 @@
 <script lang="ts">
-  import { texturePrompt, selectedFace, canGenerate, selectedCustomBlock, customBlocks, nextCustomBlockId, gpuHooks, nextTextureLayer } from '../stores'
+  import { texturePrompt, selectedFace, selectedCustomBlock, customBlocks, nextCustomBlockId, gpuHooks } from '../stores'
   import { GENERATE_TILE_ENDPOINT, blockFaceOrder } from '../blockUtils'
-  import { BlockType } from '../chunks'
   import type { CustomBlock, FaceTileInfo } from '../stores'
   import type { BlockFaceKey } from '../chunks'
 
   let isGenerating = false
   let buttonText = 'Generate Face Tile'
+  let canGenerate = false
+
+  $: canGenerate = $texturePrompt.trim().length > 0 && $selectedFace !== null && !isGenerating
 
   async function handleGenerate() {
     const prompt = $texturePrompt.trim()
@@ -142,7 +144,7 @@
   <button
     on:click={handleGenerate}
     on:mousedown={(e) => e.stopPropagation()}
-    disabled={!$canGenerate}
+    disabled={!canGenerate}
   >
     {buttonText}
   </button>

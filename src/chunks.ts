@@ -160,7 +160,7 @@ const faceDefs: Record<FaceIndex, FaceDefinition> = {
 
 const faceIndices = [0, 1, 2, 0, 2, 3]
 
-const blockPalette: Record<BlockType, BlockPaletteEntry | undefined> = {
+export const blockPalette: Record<BlockType, BlockPaletteEntry | undefined> = {
   [BlockType.Air]: undefined,
   [BlockType.Grass]: {
     top: [0.34, 0.68, 0.36],
@@ -220,57 +220,6 @@ export class ChunkManager {
 
   snapshotBlocks() {
     return new Uint8Array(this.blocks)
-  }
-
-  generateDefaultTerrain(seed = 1) {
-    const { x: sx, y: sy, z: sz } = this.size
-    for (let x = 0; x < sx; x++) {
-      for (let z = 0; z < sz; z++) {
-        const height = Math.min(sy - 1, Math.floor(6 + this.sampleElevation(x, z, seed) * (sy - 10)))
-        for (let y = 0; y < sy; y++) {
-          if (y > height) {
-            this.setBlock(x, y, z, BlockType.Air)
-            continue
-          }
-          if (y === height) {
-            this.setBlock(x, y, z, BlockType.Grass)
-          } else if (y >= height - 2) {
-            this.setBlock(x, y, z, BlockType.Dirt)
-          } else {
-            this.setBlock(x, y, z, BlockType.Stone)
-          }
-        }
-      }
-    }
-  }
-
-  private sampleElevation(x: number, z: number, seed: number) {
-    const scale = 0.08
-    const p1 = this.valueNoise(x * scale, z * scale, seed)
-    const p2 = this.valueNoise(x * scale * 2, z * scale * 2, seed + 73) * 0.5
-    const p3 = this.valueNoise(x * scale * 4, z * scale * 4, seed + 139) * 0.25
-    return (p1 + p2 + p3) / (1 + 0.5 + 0.25)
-  }
-
-  private valueNoise(x: number, z: number, seed: number) {
-    const xi = Math.floor(x)
-    const zi = Math.floor(z)
-    const xf = x - xi
-    const zf = z - zi
-    const h00 = this.hash(xi, zi, seed)
-    const h10 = this.hash(xi + 1, zi, seed)
-    const h01 = this.hash(xi, zi + 1, seed)
-    const h11 = this.hash(xi + 1, zi + 1, seed)
-    const u = smoothstep(xf)
-    const v = smoothstep(zf)
-    const x1 = mix(h00, h10, u)
-    const x2 = mix(h01, h11, u)
-    return mix(x1, x2, v)
-  }
-
-  private hash(x: number, z: number, seed: number) {
-    const h = Math.sin(x * 157.31 + z * 311.7 + seed * 93.13) * 43758.5453
-    return h - Math.floor(h)
   }
 
   private inBounds(x: number, y: number, z: number) {
@@ -345,12 +294,4 @@ export function setBlockTextureIndices(block: BlockType, config: BlockTextureFac
     return
   }
   blockTextureLayers[block] = { ...config }
-}
-
-function mix(a: number, b: number, t: number) {
-  return a * (1 - t) + b * t
-}
-
-function smoothstep(t: number) {
-  return t * t * (3 - 2 * t)
 }
