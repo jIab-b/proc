@@ -252,6 +252,100 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   let vertexBufferSize = 0
   let vertexCount = 0
 
+  type BlockPosition = [number, number, number]
+
+  type PlaceBlockParams = {
+    position: BlockPosition
+    blockType: BlockType
+    customBlockId?: number
+    source?: string
+  }
+
+  type RemoveBlockParams = {
+    position: BlockPosition
+    source?: string
+  }
+
+  type WorldAction =
+    | { type: 'place_block'; params: PlaceBlockParams }
+    | { type: 'remove_block'; params: RemoveBlockParams }
+
+  function positionInBounds([x, y, z]: BlockPosition) {
+    return x >= 0 && y >= 0 && z >= 0 && x < chunk.size.x && y < chunk.size.y && z < chunk.size.z
+  }
+
+  function buildTextureIndicesForLayer(layer: number): Record<BlockFaceKey, number> {
+    const baseLayer = tileLayerCount + (layer * blockFaceOrder.length)
+    const indices: Record<BlockFaceKey, number> = {} as Record<BlockFaceKey, number>
+    blockFaceOrder.forEach((face, index) => {
+      indices[face] = baseLayer + index
+    })
+    return indices
+  }
+
+  const worldDSL = {
+    placeBlock(params: PlaceBlockParams) {
+      const { position, blockType, customBlockId } = params
+      if (!positionInBounds(position)) {
+        return { success: false as const, reason: 'out_of_bounds' }
+      }
+      if (blockType === BlockType.Air) {
+        return { success: false as const, reason: 'invalid_block' }
+      }
+
+      const [x, y, z] = position
+
+      if (customBlockId !== undefined) {
+        const customBlock = get(customBlocksStore).find(block => block.id === customBlockId)
+        if (!customBlock || customBlock.textureLayer === undefined) {
+          return { success: false as const, reason: 'custom_block_unavailable' }
+        }
+        chunk.setBlock(x, y, z, BlockType.Plank)
+        const indices = buildTextureIndicesForLayer(customBlock.textureLayer)
+        setBlockTextureIndices(BlockType.Plank, indices)
+        meshDirty = true
+        console.log(`[dsl] Placed custom block: ${customBlock.name} (layer ${customBlock.textureLayer}) at`, position)
+        return { success: true as const, blockType: BlockType.Plank, customBlockId }
+      }
+
+      chunk.setBlock(x, y, z, blockType)
+      setBlockTextureIndices(blockType, null)
+      meshDirty = true
+      console.log(`[dsl] Placed block: ${BlockType[blockType] ?? blockType} at`, position)
+      return { success: true as const, blockType }
+    },
+
+    removeBlock(params: RemoveBlockParams) {
+      const { position } = params
+      if (!positionInBounds(position)) {
+        return { success: false as const, reason: 'out_of_bounds' }
+      }
+      const [x, y, z] = position
+      const existing = chunk.getBlock(x, y, z)
+      if (existing === BlockType.Air) {
+        return { success: false as const, reason: 'already_empty' }
+      }
+      chunk.setBlock(x, y, z, BlockType.Air)
+      meshDirty = true
+      return { success: true as const, previousBlock: existing }
+    },
+
+    execute(action: WorldAction) {
+      switch (action.type) {
+        case 'place_block':
+          return this.placeBlock(action.params)
+        case 'remove_block':
+          return this.removeBlock(action.params)
+        default:
+          return { success: false as const, reason: 'unknown_action' }
+      }
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    ;(window as any).worldDSL = worldDSL
+  }
+
   function rebuildMesh() {
     const mesh = buildChunkMesh(chunk, worldScale)
     vertexCount = mesh.vertexCount
@@ -810,29 +904,26 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     const hit = raycast(cameraPos, getForwardVector())
     if (!hit) return
     if (ev.button === 0) {
-      const current = chunk.getBlock(hit.block[0], hit.block[1], hit.block[2])
-      if (current !== BlockType.Air) {
-        chunk.setBlock(hit.block[0], hit.block[1], hit.block[2], BlockType.Air)
-        meshDirty = true
+      const result = worldDSL.removeBlock({ position: hit.block, source: 'player' })
+      if (!result.success && result.reason !== 'already_empty') {
+        console.warn('[dsl] Failed to remove block:', result)
       }
     } else if (ev.button === 2) {
       const target = hit.previous
       if (isInsideChunk(target) && chunk.getBlock(target[0], target[1], target[2]) === BlockType.Air) {
         const selected = getSelectedBlock()
-        if (selected.custom && selected.custom.textureLayer !== undefined) {
-          chunk.setBlock(target[0], target[1], target[2], BlockType.Plank)
-          const baseLayer = tileLayerCount + (selected.custom.textureLayer * blockFaceOrder.length)
-          const textureIndices: Record<BlockFaceKey, number> = {} as Record<BlockFaceKey, number>
-          blockFaceOrder.forEach((face, index) => {
-            textureIndices[face] = baseLayer + index
-          })
-          setBlockTextureIndices(BlockType.Plank, textureIndices)
-          console.log(`Placed custom block: ${selected.custom.name} with texture layer ${selected.custom.textureLayer}`)
-        } else {
-          chunk.setBlock(target[0], target[1], target[2], selected.type)
-          setBlockTextureIndices(selected.type, null)
+        const params: PlaceBlockParams = {
+          position: target,
+          blockType: selected.type,
+          source: 'player'
         }
-        meshDirty = true
+        if (selected.custom) {
+          params.customBlockId = selected.custom.id
+        }
+        const result = worldDSL.placeBlock(params)
+        if (!result.success) {
+          console.warn('[dsl] Failed to place block:', result)
+        }
       }
     }
   }
