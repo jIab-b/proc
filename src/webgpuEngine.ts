@@ -1142,6 +1142,72 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     ]
   }
 
+  function chunkToWorld(pos: Vec3): Vec3 {
+    return [
+      chunkOriginOffset[0] + pos[0] * worldScale,
+      pos[1] * worldScale,
+      chunkOriginOffset[2] + pos[2] * worldScale
+    ]
+  }
+
+  function focusCameraOnBlocks(blocks: Array<{ position: BlockPos }> | undefined) {
+    if (!blocks || blocks.length === 0) {
+      cameraPos[0] = 0
+      cameraPos[1] = chunk.size.y * worldScale * 0.55
+      cameraPos[2] = chunk.size.z * worldScale * 0.45
+      lookTarget[0] = 0
+      lookTarget[1] = chunk.size.y * worldScale * 0.35
+      lookTarget[2] = 0
+    } else {
+      let minX = Number.POSITIVE_INFINITY
+      let maxX = Number.NEGATIVE_INFINITY
+      let minY = Number.POSITIVE_INFINITY
+      let maxY = Number.NEGATIVE_INFINITY
+      let minZ = Number.POSITIVE_INFINITY
+      let maxZ = Number.NEGATIVE_INFINITY
+
+      for (const block of blocks) {
+        const [x, y, z] = block.position
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+        if (z < minZ) minZ = z
+        if (z > maxZ) maxZ = z
+      }
+
+      const centerChunk: Vec3 = [
+        (minX + maxX + 1) / 2,
+        (minY + maxY + 1) / 2,
+        (minZ + maxZ + 1) / 2
+      ]
+      const target = chunkToWorld(centerChunk)
+
+      lookTarget[0] = target[0]
+      lookTarget[1] = target[1]
+      lookTarget[2] = target[2]
+
+      const spanX = maxX - minX + 1
+      const spanY = maxY - minY + 1
+      const spanZ = maxZ - minZ + 1
+      const span = Math.max(spanX, spanY * 1.5, spanZ, 1)
+      const distance = Math.max(span * worldScale * 1.8, 24 * worldScale)
+
+      cameraPos[0] = target[0] + distance
+      cameraPos[1] = target[1] + Math.max(spanY * worldScale * 2, 18 * worldScale)
+      cameraPos[2] = target[2] + distance
+    }
+
+    const dir = normalize([
+      lookTarget[0] - cameraPos[0],
+      lookTarget[1] - cameraPos[1],
+      lookTarget[2] - cameraPos[2]
+    ])
+    yaw = Math.atan2(dir[0], dir[2])
+    pitch = Math.asin(dir[1])
+    meshDirty = true
+  }
+
   function isInsideChunk([x, y, z]: BlockPos) {
     return x >= 0 && y >= 0 && z >= 0 && x < chunk.size.x && y < chunk.size.y && z < chunk.size.z
   }
@@ -1387,6 +1453,8 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       activeMapSequence = sequence
       meshDirty = true
 
+      focusCameraOnBlocks(blocks)
+
       console.log(`[map] Successfully loaded map ${sequence} with ${blocks.length} blocks`)
     } catch (err) {
       console.error(`[map] Failed to load map ${sequence}:`, err)
@@ -1475,6 +1543,8 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
         activeMapSequence = null
         meshDirty = true
 
+        focusCameraOnBlocks(blocks)
+
         console.log(`[map] Created new map as copy of map ${copyFromSequence} with ${blocks.length} blocks`)
       } else {
         console.log('[map] Creating new empty map...')
@@ -1492,6 +1562,8 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
         // Reset to new map sequence
         activeMapSequence = null
         meshDirty = true
+
+        focusCameraOnBlocks([])
 
         console.log('[map] Created new empty map')
       }
