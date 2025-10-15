@@ -121,7 +121,11 @@ LLM_PROVIDER_DEFAULT = os.environ.get("LLM_PROVIDER", "anthropic").lower()
 ANTHROPIC_MODEL_DEFAULT = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620")
 OPENAI_MODEL_DEFAULT = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
+
+def get_openai_api_key() -> Optional[str]:
+    """Return the OpenAI API key from the environment."""
+    return os.getenv("OPENAI_API_KEY")
 
 ATLAS_ROWS = 4
 ATLAS_COLS = 3
@@ -436,33 +440,52 @@ async def call_llm_for_reconstruction(
             tokens=data.get("usage"),
         )
 
-    if not OPENAI_API_KEY:
+    openai_api_key = get_openai_api_key()
+    if not openai_api_key:
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured")
     target_model = model or OPENAI_MODEL_DEFAULT
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {openai_api_key}",
         "Content-Type": "application/json",
     }
+    input_blocks = [
+        {
+            "role": "system",
+            "content": [
+                {"type": "input_text", "text": system_prompt}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": user_message}
+            ],
+        },
+    ]
     payload = {
         "model": target_model,
         "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
-        "max_tokens": 1024,
+        "input": input_blocks,
+        "max_output_tokens": 1024,
     }
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
-            "https://api.openai.com/v1/chat/completions", json=payload, headers=headers
+            "https://api.openai.com/v1/responses", json=payload, headers=headers
         )
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     data = response.json()
-    choices = data.get("choices", [])
-    output_text = ""
-    if choices:
-        output_text = choices[0].get("message", {}).get("content", "")
+    output_text = data.get("output_text") or ""
+    if not output_text:
+        for item in data.get("output", []):
+            if item.get("type") == "message":
+                for content in item.get("content", []):
+                    if content.get("type") in {"output_text", "text"}:
+                        segment = content.get("text", "")
+                        if segment:
+                            if output_text:
+                                output_text += "\n"
+                            output_text += segment
     return ReconstructionResponse(
         provider="openai",
         model=target_model,

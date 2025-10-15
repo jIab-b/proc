@@ -897,6 +897,78 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     }
   }
 
+  function parseDSLCommands(text: string): WorldAction[] {
+    const actions: WorldAction[] = []
+
+    // Match place_block and remove_block function calls
+    const placeBlockPattern = /place_block\s*\(\s*\{([^}]+)\}\s*\)/gi
+    const removeBlockPattern = /remove_block\s*\(\s*\{([^}]+)\}\s*\)/gi
+
+    // Parse place_block commands
+    let match: RegExpExecArray | null
+    while ((match = placeBlockPattern.exec(text)) !== null) {
+      try {
+        const params = match[1]!
+        const posMatch = params.match(/position\s*:\s*\[(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\]/)
+        const blockTypeMatch = params.match(/blockType\s*:\s*["'](\w+)["']/)
+        const customBlockIdMatch = params.match(/customBlockId\s*:\s*(\d+)/)
+
+        if (posMatch && blockTypeMatch) {
+          const position: BlockPosition = [
+            parseInt(posMatch[1]!, 10),
+            parseInt(posMatch[2]!, 10),
+            parseInt(posMatch[3]!, 10)
+          ]
+          const blockTypeName = blockTypeMatch[1]!
+          const blockType = BlockType[blockTypeName as keyof typeof BlockType]
+
+          if (blockType !== undefined) {
+            const placeParams: PlaceBlockParams = {
+              position,
+              blockType,
+              source: 'llm'
+            }
+
+            if (customBlockIdMatch) {
+              placeParams.customBlockId = parseInt(customBlockIdMatch[1]!, 10)
+            }
+
+            actions.push({ type: 'place_block', params: placeParams })
+          } else {
+            console.warn(`[dsl-parser] Unknown block type: ${blockTypeName}`)
+          }
+        }
+      } catch (err) {
+        console.warn('[dsl-parser] Failed to parse place_block command:', err)
+      }
+    }
+
+    // Parse remove_block commands
+    while ((match = removeBlockPattern.exec(text)) !== null) {
+      try {
+        const params = match[1]!
+        const posMatch = params.match(/position\s*:\s*\[(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\]/)
+
+        if (posMatch) {
+          const position: BlockPosition = [
+            parseInt(posMatch[1]!, 10),
+            parseInt(posMatch[2]!, 10),
+            parseInt(posMatch[3]!, 10)
+          ]
+
+          actions.push({
+            type: 'remove_block',
+            params: { position, source: 'llm' }
+          })
+        }
+      } catch (err) {
+        console.warn('[dsl-parser] Failed to parse remove_block command:', err)
+      }
+    }
+
+    return actions
+  }
+
   async function exportDatasetAndPrompt() {
     if (exportingDataset) {
       console.warn('Dataset export in progress; skipping prompt trigger.')
@@ -913,7 +985,7 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       return
     }
 
-    const defaultPrompt = 'Describe how to reconstruct this captured area using DSL commands.'
+    const defaultPrompt = 'Reconstruct this captured area using DSL commands (place_block/remove_block).'
     const promptText = window.prompt('Enter reconstruction prompt for the LLM', defaultPrompt)
     if (!promptText || !promptText.trim()) {
       console.log('[llm] Reconstruction prompt cancelled by user.')
@@ -941,7 +1013,33 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       const message = typeof data.output === 'string' && data.output.trim().length > 0
         ? data.output
         : 'No reconstruction guidance returned.'
+
       console.log('[llm] Reconstruction guidance received:', message)
+
+      // Parse and execute DSL commands from LLM output
+      const actions = parseDSLCommands(message)
+      console.log(`[llm] Parsed ${actions.length} DSL commands from LLM output`)
+
+      let successCount = 0
+      let failCount = 0
+
+      for (const action of actions) {
+        const result = worldDSL.execute(action)
+        if (result.success) {
+          successCount++
+        } else {
+          failCount++
+          console.warn('[llm] DSL command failed:', action, result)
+        }
+      }
+
+      console.log(`[llm] Executed ${successCount} commands successfully, ${failCount} failed`)
+
+      if (actions.length > 0) {
+        alert(`LLM Reconstruction complete:\n${successCount} commands executed successfully\n${failCount} commands failed`)
+      } else {
+        alert('LLM returned no executable DSL commands')
+      }
     } catch (err) {
       console.error('[llm] Reconstruction request failed', err)
       alert(`Reconstruction request failed: ${err instanceof Error ? err.message : String(err)}`)

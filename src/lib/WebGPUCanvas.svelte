@@ -182,7 +182,11 @@
 </div>
 
 {#if showContextMenu}
-  <div class="context-menu" style="left: {contextMenuX}px; top: {contextMenuY}px;">
+  <div
+    class="context-menu"
+    style="left: {contextMenuX}px; top: {contextMenuY}px;"
+    on:click|stopPropagation
+  >
     <button class="context-menu-item" on:click={handleSaveMap}>
       Save Map
     </button>
