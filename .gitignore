@@ -8,3 +8,4 @@ textures/.down/
 *.pyc
 textures/
 datasets/
+logs/

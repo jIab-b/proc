@@ -6,9 +6,10 @@ import base64
 import os
 import json
 import shutil
+import random
 from io import BytesIO
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
@@ -17,6 +18,7 @@ from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
+import httpx
 
 # Load environment variables from .env file
 def load_env():
@@ -111,6 +113,13 @@ UPLOAD_DIR = TEXTURES_DIR / ".up"
 DOWNLOAD_DIR = TEXTURES_DIR / ".down"
 DATASETS_DIR = (Path.cwd() / "datasets").resolve()
 DATASET_REGISTRY_FILE = DATASETS_DIR / "registry.json"
+LOGS_DIR = (Path.cwd() / "logs").resolve()
+
+LLM_PROVIDER_DEFAULT = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+ANTHROPIC_MODEL_DEFAULT = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620")
+OPENAI_MODEL_DEFAULT = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 ATLAS_ROWS = 4
 ATLAS_COLS = 3
@@ -140,6 +149,34 @@ DATASETS_DIR.mkdir(exist_ok=True)
 if not DATASET_REGISTRY_FILE.exists():
     with open(DATASET_REGISTRY_FILE, "w") as f:
         json.dump({"next_sequence": 1, "datasets": []}, f, indent=2)
+
+LOGS_DIR.mkdir(exist_ok=True)
+LOG_SUFFIX = random.getrandbits(4)
+LOG_FILE = LOGS_DIR / f"log_{LOG_SUFFIX}.jsonl"
+
+
+class ReconstructionRequest(BaseModel):
+    prompt: str
+    datasetSequence: Optional[int] = None
+    metadataFile: Optional[str] = None
+    captureId: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
+class ReconstructionResponse(BaseModel):
+    provider: str
+    model: str
+    output: str
+    tokens: Optional[Dict[str, Any]] = None
+
+
+class DSLLogEntry(BaseModel):
+    action: str
+    params: Dict[str, Any]
+    result: Dict[str, Any]
+    source: Optional[str] = None
+    timestamp: Optional[str] = None
 
 # Custom static file handler with CORS headers for texture tiles
 @app.options("/textures/{file_path:path}")
@@ -214,6 +251,148 @@ def save_dataset_registry(registry):
     """Persist dataset registry"""
     with open(DATASET_REGISTRY_FILE, "w") as f:
         json.dump(registry, f, indent=2)
+
+
+def load_captions(dataset_dir: Path) -> List[Dict[str, Any]]:
+    """Load optional captions generated for a dataset."""
+    captions_path = dataset_dir / "captions.json"
+    if not captions_path.exists():
+        return []
+    try:
+        with open(captions_path, "r") as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            return data
+    except Exception as exc:  # noqa: BLE001
+        print(f"[LLM] Failed to load captions: {exc}")
+    return []
+
+
+def build_dataset_summary(metadata: Dict[str, Any], captions: List[Dict[str, Any]]) -> str:
+    """Create a concise textual summary of dataset metadata and optional captions."""
+    lines: List[str] = []
+    capture_id = metadata.get("captureId", "unknown")
+    lines.append(f"capture_id: {capture_id}")
+    lines.append(f"exported_at: {metadata.get('exportedAt')}")
+    image_size = metadata.get("imageSize", {})
+    lines.append(
+        f"image_size: {image_size.get('width')}x{image_size.get('height')}"
+    )
+    lines.append(f"view_count: {metadata.get('viewCount')}")
+
+    views = metadata.get("views", [])
+    for view in views[:5]:
+        pos = view.get("position", [])
+        forward = view.get("forward", [])
+        pos_str = tuple(round(v, 3) for v in pos)
+        forward_str = tuple(round(v, 3) for v in forward)
+        lines.append(
+            f"view #{view.get('index')} id={view.get('id')} pos={pos_str} forward={forward_str}"
+        )
+
+    if len(views) > 5:
+        lines.append(f"... {len(views) - 5} additional views omitted ...")
+
+    if captions:
+        lines.append("captions:")
+        for entry in captions[:5]:
+            caption_text = entry.get("caption", "")
+            image_name = entry.get("image", "unknown")
+            lines.append(f"- {image_name}: {caption_text}")
+    if len(captions) > 5:
+        lines.append(f"... {len(captions) - 5} additional captions omitted ...")
+
+    return "\n".join(lines)
+
+
+async def call_llm_for_reconstruction(
+    summary: str,
+    user_prompt: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> ReconstructionResponse:
+    """Dispatch a reconstruction request to Anthropic or OpenAI."""
+    provider_choice = (provider or LLM_PROVIDER_DEFAULT).lower()
+    if provider_choice not in {"anthropic", "openai"}:
+        raise HTTPException(status_code=400, detail="Unsupported LLM provider")
+
+    system_prompt = (
+        "You are an expert procedural voxel world designer. "
+        "Given dataset metadata from captured camera views, produce a plan to reconstruct "
+        "the described area using the available block palette and DSL commands (place_block/remove_block)."
+    )
+    user_message = (
+        "DATASET SUMMARY:\n" + summary + "\n\n" + "USER REQUEST:\n" + user_prompt.strip()
+    )
+
+    if provider_choice == "anthropic":
+        if not ANTHROPIC_API_KEY:
+            raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY is not configured")
+        target_model = model or ANTHROPIC_MODEL_DEFAULT
+        headers = {
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        payload = {
+            "model": target_model,
+            "max_tokens": 1024,
+            "system": system_prompt,
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": user_message}]}
+            ],
+            "temperature": 0.2,
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages", json=payload, headers=headers
+            )
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        data = response.json()
+        content = data.get("content", [])
+        text_segments = [item.get("text", "") for item in content if item.get("type") == "text"]
+        output_text = "\n".join(segment.strip() for segment in text_segments if segment)
+        return ReconstructionResponse(
+            provider="anthropic",
+            model=target_model,
+            output=output_text or "",
+            tokens=data.get("usage"),
+        )
+
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured")
+    target_model = model or OPENAI_MODEL_DEFAULT
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": target_model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "max_tokens": 1024,
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(
+            "https://api.openai.com/v1/chat/completions", json=payload, headers=headers
+        )
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    data = response.json()
+    choices = data.get("choices", [])
+    output_text = ""
+    if choices:
+        output_text = choices[0].get("message", {}).get("content", "")
+    return ReconstructionResponse(
+        provider="openai",
+        model=target_model,
+        output=output_text or "",
+        tokens=data.get("usage"),
+    )
 
 
 def compute_uv_rect(row: int, col: int) -> dict:
@@ -757,6 +936,88 @@ async def export_dataset(payload: DatasetUpload):
         raise
     except Exception as err:
         raise HTTPException(status_code=500, detail=f"Failed to export dataset: {err}") from err
+
+
+@app.post("/api/reconstruct-dataset")
+async def reconstruct_dataset(request: ReconstructionRequest):
+    prompt = request.prompt.strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+
+    dataset_dir: Optional[Path] = None
+    metadata_path: Optional[Path] = None
+
+    if request.datasetSequence is not None:
+        dataset_dir = (DATASETS_DIR / str(request.datasetSequence)).resolve()
+        metadata_path = dataset_dir / "metadata.json"
+    elif request.metadataFile:
+        metadata_path = (Path.cwd() / request.metadataFile).resolve()
+        dataset_dir = metadata_path.parent
+    else:
+        raise HTTPException(status_code=400, detail="datasetSequence or metadataFile is required")
+
+    if not dataset_dir.exists():
+        raise HTTPException(status_code=404, detail="Dataset directory not found")
+    if not str(dataset_dir).startswith(str(DATASETS_DIR)):
+        raise HTTPException(status_code=400, detail="Dataset path is outside allowed directory")
+
+    if not metadata_path or not metadata_path.exists():
+        metadata_path = dataset_dir / "metadata.json"
+    if not metadata_path.exists():
+        raise HTTPException(status_code=404, detail="metadata.json not found for dataset")
+
+    try:
+        with open(metadata_path, "r") as fh:
+            metadata = json.load(fh)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Failed to load metadata: {exc}") from exc
+
+    captions = load_captions(dataset_dir)
+    summary = build_dataset_summary(metadata, captions)
+
+    llm_response = await call_llm_for_reconstruction(
+        summary=summary,
+        user_prompt=prompt,
+        provider=request.provider,
+        model=request.model,
+    )
+
+    dataset_sequence = request.datasetSequence
+    if dataset_sequence is None:
+        try:
+            dataset_sequence = int(dataset_dir.name)
+        except ValueError:
+            dataset_sequence = None
+
+    return {
+        "status": "ok",
+        "datasetSequence": dataset_sequence,
+        "captureId": metadata.get("captureId"),
+        "provider": llm_response.provider,
+        "model": llm_response.model,
+        "output": llm_response.output,
+        "tokens": llm_response.tokens,
+        "summary": summary,
+    }
+
+
+@app.post("/api/log-dsl")
+async def log_dsl(entry: DSLLogEntry):
+    """Append DSL action logs to session file."""
+    record = {
+        "timestamp": entry.timestamp or datetime.utcnow().isoformat(),
+        "action": entry.action,
+        "params": entry.params,
+        "result": entry.result,
+        "source": entry.source,
+    }
+    try:
+        with LOG_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[DSL] Failed to write log entry: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to write DSL log") from exc
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":

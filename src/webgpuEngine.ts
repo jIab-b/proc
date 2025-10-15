@@ -29,6 +29,15 @@ type CapturedView = {
   snapshot: CameraSnapshot
 }
 
+type DatasetExportResult = {
+  status: string
+  datasetSequence: number
+  datasetDir: string
+  metadataFile: string
+  imageCount: number
+  captureId: string
+}
+
 function normalize(v: Vec3): Vec3 {
   const len = Math.hypot(v[0], v[1], v[2])
   if (len < 1e-5) return [0, 0, 0]
@@ -270,6 +279,62 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     | { type: 'place_block'; params: PlaceBlockParams }
     | { type: 'remove_block'; params: RemoveBlockParams }
 
+  function serializeBlockType(type: BlockType | undefined) {
+    if (type === undefined) return undefined
+    return BlockType[type] ?? type
+  }
+
+  function serializePosition(position: BlockPosition) {
+    return [position[0], position[1], position[2]]
+  }
+
+  function prepareParams(action: string, params: PlaceBlockParams | RemoveBlockParams) {
+    const base: Record<string, unknown> = {
+      ...params
+    }
+    if (Array.isArray(params.position) && params.position.length === 3) {
+      base.position = serializePosition(params.position)
+    } else {
+      base.position = [0, 0, 0]
+    }
+    if ('blockType' in base && typeof base.blockType === 'number') {
+      base.blockTypeName = serializeBlockType(base.blockType as BlockType)
+    }
+    return base
+  }
+
+  function prepareResult(result: Record<string, unknown>) {
+    const payload: Record<string, unknown> = { ...result }
+    if ('blockType' in payload && typeof payload.blockType === 'number') {
+      payload.blockTypeName = serializeBlockType(payload.blockType as BlockType)
+    }
+    if ('previousBlock' in payload && typeof payload.previousBlock === 'number') {
+      payload.previousBlockName = serializeBlockType(payload.previousBlock as BlockType)
+    }
+    return payload
+  }
+
+  function logDSLAction(action: string, params: PlaceBlockParams | RemoveBlockParams, result: Record<string, unknown>) {
+    try {
+      const preparedParams = prepareParams(action, params)
+      const preparedResult = prepareResult(result)
+      const payload = {
+        action,
+        params: preparedParams,
+        result: preparedResult,
+        source: (params as { source?: string }).source ?? 'unknown',
+        timestamp: new Date().toISOString()
+      }
+      void fetch(`${API_BASE_URL}/api/log-dsl`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(() => {})
+    } catch (err) {
+      console.warn('[dsl] Failed to log action', err)
+    }
+  }
+
   function positionInBounds([x, y, z]: BlockPosition) {
     return x >= 0 && y >= 0 && z >= 0 && x < chunk.size.x && y < chunk.size.y && z < chunk.size.z
   }
@@ -286,11 +351,16 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   const worldDSL = {
     placeBlock(params: PlaceBlockParams) {
       const { position, blockType, customBlockId } = params
+      let result: Record<string, unknown>
       if (!positionInBounds(position)) {
-        return { success: false as const, reason: 'out_of_bounds' }
+        result = { success: false as const, reason: 'out_of_bounds' }
+        logDSLAction('place_block', params, result)
+        return result
       }
       if (blockType === BlockType.Air) {
-        return { success: false as const, reason: 'invalid_block' }
+        result = { success: false as const, reason: 'invalid_block' }
+        logDSLAction('place_block', params, result)
+        return result
       }
 
       const [x, y, z] = position
@@ -298,47 +368,63 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       if (customBlockId !== undefined) {
         const customBlock = get(customBlocksStore).find(block => block.id === customBlockId)
         if (!customBlock || customBlock.textureLayer === undefined) {
-          return { success: false as const, reason: 'custom_block_unavailable' }
+          result = { success: false as const, reason: 'custom_block_unavailable' }
+          logDSLAction('place_block', params, result)
+          return result
         }
         chunk.setBlock(x, y, z, BlockType.Plank)
         const indices = buildTextureIndicesForLayer(customBlock.textureLayer)
         setBlockTextureIndices(BlockType.Plank, indices)
         meshDirty = true
+        result = { success: true as const, blockType: BlockType.Plank, customBlockId }
         console.log(`[dsl] Placed custom block: ${customBlock.name} (layer ${customBlock.textureLayer}) at`, position)
-        return { success: true as const, blockType: BlockType.Plank, customBlockId }
+        logDSLAction('place_block', params, result)
+        return result
       }
 
       chunk.setBlock(x, y, z, blockType)
       setBlockTextureIndices(blockType, null)
       meshDirty = true
+      result = { success: true as const, blockType }
       console.log(`[dsl] Placed block: ${BlockType[blockType] ?? blockType} at`, position)
-      return { success: true as const, blockType }
+      logDSLAction('place_block', params, result)
+      return result
     },
 
     removeBlock(params: RemoveBlockParams) {
       const { position } = params
+      let result: Record<string, unknown>
       if (!positionInBounds(position)) {
-        return { success: false as const, reason: 'out_of_bounds' }
+        result = { success: false as const, reason: 'out_of_bounds' }
+        logDSLAction('remove_block', params, result)
+        return result
       }
       const [x, y, z] = position
       const existing = chunk.getBlock(x, y, z)
       if (existing === BlockType.Air) {
-        return { success: false as const, reason: 'already_empty' }
+        result = { success: false as const, reason: 'already_empty' }
+        logDSLAction('remove_block', params, result)
+        return result
       }
       chunk.setBlock(x, y, z, BlockType.Air)
       meshDirty = true
-      return { success: true as const, previousBlock: existing }
+      result = { success: true as const, previousBlock: existing }
+      logDSLAction('remove_block', params, result)
+      return result
     },
 
     execute(action: WorldAction) {
-      switch (action.type) {
-        case 'place_block':
-          return this.placeBlock(action.params)
-        case 'remove_block':
-          return this.removeBlock(action.params)
-        default:
-          return { success: false as const, reason: 'unknown_action' }
+      if (action.type === 'place_block') {
+        return this.placeBlock(action.params)
       }
+      if (action.type === 'remove_block') {
+        return this.removeBlock(action.params)
+      }
+      const unknownAction = action as any
+      const result = { success: false as const, reason: 'unknown_action' }
+      const params = unknownAction?.params ?? { position: [0, 0, 0] }
+      logDSLAction(String(unknownAction?.type ?? 'unknown'), params as PlaceBlockParams | RemoveBlockParams, result)
+      return result
     }
   }
 
@@ -605,18 +691,18 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     return dataUrlToBase64(dataUrl)
   }
 
-  async function exportCapturedDataset() {
+  async function exportCapturedDataset(): Promise<DatasetExportResult | null> {
     if (exportingDataset) {
       console.warn('Dataset export already in progress; ignoring duplicate request.')
-      return
+      return null
     }
     if (capturedViews.length === 0) {
       console.warn('No captured views to export.')
-      return
+      return null
     }
     if (!latestCamera) {
       console.warn('Camera state unavailable; cannot export dataset yet.')
-      return
+      return null
     }
 
     exportingDataset = true
@@ -711,14 +797,68 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       capturedViews.length = 0
       renderCaptureOverlay()
       captureSessionId = generateCaptureSessionId()
+      return result as DatasetExportResult
     } catch (err) {
       console.error('Failed to export captured dataset', err)
+      return null
     } finally {
       exportingDataset = false
       lastFrameTime = performance.now()
       if (rafHandle === null) {
         rafHandle = requestAnimationFrame(frame)
       }
+    }
+  }
+
+  async function exportDatasetAndPrompt() {
+    if (exportingDataset) {
+      console.warn('Dataset export in progress; skipping prompt trigger.')
+      return
+    }
+    if (capturedViews.length === 0) {
+      console.warn('[capture] No stored views to export for reconstruction prompt.')
+      return
+    }
+
+    const exportResult = await exportCapturedDataset()
+    if (!exportResult) {
+      console.warn('[capture] Export failed; aborting reconstruction prompt.')
+      return
+    }
+
+    const defaultPrompt = 'Describe how to reconstruct this captured area using DSL commands.'
+    const promptText = window.prompt('Enter reconstruction prompt for the LLM', defaultPrompt)
+    if (!promptText || !promptText.trim()) {
+      console.log('[llm] Reconstruction prompt cancelled by user.')
+      return
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reconstruct-dataset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          datasetSequence: exportResult.datasetSequence,
+          metadataFile: exportResult.metadataFile,
+          captureId: exportResult.captureId,
+          prompt: promptText
+        })
+      })
+
+      if (!response.ok) {
+        const detail = await response.text()
+        throw new Error(`LLM reconstruction request failed (${response.status}): ${detail}`)
+      }
+
+      const data = await response.json()
+      const message = typeof data.output === 'string' && data.output.trim().length > 0
+        ? data.output
+        : 'No reconstruction guidance returned.'
+      console.log('[llm] Reconstruction guidance received:', message)
+      alert(`Reconstruction guidance:\n\n${message}`)
+    } catch (err) {
+      console.error('[llm] Reconstruction request failed', err)
+      alert(`Reconstruction request failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -748,6 +888,10 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     }
     if (ev.code === 'KeyG') {
       void exportCapturedDataset()
+      return
+    }
+    if (ev.code === 'KeyV') {
+      void exportDatasetAndPrompt()
       return
     }
 
