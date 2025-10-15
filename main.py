@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from PIL import Image, ImageDraw
 import httpx
 
@@ -114,6 +114,8 @@ DOWNLOAD_DIR = TEXTURES_DIR / ".down"
 DATASETS_DIR = (Path.cwd() / "datasets").resolve()
 DATASET_REGISTRY_FILE = DATASETS_DIR / "registry.json"
 LOGS_DIR = (Path.cwd() / "logs").resolve()
+MAPS_DIR = (Path.cwd() / "maps").resolve()
+MAP_REGISTRY_FILE = MAPS_DIR / "registry.json"
 
 LLM_PROVIDER_DEFAULT = os.environ.get("LLM_PROVIDER", "anthropic").lower()
 ANTHROPIC_MODEL_DEFAULT = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620")
@@ -151,8 +153,17 @@ if not DATASET_REGISTRY_FILE.exists():
         json.dump({"next_sequence": 1, "datasets": []}, f, indent=2)
 
 LOGS_DIR.mkdir(exist_ok=True)
-LOG_SUFFIX = random.getrandbits(4)
-LOG_FILE = LOGS_DIR / f"log_{LOG_SUFFIX}.jsonl"
+MAPS_DIR.mkdir(exist_ok=True)
+
+if not MAP_REGISTRY_FILE.exists():
+    with open(MAP_REGISTRY_FILE, "w") as f:
+        json.dump({"next_sequence": 1}, f, indent=2)
+
+LOG_SUFFIX = format(random.getrandbits(4), 'x')
+LOG_FILE = LOGS_DIR / f"log_{LOG_SUFFIX}.json"
+if not LOG_FILE.exists():
+    with open(LOG_FILE, "w", encoding="utf-8") as fh:
+        json.dump([], fh)
 
 
 class ReconstructionRequest(BaseModel):
@@ -177,6 +188,36 @@ class DSLLogEntry(BaseModel):
     result: Dict[str, Any]
     source: Optional[str] = None
     timestamp: Optional[str] = None
+
+
+class MapDimensions(BaseModel):
+    x: int
+    y: int
+    z: int
+
+
+class FaceTileRecord(BaseModel):
+    path: Optional[str] = None
+    url: Optional[str] = None
+    prompt: Optional[str] = None
+    sequence: Optional[int] = None
+
+
+class CustomBlockRecord(BaseModel):
+    id: int
+    name: str
+    textureLayer: Optional[int] = None
+    colors: Dict[str, List[float]]
+    faceTiles: Dict[str, FaceTileRecord] = Field(default_factory=dict)
+
+
+class MapSavePayload(BaseModel):
+    sequence: Optional[int] = None
+    captureId: Optional[str] = None
+    worldScale: float
+    worldConfig: Dict[str, Any]
+    blocks: List[Dict[str, Any]] = Field(default_factory=list)
+    customBlocks: List[CustomBlockRecord] = Field(default_factory=list)
 
 # Custom static file handler with CORS headers for texture tiles
 @app.options("/textures/{file_path:path}")
@@ -251,6 +292,41 @@ def save_dataset_registry(registry):
     """Persist dataset registry"""
     with open(DATASET_REGISTRY_FILE, "w") as f:
         json.dump(registry, f, indent=2)
+
+
+def load_map_registry():
+    try:
+        with open(MAP_REGISTRY_FILE, "r") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {"next_sequence": 1}
+    if "next_sequence" not in data:
+        data["next_sequence"] = 1
+    return data
+
+
+def save_map_registry(registry):
+    with open(MAP_REGISTRY_FILE, "w") as f:
+        json.dump(registry, f, indent=2)
+
+
+def write_log_entry(record: Dict[str, Any]):
+    entry = dict(record)
+    entry.setdefault("timestamp", datetime.utcnow().isoformat())
+    try:
+        data: List[Dict[str, Any]]
+        try:
+            with LOG_FILE.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, list):
+                data = []
+        except (json.JSONDecodeError, FileNotFoundError):
+            data = []
+        data.append(entry)
+        with LOG_FILE.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[log] Failed to write log entry: {exc}")
 
 
 def load_captions(dataset_dir: Path) -> List[Dict[str, Any]]:
@@ -989,6 +1065,18 @@ async def reconstruct_dataset(request: ReconstructionRequest):
         except ValueError:
             dataset_sequence = None
 
+    write_log_entry({
+        "event": "reconstruct_dataset",
+        "datasetSequence": dataset_sequence,
+        "captureId": metadata.get("captureId"),
+        "provider": llm_response.provider,
+        "model": llm_response.model,
+        "prompt": prompt,
+        "summary": summary,
+        "output": llm_response.output,
+        "tokens": llm_response.tokens,
+    })
+
     return {
         "status": "ok",
         "datasetSequence": dataset_sequence,
@@ -1005,6 +1093,7 @@ async def reconstruct_dataset(request: ReconstructionRequest):
 async def log_dsl(entry: DSLLogEntry):
     """Append DSL action logs to session file."""
     record = {
+        "event": "dsl_action",
         "timestamp": entry.timestamp or datetime.utcnow().isoformat(),
         "action": entry.action,
         "params": entry.params,
@@ -1012,12 +1101,121 @@ async def log_dsl(entry: DSLLogEntry):
         "source": entry.source,
     }
     try:
-        with LOG_FILE.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        write_log_entry(record)
     except Exception as exc:  # noqa: BLE001
         print(f"[DSL] Failed to write log entry: {exc}")
         raise HTTPException(status_code=500, detail="Failed to write DSL log") from exc
     return {"status": "ok"}
+
+
+@app.post("/api/save-map")
+async def save_map(payload: MapSavePayload):
+    registry = load_map_registry()
+    sequence = payload.sequence
+    created = False
+    if sequence is None:
+        sequence = int(registry.get("next_sequence", 1))
+        registry["next_sequence"] = sequence + 1
+        created = True
+
+    map_dir = (MAPS_DIR / str(sequence)).resolve()
+    if not str(map_dir).startswith(str(MAPS_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid map directory")
+    map_dir.mkdir(parents=True, exist_ok=True)
+
+    map_path = map_dir / "map.json"
+    try:
+        log_relative = str(LOG_FILE.relative_to(Path.cwd()))
+    except ValueError:
+        log_relative = str(LOG_FILE)
+
+    # Simplify map format - only store block names, not colors
+    map_data = {
+        "sequence": sequence,
+        "lastUpdated": datetime.utcnow().isoformat(),
+        "captureId": payload.captureId,
+        "worldScale": payload.worldScale,
+        "worldConfig": payload.worldConfig,
+        "blocks": payload.blocks,  # Only store block positions and names
+        "customBlocks": [block.dict() for block in payload.customBlocks],
+        "logFile": log_relative,
+    }
+
+    try:
+        with open(map_path, "w", encoding="utf-8") as fh:
+            json.dump(map_data, fh, indent=2)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Failed to save map: {exc}") from exc
+
+    if created:
+        save_map_registry(registry)
+
+    write_log_entry({
+        "event": "map_saved",
+        "sequence": sequence,
+        "captureId": payload.captureId,
+        "mapFile": str(map_path.relative_to(Path.cwd())),
+    })
+
+    return {
+        "status": "ok",
+        "sequence": sequence,
+        "mapFile": str(map_path.relative_to(Path.cwd())),
+    }
+
+
+@app.get("/api/maps")
+async def list_maps():
+    """List all available maps"""
+    maps = []
+    if not MAPS_DIR.exists():
+        return {"maps": []}
+
+    for entry in sorted(MAPS_DIR.iterdir()):
+        if not entry.is_dir():
+            continue
+        map_file = entry / "map.json"
+        if not map_file.exists():
+            continue
+
+        try:
+            with open(map_file, "r", encoding="utf-8") as fh:
+                map_data = json.load(fh)
+
+            maps.append({
+                "sequence": map_data.get("sequence"),
+                "lastUpdated": map_data.get("lastUpdated"),
+                "captureId": map_data.get("captureId"),
+                "blockCount": len(map_data.get("blocks", [])),
+                "customBlockCount": len(map_data.get("customBlocks", []))
+            })
+        except Exception as exc:
+            print(f"[API] Failed to load map {entry.name}: {exc}")
+            continue
+
+    return {"maps": maps}
+
+
+@app.get("/api/maps/{sequence}")
+async def load_map(sequence: int):
+    """Load a specific map by sequence number"""
+    map_dir = (MAPS_DIR / str(sequence)).resolve()
+    if not str(map_dir).startswith(str(MAPS_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid map directory")
+
+    if not map_dir.exists():
+        raise HTTPException(status_code=404, detail="Map not found")
+
+    map_file = map_dir / "map.json"
+    if not map_file.exists():
+        raise HTTPException(status_code=404, detail="Map file not found")
+
+    try:
+        with open(map_file, "r", encoding="utf-8") as fh:
+            map_data = json.load(fh)
+        return map_data
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load map: {exc}") from exc
 
 
 if __name__ == "__main__":

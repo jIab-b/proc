@@ -2,7 +2,7 @@
 import terrainWGSL from './pipelines/render/terrain.wgsl?raw'
 import { createPerspective, lookAt, multiplyMat4 } from './camera'
 import { ChunkManager, BlockType, type BlockFaceKey, buildChunkMesh, setBlockTextureIndices } from './chunks'
-import { API_BASE_URL, blockFaceOrder, TILE_BASE_URL } from './blockUtils'
+import { API_BASE_URL, blockFaceOrder, TILE_BASE_URL, blockPalette } from './blockUtils'
 import type { CustomBlock, FaceTileInfo } from './stores'
 import { get } from 'svelte/store'
 import { customBlocks as customBlocksStore, gpuHooks } from './stores'
@@ -249,17 +249,17 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
 
   const worldConfig = createSimpleWorldConfig(Math.floor(Math.random() * 1000000))
   const chunk = new ChunkManager(worldConfig.dimensions)
-  const worldScale = 2
+  let worldScale = 2
   setBlockTextureIndices(BlockType.Plank, null)
-
-  console.log('Generating rolling hills terrain...')
-  generateRollingHills(chunk, worldConfig)
-  console.log('Terrain generation complete')
   const chunkOriginOffset: Vec3 = [-chunk.size.x * worldScale / 2, 0, -chunk.size.z * worldScale / 2]
   let meshDirty = true
   let vertexBuffer: GPUBuffer | null = null
   let vertexBufferSize = 0
   let vertexCount = 0
+  let activeMapSequence: number | null = null
+  let mapSaveHandle: number | null = null
+  let mapDirty = false
+  const mapSaveDebounceMs = 500
 
   type BlockPosition = [number, number, number]
 
@@ -335,6 +335,90 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     }
   }
 
+  function serializeCustomBlocks() {
+    const blocks = get(customBlocksStore)
+    return blocks.map(block => {
+      const faceEntries = Object.entries(block.faceTiles ?? {})
+      const faceTiles: Record<string, any> = {}
+      faceEntries.forEach(([face, info]) => {
+        if (!info) return
+        faceTiles[face] = {
+          path: info.path ?? null,
+          url: info.url ?? null,
+          prompt: info.prompt ?? null,
+          sequence: info.sequence ?? null
+        }
+      })
+      return {
+        id: block.id,
+        name: block.name,
+        textureLayer: block.textureLayer ?? null,
+        colors: block.colors,
+        faceTiles
+      }
+    })
+  }
+
+
+  function serializeBlockPlacements() {
+    const placements: Array<{ position: BlockPosition; blockType: string }> = []
+    const { x: sx, y: sy, z: sz } = chunk.size
+    for (let y = 0; y < sy; y++) {
+      for (let z = 0; z < sz; z++) {
+        for (let x = 0; x < sx; x++) {
+          const block = chunk.getBlock(x, y, z)
+          if (block === BlockType.Air) continue
+          placements.push({
+            position: [x, y, z],
+            blockType: BlockType[block] ?? String(block)
+          })
+        }
+      }
+    }
+    return placements
+  }
+
+  async function persistMapState() {
+    try {
+      const payload = {
+        sequence: activeMapSequence,
+        captureId: captureSessionId,
+        worldScale,
+        worldConfig,
+        blocks: serializeBlockPlacements(),
+        customBlocks: serializeCustomBlocks()
+      }
+      const response = await fetch(`${API_BASE_URL}/api/save-map`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '')
+        throw new Error(`Map save failed (${response.status}) ${detail}`)
+      }
+      const data = await response.json().catch(() => null)
+      if (data && typeof data.sequence === 'number') {
+        activeMapSequence = data.sequence
+      }
+    } catch (err) {
+      console.error('[map] Failed to persist map state', err)
+    }
+  }
+
+  function scheduleMapPersist() {
+    mapDirty = true
+    if (mapSaveHandle !== null) return
+    mapSaveHandle = window.setTimeout(() => {
+      mapSaveHandle = null
+      if (!mapDirty) return
+      mapDirty = false
+      void persistMapState()
+    }, mapSaveDebounceMs)
+  }
+
+  scheduleMapPersist()
+
   function positionInBounds([x, y, z]: BlockPosition) {
     return x >= 0 && y >= 0 && z >= 0 && x < chunk.size.x && y < chunk.size.y && z < chunk.size.z
   }
@@ -378,6 +462,7 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
         meshDirty = true
         result = { success: true as const, blockType: BlockType.Plank, customBlockId }
         console.log(`[dsl] Placed custom block: ${customBlock.name} (layer ${customBlock.textureLayer}) at`, position)
+        if (result.success) scheduleMapPersist()
         logDSLAction('place_block', params, result)
         return result
       }
@@ -387,6 +472,7 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       meshDirty = true
       result = { success: true as const, blockType }
       console.log(`[dsl] Placed block: ${BlockType[blockType] ?? blockType} at`, position)
+      if (result.success) scheduleMapPersist()
       logDSLAction('place_block', params, result)
       return result
     },
@@ -409,6 +495,7 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       chunk.setBlock(x, y, z, BlockType.Air)
       meshDirty = true
       result = { success: true as const, previousBlock: existing }
+      if (result.success) scheduleMapPersist()
       logDSLAction('remove_block', params, result)
       return result
     },
@@ -855,7 +942,6 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
         ? data.output
         : 'No reconstruction guidance returned.'
       console.log('[llm] Reconstruction guidance received:', message)
-      alert(`Reconstruction guidance:\n\n${message}`)
     } catch (err) {
       console.error('[llm] Reconstruction request failed', err)
       alert(`Reconstruction request failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -1160,7 +1246,176 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     rafHandle = requestAnimationFrame(frame)
   }
 
+  async function loadMap(sequence: number) {
+    try {
+      console.log(`[map] Loading map ${sequence}...`)
+
+      // Fetch map data from server
+      const response = await fetch(`${API_BASE_URL}/api/maps/${sequence}`)
+      if (!response.ok) {
+        throw new Error(`Failed to load map (${response.status})`)
+      }
+
+      const mapData = await response.json()
+
+      // Update world scale from map data if available
+      if (mapData.worldScale) {
+        worldScale = mapData.worldScale
+      }
+
+      // Clear existing chunk data
+      const { x: sx, y: sy, z: sz } = chunk.size
+      for (let y = 0; y < sy; y++) {
+        for (let z = 0; z < sz; z++) {
+          for (let x = 0; x < sx; x++) {
+            chunk.setBlock(x, y, z, BlockType.Air)
+          }
+        }
+      }
+
+      // Load block placements
+      const blocks = mapData.blocks || []
+      for (const blockData of blocks) {
+        const [x, y, z] = blockData.position
+        const blockTypeName = blockData.blockType
+        const blockType = BlockType[blockTypeName as keyof typeof BlockType]
+
+        if (blockType !== undefined && positionInBounds([x, y, z])) {
+          chunk.setBlock(x, y, z, blockType)
+        }
+      }
+
+      // Set active map sequence
+      activeMapSequence = sequence
+      meshDirty = true
+
+      console.log(`[map] Successfully loaded map ${sequence} with ${blocks.length} blocks`)
+    } catch (err) {
+      console.error(`[map] Failed to load map ${sequence}:`, err)
+      throw err
+    }
+  }
+
+  async function loadFirstAvailableMap() {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/maps`)
+      if (!response.ok) {
+        console.warn('[map] Failed to fetch maps, generating default terrain')
+        generateRollingHills(chunk, worldConfig)
+        return
+      }
+
+      const data = await response.json()
+      const maps = data.maps || []
+
+      if (maps.length > 0) {
+        const firstMap = maps[0]
+        console.log(`[map] Loading first available map (sequence: ${firstMap.sequence})`)
+        await loadMap(firstMap.sequence)
+      } else {
+        console.log('[map] No maps available, generating default terrain')
+        generateRollingHills(chunk, worldConfig)
+      }
+    } catch (err) {
+      console.error('[map] Error loading first map, generating default terrain:', err)
+      generateRollingHills(chunk, worldConfig)
+    }
+  }
+
+  async function saveMap() {
+    try {
+      console.log('[map] Saving current map...')
+      await persistMapState()
+      console.log(`[map] Map saved successfully${activeMapSequence !== null ? ` (sequence: ${activeMapSequence})` : ''}`)
+    } catch (err) {
+      console.error('[map] Failed to save map:', err)
+      throw err
+    }
+  }
+
+  async function newMap(copyFromSequence?: number) {
+    try {
+      if (copyFromSequence !== undefined) {
+        console.log(`[map] Creating new map copied from map ${copyFromSequence}...`)
+
+        // Load the source map
+        const response = await fetch(`${API_BASE_URL}/api/maps/${copyFromSequence}`)
+        if (!response.ok) {
+          throw new Error(`Failed to load source map (${response.status})`)
+        }
+
+        const sourceMapData = await response.json()
+
+        // Clear existing chunk data
+        const { x: sx, y: sy, z: sz } = chunk.size
+        for (let y = 0; y < sy; y++) {
+          for (let z = 0; z < sz; z++) {
+            for (let x = 0; x < sx; x++) {
+              chunk.setBlock(x, y, z, BlockType.Air)
+            }
+          }
+        }
+
+        // Copy blocks from source map
+        const blocks = sourceMapData.blocks || []
+        for (const blockData of blocks) {
+          const [x, y, z] = blockData.position
+          const blockTypeName = blockData.blockType
+          const blockType = BlockType[blockTypeName as keyof typeof BlockType]
+
+          if (blockType !== undefined && positionInBounds([x, y, z])) {
+            chunk.setBlock(x, y, z, blockType)
+          }
+        }
+
+        // Update world scale if present
+        if (sourceMapData.worldScale) {
+          worldScale = sourceMapData.worldScale
+        }
+
+        // Reset to new map sequence (will get assigned when saved)
+        activeMapSequence = null
+        meshDirty = true
+
+        console.log(`[map] Created new map as copy of map ${copyFromSequence} with ${blocks.length} blocks`)
+      } else {
+        console.log('[map] Creating new empty map...')
+
+        // Clear existing chunk data to create empty map
+        const { x: sx, y: sy, z: sz } = chunk.size
+        for (let y = 0; y < sy; y++) {
+          for (let z = 0; z < sz; z++) {
+            for (let x = 0; x < sx; x++) {
+              chunk.setBlock(x, y, z, BlockType.Air)
+            }
+          }
+        }
+
+        // Reset to new map sequence
+        activeMapSequence = null
+        meshDirty = true
+
+        console.log('[map] Created new empty map')
+      }
+
+      // Auto-save the new map
+      await saveMap()
+    } catch (err) {
+      console.error('[map] Failed to create new map:', err)
+      throw err
+    }
+  }
+
+  // Load first available map on startup
+  await loadFirstAvailableMap()
+
   rafHandle = requestAnimationFrame(frame)
+
+  return {
+    loadMap,
+    saveMap,
+    newMap
+  }
 }
 
 function createSimpleWorldConfig(seed: number = Date.now()) {
