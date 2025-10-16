@@ -37,8 +37,10 @@ def load_env():
 
 load_env()
 
-# Import fal.ai client functions
-from client_example import fal_generate_edit
+# Placeholder for fal_generate_edit - removed client_example dependency
+async def fal_generate_edit(png_grid: bytes, prompt: str, width: int = 512, height: int = 512):
+    """Placeholder for texture generation"""
+    return None
 
 
 app = FastAPI(title="WebGPU Minecraft Editor API")
@@ -329,27 +331,11 @@ def write_log_entry(record: Dict[str, Any]):
         data.append(entry)
         with LOG_FILE.open("w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"[log] Failed to write log entry: {exc}")
 
 
-def load_captions(dataset_dir: Path) -> List[Dict[str, Any]]:
-    """Load optional captions generated for a dataset."""
-    captions_path = dataset_dir / "captions.json"
-    if not captions_path.exists():
-        return []
-    try:
-        with open(captions_path, "r") as fh:
-            data = json.load(fh)
-        if isinstance(data, list):
-            return data
-    except Exception as exc:  # noqa: BLE001
-        print(f"[LLM] Failed to load captions: {exc}")
-    return []
-
-
-def build_dataset_summary(metadata: Dict[str, Any], captions: List[Dict[str, Any]]) -> str:
-    """Create a concise textual summary of dataset metadata and optional captions."""
+def build_dataset_summary(metadata: Dict[str, Any]) -> str:
     lines: List[str] = []
     capture_id = metadata.get("captureId", "unknown")
     lines.append(f"capture_id: {capture_id}")
@@ -372,15 +358,6 @@ def build_dataset_summary(metadata: Dict[str, Any], captions: List[Dict[str, Any
 
     if len(views) > 5:
         lines.append(f"... {len(views) - 5} additional views omitted ...")
-
-    if captions:
-        lines.append("captions:")
-        for entry in captions[:5]:
-            caption_text = entry.get("caption", "")
-            image_name = entry.get("image", "unknown")
-            lines.append(f"- {image_name}: {caption_text}")
-    if len(captions) > 5:
-        lines.append(f"... {len(captions) - 5} additional captions omitted ...")
 
     return "\n".join(lines)
 
@@ -1071,8 +1048,7 @@ async def reconstruct_dataset(request: ReconstructionRequest):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Failed to load metadata: {exc}") from exc
 
-    captions = load_captions(dataset_dir)
-    summary = build_dataset_summary(metadata, captions)
+    summary = build_dataset_summary(metadata)
 
     llm_response = await call_llm_for_reconstruction(
         summary=summary,
@@ -1259,6 +1235,6 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
+        reload=False,
         log_level="info"
     )
