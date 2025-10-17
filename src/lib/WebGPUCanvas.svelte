@@ -1,7 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { initWebGPUEngine } from '../webgpuEngine'
-  import { selectedBlockType, selectedCustomBlock } from '../stores'
+  import {
+    selectedBlockType,
+    selectedCustomBlock,
+    interactionMode,
+    highlightShape,
+    highlightRadius
+  } from '../stores'
   import { BlockType } from '../chunks'
   import { API_BASE_URL } from '../blockUtils'
 
@@ -162,6 +168,9 @@
       document.addEventListener('pointerlockchange', handlePointerLockChange)
 
       return () => {
+        if (engine && typeof engine.destroy === 'function') {
+          engine.destroy()
+        }
         document.removeEventListener('click', closeContextMenu)
         document.removeEventListener('pointerlockchange', handlePointerLockChange)
       }
@@ -228,6 +237,34 @@
     <button class="context-menu-item" on:click={handleDownloadLog}>
       Download Log
     </button>
+    <div class="context-divider"></div>
+    <div class="context-section">
+      <label for="interaction-mode">Interaction Mode</label>
+      <select id="interaction-mode" bind:value={$interactionMode}>
+        <option value="block">Block Placement</option>
+        <option value="highlight">Highlight Select</option>
+      </select>
+    </div>
+    {#if $interactionMode === 'highlight'}
+      <div class="context-section">
+        <label for="highlight-shape">Highlight Shape</label>
+        <select id="highlight-shape" bind:value={$highlightShape}>
+          <option value="cube">Cube</option>
+          <option value="sphere">Sphere</option>
+        </select>
+      </div>
+      <div class="context-section">
+        <label for="highlight-radius">Highlight Radius: {$highlightRadius}</label>
+        <input
+          id="highlight-radius"
+          type="range"
+          min="1"
+          max="16"
+          step="1"
+          bind:value={$highlightRadius}
+        />
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -323,6 +360,41 @@
     font-size: 12px;
     border-radius: 4px;
     transition: background 0.15s;
+  }
+
+  .context-divider {
+    height: 1px;
+    background: rgba(210, 223, 244, 0.2);
+    margin: 8px 0;
+  }
+
+  .context-section {
+    padding: 4px 8px 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .context-section label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #8fa0b8;
+  }
+
+  .context-section select,
+  .context-section input[type='range'] {
+    width: 100%;
+    background: rgba(34, 50, 68, 0.6);
+    border: 1px solid rgba(190, 210, 230, 0.25);
+    border-radius: 4px;
+    padding: 6px;
+    color: #e3ebf7;
+    font-size: 12px;
+  }
+
+  .context-section input[type='range'] {
+    padding: 0;
   }
 
   .submenu-item:hover:not(.disabled) {

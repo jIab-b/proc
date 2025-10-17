@@ -40,3 +40,19 @@ export const gpuHooks = writable<GPUHooks>({
   requestFaceBitmaps: null,
   uploadFaceBitmapsToGPU: null
 })
+
+export type InteractionMode = 'block' | 'highlight'
+
+export const interactionMode = writable<InteractionMode>('block')
+
+export type HighlightShape = 'cube' | 'sphere'
+
+export interface HighlightSelection {
+  center: [number, number, number]
+  radius: number
+  shape: HighlightShape
+}
+
+export const highlightShape = writable<HighlightShape>('cube')
+export const highlightRadius = writable<number>(2)
+export const highlightSelection = writable<HighlightSelection | null>(null)

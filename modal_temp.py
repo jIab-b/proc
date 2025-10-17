@@ -11,10 +11,54 @@ import zipfile
 import io
 import hashlib
 
-app = modal.App("splats")
+app = modal.App("voxels")
 
 
 splats_wspace = Volume.from_name("workspace", create_if_missing=True)
+
+
+
+image = (
+    Image.from_registry("pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel")
+    .env({"HF_HOME": "/workspace/hf"})
+    .run_commands(
+        "apt-get update && apt-get install -y curl ca-certificates gnupg",
+        "curl -fsSL -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb",
+        "dpkg -i /tmp/cuda-keyring.deb && rm -f /tmp/cuda-keyring.deb",
+        "apt-get update",
+    )
+    .apt_install(
+        # Common tools
+        "git", "wget", "curl", "build-essential", "ccache", "gdb",
+        "cargo", "rustc", "pkg-config", "cmake", "ninja-build",
+        "libnuma-dev",            # required by MSCCl++ and NUMA-aware components
+        "rdma-core", "libibverbs-dev",  # optional RDMA/IB verbs support (non-fatal if unused)
+        "libgl1-mesa-glx", "libglib2.0-0", "libsm6", "libxext6", "libxrender-dev", "libgomp1",
+    )
+    .uv_pip_install(
+        "uv",
+        "ninja",
+        "setuptools",
+        "wheel",
+        "numpy",
+        "pybase64",
+        "huggingface_hub",
+        "diffusers",
+        "safetensors",
+        "pillow",
+        "torch",
+        "torchvision",
+        "transformers"
+    )
+)
+
+MODEL_REPOS = [
+    ("stabilityai/stable-diffusion-xl-base-1.0", "sdxl-base"),
+    ("stabilityai/stable-diffusion-xl-refiner-1.0", "sdxl-refiner"),
+]
+
+MODEL_ROOT = Path("/workspace/models")
+DEFAULT_SYNC_DIRS = ["model_stuff", "datasets", "maps"]
 
 def compute_hashes(dir_path: str) -> dict:
     if not os.path.exists(dir_path):
@@ -30,47 +74,6 @@ def compute_hashes(dir_path: str) -> dict:
     return hashes
 
 
-image = (
-    Image.from_registry("pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel")
-    .env({"HF_HOME": "/workspace/hf"})
-    .run_commands(
-        # Prepare to add NVIDIA CUDA APT repo (for Nsight CLI tools)
-        "apt-get update && apt-get install -y curl ca-certificates gnupg",
-        "curl -fsSL -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb",
-        "dpkg -i /tmp/cuda-keyring.deb && rm -f /tmp/cuda-keyring.deb",
-        "apt-get update",
-    )
-    .apt_install(
-        # Common tools
-        "git", "wget", "curl", "build-essential", "ccache", "gdb",
-        # Rust toolchain + native build helpers for building Rust/Python extensions
-        "cargo", "rustc", "pkg-config", "cmake", "ninja-build",
-        # Kernel build deps
-        "libnuma-dev",            # required by MSCCl++ and NUMA-aware components
-        "rdma-core", "libibverbs-dev",  # optional RDMA/IB verbs support (non-fatal if unused)
-        # Nsight CLI tools matching CUDA 12.8
-        #"cuda-nsight-systems-12-8", "cuda-nsight-compute-12-8",
-        # OpenGL libraries for headless rendering
-        "libgl1-mesa-glx", "libglib2.0-0", "libsm6", "libxext6", "libxrender-dev", "libgomp1",
-    )
-    .uv_pip_install(
-        # Ensure uv is present for runtime `python3 -m uv ...`
-        "uv",
-        # Build backends/tools for no-build-isolation flows
-        "scikit-build-core",   # backend for sgl-kernel
-        "setuptools-rust",     # backend for sgl-router
-        "ninja",
-        "setuptools",
-        "wheel",
-        "numpy",               # quiets PyTorch's numpy warning during configure
-        # Runtime deps (kept)
-        "pybase64",
-        "huggingface_hub",
-    )
-)
-
-
-
 GPU_KIND = os.environ.get("MODAL_GPU", "L4").upper()
 GPU      = {"L4": "L4", "L40S": "L40S", "A100": "A100-40GB", "H100": "H100"}.get(GPU_KIND, "A100")
 
@@ -79,31 +82,108 @@ GPU      = {"L4": "L4", "L40S": "L40S", "A100": "A100-40GB", "H100": "H100"}.get
 
 
 
+@app.function(
+    image=image,
+    volumes={"/workspace": splats_wspace},
+    gpu=gpu.A100(),
+)
+def run_sdxl_lightning_infer(
+    prompt: str = "A girl smiling",
+    num_inference_steps: int = 4,
+    guidance_scale: float = 0,
+    output_filename: str = "output.png"
+) -> str:
+    """Run SDXL Lightning inference with 4-step UNet and save output to /workspace/out_local."""
+    import sys
+    sys.path.insert(0, "/workspace/model_stuff")
+    from infer import sdxl_lightning_infer
+
+    return sdxl_lightning_infer(
+        prompt=prompt,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        output_filename=output_filename,
+        output_dir="/workspace/out_local"
+    )
+
+
 @app.local_entrypoint()
-def sync_workspace():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dir", action="append", default=[], help="Additional directories to sync to workspace (defaults to ['dreamgaussian', 'diff-gaussian-rasterization'] if none provided)")
-    args, unknown = parser.parse_known_args()
-    dirs_to_sync = args.dir
-    if not dirs_to_sync:
-        dirs_to_sync = ['zero123plus', 'images']
-        #dirs_to_sync = ['images']
+def run_infer(
+    prompt: str = "A girl smiling",
+    num_inference_steps: int = 4,
+    guidance_scale: float = 0,
+    output_filename: str = "output.png",
+    local_dir: str = "./out_local"
+):
+    """Run SDXL Lightning inference on Modal and sync outputs to local directory."""
+    print(f"Starting SDXL Lightning inference with prompt: '{prompt}'")
+
+    # Upload model_stuff to Modal workspace
+    print("Uploading model_stuff to workspace...")
+    sync_workspace(["model_stuff"])
+
+    # Run inference on Modal
+    result = run_sdxl_lightning_infer.remote(
+        prompt=prompt,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        output_filename=output_filename
+    )
+    print(f"Inference completed: {result}")
+
+    # Sync outputs to local directory
+    print(f"Syncing outputs to {local_dir}...")
+    sync_outputs(local_dir=local_dir)
+    print("Done!")
+
+
+def _sync_workspace_dirs(dirs_to_sync):
     for src in dirs_to_sync:
-        dest = f"/{os.path.basename(src)}"
-        print(f"Syncing {src} -> {dest} ...")
+        src = os.path.abspath(src)
+        base = os.path.basename(src.rstrip(os.sep))
+        if not os.path.exists(src):
+            print(f"Skipping {src}; local path missing")
+            continue
+
+        remote_rel_root = base  # Path inside the Modal volume
+        remote_abs_root = f"/workspace/{remote_rel_root}"
+
+        print(f"Syncing {src} -> {remote_abs_root} ...")
         local_hashes = compute_hashes(src)
-        remote_hashes = get_remote_hashes.remote(dest)
+        remote_hashes = get_remote_hashes.remote(remote_abs_root)
+
         for rel in set(remote_hashes) - set(local_hashes):
-            remote_file = os.path.join(dest, rel).lstrip(os.sep)
+            remote_file = os.path.join(remote_rel_root, rel).replace("\\", "/")
             subprocess.run(["modal", "volume", "rm", "workspace", remote_file], check=False)
+
         for rel, lh in local_hashes.items():
+            remote_file = os.path.join(remote_rel_root, rel).replace("\\", "/")
             if rel not in remote_hashes or remote_hashes[rel] != lh:
                 local_file = os.path.join(src, rel)
-                remote_file = os.path.join(dest, rel).lstrip(os.sep)
+                subprocess.run(["modal", "volume", "rm", "workspace", remote_file], check=False)
                 subprocess.run(["modal", "volume", "put", "workspace", local_file, remote_file], check=True)
+
         print(f"Done syncing {src}.")
 
 
+
+
+@app.local_entrypoint()
+def sync_workspace(dirs_to_sync=None):
+    if dirs_to_sync is None:
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            "--dir",
+            action="append",
+            default=[],
+            help=f"Additional directories to sync to workspace (defaults to {DEFAULT_SYNC_DIRS} if none provided)",
+        )
+        args, unknown = parser.parse_known_args()
+        dirs_to_sync = args.dir
+        if not dirs_to_sync:
+            dirs_to_sync = DEFAULT_SYNC_DIRS
+
+    _sync_workspace_dirs(dirs_to_sync)
 
 
 @app.function(
@@ -137,27 +217,122 @@ def get_remote_hashes(remote_dir: str) -> dict:
 @app.local_entrypoint()
 def sync_outputs(local_dir: str = "./out_local"):
     local_path = Path(local_dir).expanduser().resolve()
-    print(f"Downloading /workspace/out_local to {local_path}")
     remote_dir = "/workspace/out_local"
+
+    print(f"Checking remote directory: {remote_dir}")
     remote_hashes = get_remote_hashes.remote(remote_dir)
-    local_hashes = compute_hashes(str(local_path)) if local_path.exists() else {}
-    if local_hashes == remote_hashes:
-        print("Local already up to date")
-        return
-    zip_data = zip_remote_dir.remote()
-    if not zip_data:
-        print("No data found at /workspace/out_local")
+    print(f"Remote files: {list(remote_hashes.keys())}")
+
+    if not remote_hashes:
+        print("No files found at /workspace/out_local")
         if local_path.exists():
             shutil.rmtree(local_path)
         local_path.mkdir(parents=True, exist_ok=True)
         print(f"Cleared {local_path}")
         return
+
+    local_hashes = compute_hashes(str(local_path)) if local_path.exists() else {}
+
+    if local_hashes == remote_hashes:
+        print("Local already up to date")
+        return
+
+    print(f"Downloading {len(remote_hashes)} files from /workspace/out_local to {local_path}")
+    zip_data = zip_remote_dir.remote()
+
     if local_path.exists():
         shutil.rmtree(local_path)
     local_path.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(zip_data)) as zipf:
         zipf.extractall(local_path)
+
     print(f"Downloaded to {local_path}")
+
+
+@app.function(
+    image=image,
+    volumes={"/workspace": splats_wspace},
+    gpu=gpu.A100(),
+)
+def run_probabilistic_training(config: dict) -> dict:
+    import os
+    import subprocess
+
+    os.chdir("/workspace")
+
+    args = ["python", "-m", "model_stuff.train.run_sds"]
+
+    def extend(flag: str, value):
+        if value is None:
+            return
+        args.extend([flag, str(value)])
+
+    extend("--dataset-sequence", config.get("dataset_sequence"))
+    extend("--dataset-dir", config.get("dataset_dir"))
+    extend("--map-sequence", config.get("map_sequence"))
+    extend("--map-path", config.get("map_path"))
+    extend("--output-dir", config.get("output_dir", "/workspace/out_local"))
+    extend("--steps", config.get("steps"))
+    extend("--rays-per-batch", config.get("rays_per_batch"))
+    extend("--num-samples", config.get("num_samples"))
+    extend("--lr", config.get("lr"))
+    extend("--log-every", config.get("log_every"))
+    extend("--eval-every", config.get("eval_every"))
+    extend("--min-probability", config.get("min_probability"))
+    extend("--step-size", config.get("step_size"))
+    extend("--mode", config.get("mode"))
+    extend("--run-name", config.get("run_name"))
+    extend("--seed", config.get("seed"))
+
+    print(f"[modal] Executing training command: {' '.join(args)}")
+    subprocess.run(args, check=True)
+    return {"command": args, "output_dir": config.get("output_dir", "out_local")}
+
+
+@app.local_entrypoint()
+def train_voxel(
+    dataset_sequence: int = 1,
+    map_sequence: int = 1,
+    steps: int = 500,
+    rays_per_batch: int = 4096,
+    num_samples: int = 96,
+    lr: float = 5e-3,
+    mode: str = "l2",
+    run_name: Optional[str] = None,
+):
+    """Sync assets, launch the differentiable training job on Modal, then download outputs."""
+
+    dirs = DEFAULT_SYNC_DIRS.copy()
+    if "out_local" not in dirs:
+        dirs.append("out_local")
+    _sync_workspace_dirs(dirs)
+
+    config = {
+        "dataset_sequence": dataset_sequence,
+        "map_sequence": map_sequence,
+        "steps": steps,
+        "rays_per_batch": rays_per_batch,
+        "num_samples": num_samples,
+        "lr": lr,
+        "mode": mode,
+        "output_dir": "/workspace/out_local",
+        "run_name": run_name,
+    }
+    print("Dispatching training job with config:", json.dumps(config, indent=2))
+    print("Equivalent CLI:")
+    print(
+        "modal run modal_temp.py::train_voxel "
+        f"--dataset-sequence {dataset_sequence} --map-sequence {map_sequence} "
+        f"--steps {steps} --rays-per-batch {rays_per_batch} --num-samples {num_samples} "
+        f"--lr {lr} --mode {mode}"
+        + (f" --run-name {run_name}" if run_name else "")
+    )
+    result = run_probabilistic_training.remote(config)
+    print("Training finished. Result:", result)
+
+    print("Syncing outputs back to local machine...")
+    sync_outputs()
+    print("All outputs available under ./out_local")
 
 
 @app.function(
@@ -167,5 +342,39 @@ def sync_outputs(local_dir: str = "./out_local"):
 def shell():
     import sys
     import subprocess
-    subprocess.call(["/bin/bash", "-c", "cd /workspace && /bin/bash"], stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
+    subprocess.call(["/bin/bash"], cwd="/workspace", stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
 
+
+@app.function(
+    image=image,
+    volumes={"/workspace": splats_wspace},
+)
+def download_ml_models():
+    """Download pretrained assets into the shared Modal volume."""
+    from huggingface_hub import snapshot_download
+
+    MODEL_ROOT.mkdir(parents=True, exist_ok=True)
+
+    hf_token = os.environ.get("HUGGINGFACE_TOKEN") or os.environ.get("HF_TOKEN")
+
+    for repo_id, alias in MODEL_REPOS:
+        target_dir = MODEL_ROOT / alias
+        target_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[modal] Downloading {repo_id} -> {target_dir}")
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir=str(target_dir),
+            local_dir_use_symlinks=False,
+            resume_download=True,
+            token=hf_token,
+        )
+
+    print("[modal] Model assets synced to /workspace/models")
+
+
+@app.local_entrypoint()
+def prepare_models():
+    """Trigger remote model downloads so Flux/ControlNet assets are ready."""
+    print("Dispatching download_ml_models job to Modal...")
+    download_ml_models.remote()
+    print("Download initiated. Monitor Modal logs for completion details.")

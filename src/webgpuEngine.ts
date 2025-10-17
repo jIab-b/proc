@@ -3,9 +3,16 @@ import terrainWGSL from './pipelines/render/terrain.wgsl?raw'
 import { createPerspective, lookAt, multiplyMat4 } from './camera'
 import { ChunkManager, BlockType, type BlockFaceKey, buildChunkMesh, setBlockTextureIndices } from './chunks'
 import { API_BASE_URL, blockFaceOrder, TILE_BASE_URL, blockPalette } from './blockUtils'
-import type { CustomBlock, FaceTileInfo } from './stores'
+import type { CustomBlock, FaceTileInfo, HighlightSelection, HighlightShape, InteractionMode } from './stores'
 import { get } from 'svelte/store'
-import { customBlocks as customBlocksStore, gpuHooks } from './stores'
+import {
+  customBlocks as customBlocksStore,
+  gpuHooks,
+  interactionMode,
+  highlightSelection as highlightSelectionStore,
+  highlightShape as highlightShapeStore,
+  highlightRadius as highlightRadiusStore
+} from './stores'
 
 type Vec3 = [number, number, number]
 
@@ -148,6 +155,44 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   let latestCamera: CameraSnapshot | null = null
   let exportingDataset = false
   let rafHandle: number | null = null
+  let currentInteractionMode: InteractionMode = get(interactionMode)
+  let currentHighlightShape: HighlightShape = get(highlightShapeStore)
+  let currentHighlightRadius = get(highlightRadiusStore)
+  let currentHighlightSelection: HighlightSelection | null = get(highlightSelectionStore)
+
+  const storeUnsubscribers: Array<() => void> = []
+
+  storeUnsubscribers.push(interactionMode.subscribe(mode => {
+    currentInteractionMode = mode
+  }))
+
+  storeUnsubscribers.push(highlightShapeStore.subscribe(shape => {
+    currentHighlightShape = shape
+    if (currentHighlightSelection) {
+      const nextSelection: HighlightSelection = {
+        ...currentHighlightSelection,
+        shape
+      }
+      currentHighlightSelection = nextSelection
+      highlightSelectionStore.set(nextSelection)
+    }
+  }))
+
+  storeUnsubscribers.push(highlightRadiusStore.subscribe(radius => {
+    currentHighlightRadius = radius
+    if (currentHighlightSelection) {
+      const nextSelection: HighlightSelection = {
+        ...currentHighlightSelection,
+        radius
+      }
+      currentHighlightSelection = nextSelection
+      highlightSelectionStore.set(nextSelection)
+    }
+  }))
+
+  storeUnsubscribers.push(highlightSelectionStore.subscribe(selection => {
+    currentHighlightSelection = selection
+  }))
 
   const generateCaptureSessionId = () => {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -617,13 +662,147 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     })
   }
 
+  function renderHighlightSelectionOverlay(ctx: CanvasRenderingContext2D, width: number, height: number) {
+    if (!currentHighlightSelection || !latestCamera) return
+
+    const centerBlock = currentHighlightSelection.center
+    const halfStep = 0.5
+    const baseCenter: Vec3 = [
+      centerBlock[0] + halfStep,
+      centerBlock[1] + halfStep,
+      centerBlock[2] + halfStep
+    ]
+
+    const projectChunkPoint = (point: Vec3) => {
+      const world = chunkToWorld(point)
+      return projectToScreen(world, latestCamera!.viewProjectionMatrix, width, height)
+    }
+
+    ctx.save()
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = 'rgba(120, 200, 255, 0.9)'
+    ctx.fillStyle = 'rgba(120, 200, 255, 0.12)'
+
+    if (currentHighlightSelection.shape === 'sphere') {
+      const centerScreen = projectChunkPoint(baseCenter)
+      if (!centerScreen) {
+        ctx.restore()
+        return
+      }
+      const radiusChunk = currentHighlightSelection.radius + halfStep
+      const edgeChunk: Vec3 = [
+        baseCenter[0] + radiusChunk,
+        baseCenter[1],
+        baseCenter[2]
+      ]
+      const edgeScreen = projectChunkPoint(edgeChunk)
+      if (!edgeScreen) {
+        ctx.restore()
+        return
+      }
+      const dx = edgeScreen[0] - centerScreen[0]
+      const dy = edgeScreen[1] - centerScreen[1]
+      const radiusPx = Math.max(4, Math.hypot(dx, dy))
+      ctx.beginPath()
+      ctx.arc(centerScreen[0], centerScreen[1], radiusPx, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.fill()
+      ctx.restore()
+      return
+    }
+
+    const radiusChunk = currentHighlightSelection.radius + halfStep
+    const xVals = [baseCenter[0] - radiusChunk, baseCenter[0] + radiusChunk]
+    const yVals = [baseCenter[1] - radiusChunk, baseCenter[1] + radiusChunk]
+    const zVals = [baseCenter[2] - radiusChunk, baseCenter[2] + radiusChunk]
+
+    const cornersChunk: Vec3[] = [
+      [xVals[0]!, yVals[0]!, zVals[0]!],
+      [xVals[1]!, yVals[0]!, zVals[0]!],
+      [xVals[1]!, yVals[0]!, zVals[1]!],
+      [xVals[0]!, yVals[0]!, zVals[1]!],
+      [xVals[0]!, yVals[1]!, zVals[0]!],
+      [xVals[1]!, yVals[1]!, zVals[0]!],
+      [xVals[1]!, yVals[1]!, zVals[1]!],
+      [xVals[0]!, yVals[1]!, zVals[1]!]
+    ]
+
+    const screenPoints = cornersChunk.map(chunk => projectChunkPoint(chunk))
+    if (screenPoints.some(point => !point)) {
+      ctx.restore()
+      return
+    }
+
+    const projected = screenPoints as [number, number][]
+    const bottomFace = [0, 1, 2, 3] as const
+    const topFace = [4, 5, 6, 7] as const
+    const edges: Array<[number, number]> = [
+      [0, 1], [1, 2], [2, 3], [3, 0],
+      [4, 5], [5, 6], [6, 7], [7, 4],
+      [0, 4], [1, 5], [2, 6], [3, 7]
+    ]
+
+    const bottomStart = projected[bottomFace[0]]
+    if (!bottomStart) {
+      ctx.restore()
+      return
+    }
+    ctx.beginPath()
+    ctx.moveTo(bottomStart[0], bottomStart[1])
+    for (const idx of bottomFace.slice(1)) {
+      const point = projected[idx]
+      if (!point) continue
+      ctx.lineTo(point[0], point[1])
+    }
+    ctx.closePath()
+    ctx.stroke()
+
+    const topStart = projected[topFace[0]]
+    if (!topStart) {
+      ctx.restore()
+      return
+    }
+    ctx.beginPath()
+    ctx.moveTo(topStart[0], topStart[1])
+    for (const idx of topFace.slice(1)) {
+      const point = projected[idx]
+      if (!point) continue
+      ctx.lineTo(point[0], point[1])
+    }
+    ctx.closePath()
+    ctx.stroke()
+
+    for (const [a, b] of edges) {
+      const pointA = projected[a]
+      const pointB = projected[b]
+      if (!pointA || !pointB) continue
+      ctx.beginPath()
+      ctx.moveTo(pointA[0], pointA[1])
+      ctx.lineTo(pointB[0], pointB[1])
+      ctx.stroke()
+    }
+
+    ctx.globalAlpha = 0.2
+    ctx.beginPath()
+    ctx.moveTo(topStart[0], topStart[1])
+    for (const idx of topFace.slice(1)) {
+      const point = projected[idx]
+      if (!point) continue
+      ctx.lineTo(point[0], point[1])
+    }
+    ctx.closePath()
+    ctx.fill()
+
+    ctx.restore()
+  }
+
   function renderCaptureOverlay() {
     if (!overlayCtx || !overlayCanvas) return
     const width = overlayCanvas.width || canvas.width
     const height = overlayCanvas.height || canvas.height
     overlayCtx.clearRect(0, 0, width, height)
     const camera = latestCamera
-    if (!camera || capturedViews.length === 0) return
+    if (!camera) return
 
     overlayCtx.save()
     overlayCtx.lineWidth = 1
@@ -646,6 +825,8 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     })
 
     overlayCtx.restore()
+
+    renderHighlightSelectionOverlay(overlayCtx, width, height)
   }
 
   function captureCurrentView() {
@@ -1293,10 +1474,25 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
 
   function handleMouseDown(ev: MouseEvent) {
     if (ev.button !== 0 && ev.button !== 2) return
-    if (paused || !pointerActive) return
+    const needsPointerLock = currentInteractionMode !== 'highlight'
+    if (needsPointerLock && (paused || !pointerActive)) return
     ev.preventDefault()
     const hit = raycast(cameraPos, getForwardVector())
     if (!hit) return
+
+    if (currentInteractionMode === 'highlight') {
+      if (ev.button === 0) {
+        const selection: HighlightSelection = {
+          center: [...hit.block],
+          radius: currentHighlightRadius,
+          shape: currentHighlightShape
+        }
+        currentHighlightSelection = selection
+        highlightSelectionStore.set(selection)
+      }
+      return
+    }
+
     if (ev.button === 0) {
       const result = worldDSL.removeBlock({ position: hit.block, source: 'player' })
       if (!result.success && result.reason !== 'already_empty') {
@@ -1584,7 +1780,10 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   return {
     loadMap,
     saveMap,
-    newMap
+    newMap,
+    destroy() {
+      storeUnsubscribers.forEach(unsub => unsub())
+    }
   }
 }
 
