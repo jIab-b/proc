@@ -10,17 +10,24 @@ from typing import Optional
 def configure_logging(run_dir: Path, verbose: bool = True) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "train.log"
-
-    handlers = [logging.FileHandler(log_path, encoding="utf-8")]
+    
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+    
     if verbose:
-        handlers.append(logging.StreamHandler())
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-        handlers=handlers,
-    )
-    logging.getLogger().info("Logging initialised. Writing to %s", log_path)
+        stream_handler = logging.StreamHandler()
+        stream_handler.setLevel(logging.INFO)
+        stream_handler.setFormatter(formatter)
+        root_logger.addHandler(stream_handler)
+    
+    root_logger.info("Logging initialised. Writing to %s", log_path)
     return log_path
 
 
