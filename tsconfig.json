@@ -19,6 +19,6 @@
     // Svelte support
     "types": ["svelte"]
   },
-  "include": ["src", "dsl/ts"],
+  "include": ["src"],
   "exclude": ["node_modules"]
 }

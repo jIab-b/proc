@@ -3,9 +3,10 @@ from typing import Tuple
 import torch
 import numpy as np
 from PIL import Image
-from ..config import DATA_IMAGES, DEVICE, GRID_XYZ, IMG_HW, TEST_IMGS_DIR
+from ..config import DATA_IMAGES, DEVICE, GRID_XYZ, IMG_HW, TEST_IMGS_DIR, MAPS_DIR
 from ..materials import c_m, sigma_m, AIR
 from .api import RendererConfig, DifferentiableRenderer
+from ..dsl import actions_to_logits
 
 
 def resize_image_to_hw(img: Image.Image, hw: Tuple[int, int]) -> Image.Image:
@@ -52,19 +53,57 @@ def main() -> None:
     files = sorted([p for p in images_dir.glob("*.png")])
     if not files:
         return
-    # Match exported dataset dimensions if available; otherwise fall back.
+
+    # Prefer rendering via DSL map in the same dataset sequence (maps/<seq>/map.json)
+    dataset_seq = images_dir.parent.name  # e.g., '1'
+    map_path = MAPS_DIR / dataset_seq / 'map.json'
+
+    # Load dataset metadata for camera & resolution
     meta_file = images_dir.parent / 'metadata.json'
+    meta = None
     if meta_file.exists():
         try:
             import json
             with meta_file.open('r', encoding='utf-8') as fh:
                 meta = json.load(fh)
-            w = int(meta.get('imageSize', {}).get('width', IMG_HW[1]))
-            h = int(meta.get('imageSize', {}).get('height', IMG_HW[0]))
         except Exception:
-            h, w = IMG_HW
+            meta = None
+
+    if meta is not None:
+        w = int(meta.get('imageSize', {}).get('width', IMG_HW[1]))
+        h = int(meta.get('imageSize', {}).get('height', IMG_HW[0]))
     else:
         h, w = IMG_HW
+
+    # Build logits from DSL map if available; otherwise fall back to the image-colorization heuristic
+    if map_path.exists():
+        import json
+        map_data = json.loads(map_path.read_text())
+        blocks = map_data.get('blocks', [])
+        # Convert blocks to actions for shared path
+        actions = [{ 'type': 'place_block', 'params': { 'position': b.get('position'), 'blockType': b.get('blockType') } } for b in blocks]
+        dims = map_data.get('worldConfig', {}).get('dimensions', {})
+        X = int(dims.get('x', GRID_XYZ[0]))
+        Y = int(dims.get('y', GRID_XYZ[1]))
+        Z = int(dims.get('z', GRID_XYZ[2]))
+        world_scale = float(map_data.get('worldScale', 2.0))
+        num_mats = int(c_m.size(0))
+        W_logits = actions_to_logits(actions, (X, Y, Z), num_mats, DEVICE)
+        renderer = DifferentiableRenderer(sigma_m.to(DEVICE), c_m.to(DEVICE))
+        views = meta.get('views', []) if meta else []
+        for idx, view in enumerate(views[:len(files)]):
+            vm = torch.tensor(view['viewMatrix'], dtype=torch.float32, device=DEVICE).view(4, 4)
+            pm = torch.tensor(view['projectionMatrix'], dtype=torch.float32, device=DEVICE).view(4, 4)
+            I = renderer.render(
+                W_logits,
+                RendererConfig(height=h, width=w, temperature=0.7, step_size=0.2, srgb=True, camera_view=vm, camera_proj=pm, world_scale=world_scale)
+            )
+            x = I.detach().cpu()[0, :3].permute(1, 2, 0).numpy()
+            img_out = (x * 255.0).clip(0, 255).astype(np.uint8)
+            Image.fromarray(img_out).save(out_dir / f"{idx:04d}.png")
+        return
+
+    # Fallback: colorize and render (orthographic or perspective if meta exists)
     X, Y, Z = GRID_XYZ
     num_mats = int(c_m.size(0))
     renderer = DifferentiableRenderer(sigma_m.to(DEVICE), c_m.to(DEVICE))
@@ -73,7 +112,16 @@ def main() -> None:
         img_r = resize_image_to_hw(img, (h, w))
         mat_idx = image_to_material_indices(img_r, c_m, dark_air_threshold=0.08)
         W_logits = build_w_logits_from_indices(mat_idx, (X, Y, Z), num_mats, DEVICE)
-        I = renderer.render(W_logits, RendererConfig(height=h, width=w, temperature=0.7, step_size=0.2, srgb=True))
+        if meta is not None and idx < len(meta.get('views', [])):
+            view = meta['views'][idx]
+            vm = torch.tensor(view['viewMatrix'], dtype=torch.float32, device=DEVICE).view(4, 4)
+            pm = torch.tensor(view['projectionMatrix'], dtype=torch.float32, device=DEVICE).view(4, 4)
+            I = renderer.render(
+                W_logits,
+                RendererConfig(height=h, width=w, temperature=0.7, step_size=0.2, srgb=True, camera_view=vm, camera_proj=pm, world_scale=2.0)
+            )
+        else:
+            I = renderer.render(W_logits, RendererConfig(height=h, width=w, temperature=0.7, step_size=0.2, srgb=True))
         x = I.detach().cpu()[0, :3].permute(1, 2, 0).numpy()
         img_out = (x * 255.0).clip(0, 255).astype(np.uint8)
         Image.fromarray(img_out).save(out_dir / f"{idx:04d}.png")
@@ -81,4 +129,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

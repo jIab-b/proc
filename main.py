@@ -238,6 +238,27 @@ async def options_texture_file(file_path: str):
         }
     )
 
+# Canonical DSL parse and schema endpoints
+class ParseDSLRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/parse-dsl")
+async def parse_dsl_endpoint(req: ParseDSLRequest):
+    try:
+        from dsl.python import parse_dsl as _parse_text, to_canonical
+        raw_actions = _parse_text(req.text)
+        actions = [a.model_dump() for a in to_canonical(raw_actions)]
+        return {"dslVersion": "1.0", "actions": actions}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"DSL parse failed: {exc}") from exc
+
+
+@app.get("/api/dsl-schema")
+async def dsl_schema_endpoint():
+    from dsl.python import schema as _schema
+    return _schema()
+
 @app.get("/textures/{file_path:path}")
 async def get_texture_file(file_path: str):
     """Serve texture files with proper CORS headers"""

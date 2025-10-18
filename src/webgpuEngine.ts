@@ -2,7 +2,11 @@
 import terrainWGSL from './pipelines/render/terrain.wgsl?raw'
 import { createPerspective, lookAt, multiplyMat4 } from './camera'
 import { ChunkManager, BlockType, type BlockFaceKey, buildChunkMesh, setBlockTextureIndices } from './chunks'
-import { parseDSL, type DSLAction, type BlockTypeName } from '../dsl/ts/index'
+// Canonical DSL is parsed on the backend. Keep lightweight local types.
+type BlockTypeName = 'Air'|'Grass'|'Dirt'|'Stone'|'Plank'|'Snow'|'Sand'|'Water'
+type DSLAction =
+  | { type: 'place_block'; params: { position: [number, number, number]; blockType: BlockTypeName; customBlockId?: number } }
+  | { type: 'remove_block'; params: { position: [number, number, number] } }
 import { API_BASE_URL, blockFaceOrder, TILE_BASE_URL, blockPalette } from './blockUtils'
 import type { CustomBlock, FaceTileInfo, HighlightSelection, HighlightShape, InteractionMode } from './stores'
 import { get } from 'svelte/store'
@@ -202,6 +206,20 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     return `capture_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`
   }
   let captureSessionId = generateCaptureSessionId()
+
+  async function parseDSLViaBackend(text: string): Promise<DSLAction[]> {
+    const res = await fetch(`${API_BASE_URL}/api/parse-dsl`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    })
+    if (!res.ok) {
+      console.error('[dsl] Backend parse failed', res.status)
+      return []
+    }
+    const data = await res.json()
+    return (data.actions || []) as DSLAction[]
+  }
 
   let depthTexture = device.createTexture({
     size: { width: canvas.width || 1, height: canvas.height || 1, depthOrArrayLayers: 1 },
@@ -1146,8 +1164,8 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
 
       console.log('[llm] Reconstruction guidance received:', message)
 
-      // Parse and execute DSL commands from LLM output
-      const dsl = parseDSL(message)
+      // Parse and execute DSL commands from LLM output (backend canonical)
+      const dsl = await parseDSLViaBackend(message)
       const actions = mapDSLToWorldActions(dsl)
       console.log(`[llm] Parsed ${actions.length} DSL commands from LLM output`)
 
@@ -1184,8 +1202,8 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   })
 
   // DSL application helpers (exposed via return value)
-  function applyDSLText(text: string) {
-    const dsl = parseDSL(text)
+  async function applyDSLText(text: string) {
+    const dsl = await parseDSLViaBackend(text)
     return applyDSLActions(dsl)
   }
 

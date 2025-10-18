@@ -10,17 +10,24 @@ Commands
 - place_block({ position: [x,y,z], blockType: 'Stone', customBlockId? })
 - remove_block({ position: [x,y,z] })
 
-Types live in:
-- TypeScript: dsl/ts/index.ts
-- Python: dsl/python/__init__.py
+Canonical source
+- Python owns the DSL (pydantic models) in dsl/python/__init__.py
+- JSON Schema is served by backend at GET /api/dsl-schema
+- Frontend obtains canonical actions by POST /api/parse-dsl { text }
+  and receives { dslVersion, actions }
+
+TypeScript usage
+- Do not maintain a separate TS DSL. Frontend always calls /api/parse-dsl to
+  obtain canonical actions and then applies them.
 
 Parsing
-- Both TS and Python expose a parse function that turns free‑form text into a
-  list of canonical DSL actions. Minimal token and JSON‑ish forms are accepted.
+- Python exposes a parse function that turns free‑form text into canonical
+  actions. The frontend calls /api/parse-dsl to obtain these actions.
 
 Usage
-- WebGPU: src/webgpuEngine.ts imports parseDSL from dsl/ts and converts the
-  resulting actions into internal WorldAction with BlockType enum mapping.
+- WebGPU: src/webgpuEngine.ts posts free‑form text to /api/parse-dsl for
+  canonical actions, then converts them into internal WorldAction with BlockType
+  enum mapping.
 - Python: import dsl.python as the reference; apply_actions(world, actions) to
   mutate a WorldLike grid.
 
@@ -29,4 +36,3 @@ Notes
   model_stuff/materials.py.
 - Keep rendering parameters (sun_dir, ambient, sky_color) in renderer configs;
   DSL describes scene content, not shading.
-

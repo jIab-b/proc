@@ -1,4 +1,5 @@
 import torch
+import os
 import random
 import json
 from pathlib import Path
@@ -10,7 +11,7 @@ from .config import (
 )
 from .materials import sigma_m, c_m
 from .renderer import RendererConfig, DifferentiableRenderer
-from .dsl import grid_to_actions, write_map_json
+from .dsl import grid_to_actions, write_map_json, actions_to_logits, parse_dsl_text
 from .dataset import load_prompts
 from .sdxl_lightning import SDXLLightning, LATENT_SCALING
 
@@ -20,7 +21,31 @@ def main() -> None:
     X, Y, Z = GRID_XYZ
     H, W = IMG_HW
     M = sigma_m.numel()
-    W_logits = torch.randn(X, Y, Z, M, device=DEVICE, requires_grad=True)
+    # Optionally seed from DSL if provided via environment
+    dsl_actions = None
+    dsl_file = os.environ.get('DSL_FILE') or os.environ.get('DSL_PATH')
+    dsl_text_env = os.environ.get('DSL_TEXT')
+    if dsl_file:
+        try:
+            text = Path(dsl_file).read_text(encoding='utf-8')
+            import json as _json
+            if text.lstrip().startswith('{'):
+                data = _json.loads(text)
+                dsl_actions = data.get('actions') or data.get('dsl') or None
+            elif text.lstrip().startswith('['):
+                dsl_actions = _json.loads(text)
+            else:
+                dsl_actions = parse_dsl_text(text)
+        except Exception:
+            dsl_actions = None
+    elif dsl_text_env:
+        dsl_actions = parse_dsl_text(dsl_text_env)
+
+    if dsl_actions:
+        W0 = actions_to_logits(dsl_actions, (X, Y, Z), M, DEVICE)
+        W_logits = W0.clone().detach().requires_grad_(True)
+    else:
+        W_logits = torch.randn(X, Y, Z, M, device=DEVICE, requires_grad=True)
     opt = torch.optim.Adam([W_logits], lr=LR)
     prompts = load_prompts(DATA_IMAGES)
     prompt = prompts[0]
@@ -79,5 +104,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
