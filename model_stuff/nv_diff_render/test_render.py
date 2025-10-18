@@ -51,7 +51,7 @@ def load_map_data(dataset_id: int) -> Dict[str, Any]:
 
 
 class DifferentiabilityLogger:
-    """Logs differentiability metrics for test renders."""
+    """Logs differentiability metrics for test renders with comprehensive gradient tracking."""
 
     def __init__(self, log_dir: Path, dataset_id: int):
         self.log_dir = log_dir
@@ -68,29 +68,92 @@ class DifferentiabilityLogger:
         material_logits: torch.Tensor,
         gradient_test_result: Dict[str, Any]
     ):
-        """Log metrics for a single view."""
+        """Log metrics for a single view with detailed gradient information."""
         log_entry = {
+            # View identification
             'view_index': view_index,
             'num_blocks': num_blocks,
+
+            # Rendering metrics
             'render_time_ms': render_time * 1000,
             'image_shape': list(rgba.shape),
-            'rgba_min': float(rgba.min().item()),
-            'rgba_max': float(rgba.max().item()),
-            'rgba_mean': float(rgba.mean().item()),
+
+            # RGBA output statistics
+            'rgba_statistics': {
+                'min': float(rgba.min().item()),
+                'max': float(rgba.max().item()),
+                'mean': float(rgba.mean().item()),
+                'std': float(rgba.std().item())
+            },
+
+            # Material logits information
             'material_logits_shape': list(material_logits.shape),
+            'material_logits_statistics': {
+                'min': float(material_logits.min().item()),
+                'max': float(material_logits.max().item()),
+                'mean': float(material_logits.mean().item()),
+                'std': float(material_logits.std().item())
+            },
+
+            # Gradient test results (comprehensive)
             'gradient_test': gradient_test_result
         }
         self.view_logs.append(log_entry)
 
     def save(self):
-        """Save all logs to JSON file."""
+        """Save all logs to JSON file with summary statistics."""
         log_file = self.log_dir / f"dataset_{self.dataset_id}_diff_log.json"
+
+        # Compute aggregate statistics across all views
+        total_render_time = sum(v['render_time_ms'] for v in self.view_logs)
+        avg_render_time = total_render_time / len(self.view_logs) if self.view_logs else 0
+
+        # Gradient statistics aggregation
+        gradient_stats = {
+            'views_with_gradients': 0,
+            'views_differentiable': 0,
+            'avg_gradient_norm_l2': 0.0,
+            'avg_gradient_health_score': 0.0,
+            'views_with_nan_gradients': 0,
+            'views_with_inf_gradients': 0,
+            'total_blocks_with_gradients': 0,
+            'total_blocks': 0
+        }
+
+        for view in self.view_logs:
+            if 'gradient_test' in view and view['gradient_test']:
+                gt = view['gradient_test']
+                if gt.get('has_gradient', False):
+                    gradient_stats['views_with_gradients'] += 1
+                if gt.get('differentiable', False):
+                    gradient_stats['views_differentiable'] += 1
+                if gt.get('has_nan_gradients', False):
+                    gradient_stats['views_with_nan_gradients'] += 1
+                if gt.get('has_inf_gradients', False):
+                    gradient_stats['views_with_inf_gradients'] += 1
+
+                gradient_stats['avg_gradient_norm_l2'] += gt.get('gradient_norm_l2', 0.0)
+                gradient_stats['avg_gradient_health_score'] += gt.get('gradient_health_score', 0.0)
+                gradient_stats['total_blocks_with_gradients'] += gt.get('blocks_with_gradients', 0)
+                gradient_stats['total_blocks'] += gt.get('blocks_total', 0)
+
+        if self.view_logs:
+            gradient_stats['avg_gradient_norm_l2'] /= len(self.view_logs)
+            gradient_stats['avg_gradient_health_score'] /= len(self.view_logs)
 
         summary = {
             'dataset_id': self.dataset_id,
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+
+            # Overall statistics
             'num_views': len(self.view_logs),
-            'total_render_time_ms': sum(v['render_time_ms'] for v in self.view_logs),
-            'avg_render_time_ms': sum(v['render_time_ms'] for v in self.view_logs) / len(self.view_logs) if self.view_logs else 0,
+            'total_render_time_ms': total_render_time,
+            'avg_render_time_ms': avg_render_time,
+
+            # Gradient summary
+            'gradient_summary': gradient_stats,
+
+            # Detailed per-view logs
             'views': self.view_logs
         }
 
@@ -98,6 +161,10 @@ class DifferentiabilityLogger:
             json.dump(summary, f, indent=2)
 
         print(f"\nDifferentiability log saved: {log_file}")
+        print(f"  Views with gradients: {gradient_stats['views_differentiable']}/{len(self.view_logs)}")
+        print(f"  Avg gradient health: {gradient_stats['avg_gradient_health_score']:.3f}")
+        print(f"  Blocks with gradients: {gradient_stats['total_blocks_with_gradients']}/{gradient_stats['total_blocks']}")
+
         return log_file
 
 
@@ -108,12 +175,13 @@ def test_gradient_flow(
     camera_view: torch.Tensor,
     camera_proj: torch.Tensor,
     img_h: int,
-    img_w: int
+    img_w: int,
+    view_index: int
 ) -> Dict[str, Any]:
     """
-    Test if gradients flow through the renderer.
+    Test if gradients flow through the renderer with comprehensive logging.
 
-    Returns dict with gradient flow metrics.
+    Returns dict with gradient flow metrics and per-material gradient statistics.
     """
     # Clone logits to avoid affecting main render
     test_logits = material_logits.clone().detach().requires_grad_(True)
@@ -130,38 +198,116 @@ def test_gradient_flow(
         hard_materials=False
     )
 
-    # Compute simple loss
-    loss = rgba[:, :3].sum()
+    # Compute multiple loss components for comprehensive gradient testing
+    # Loss 1: RGB sum (tests color gradients)
+    loss_rgb = rgba[:, :3].sum()
+
+    # Loss 2: Alpha-weighted RGB (tests alpha gradients)
+    alpha = rgba[:, 3:4]
+    loss_alpha_weighted = (rgba[:, :3] * alpha).sum()
+
+    # Loss 3: Combined loss
+    loss = loss_rgb + 0.1 * loss_alpha_weighted
 
     # Check if any pixels were rendered
-    alpha = rgba[:, 3:4]
     pixels_rendered = (alpha > 0).sum().item()
     coverage = pixels_rendered / (img_h * img_w)
 
     # Backprop
     loss.backward()
 
-    # Check gradients
+    # Check gradients with detailed statistics
     if test_logits.grad is not None:
-        grad_norm = test_logits.grad.norm().item()
-        grad_max = test_logits.grad.abs().max().item()
-        grad_mean = test_logits.grad.abs().mean().item()
-        has_gradient = grad_norm > 1e-6
+        grad = test_logits.grad
+
+        # Overall gradient stats
+        grad_norm_l2 = grad.norm().item()
+        grad_norm_l1 = grad.abs().sum().item()
+        grad_max = grad.abs().max().item()
+        grad_mean = grad.abs().mean().item()
+        grad_std = grad.std().item()
+        grad_min = grad.min().item()
+        grad_max_signed = grad.max().item()
+
+        # Per-material gradient statistics (across all blocks)
+        num_materials = grad.shape[1]
+        per_material_grads = {}
+        for mat_idx in range(num_materials):
+            mat_grad = grad[:, mat_idx]
+            per_material_grads[f'material_{mat_idx}'] = {
+                'mean': float(mat_grad.mean().item()),
+                'std': float(mat_grad.std().item()),
+                'max': float(mat_grad.max().item()),
+                'min': float(mat_grad.min().item()),
+                'norm_l2': float(mat_grad.norm().item())
+            }
+
+        # Check for gradient flow issues
+        has_gradient = grad_norm_l2 > 1e-6
+        has_nan = torch.isnan(grad).any().item()
+        has_inf = torch.isinf(grad).any().item()
+
+        # Count how many blocks have significant gradients
+        block_grad_norms = grad.norm(dim=1)
+        blocks_with_grads = (block_grad_norms > 1e-6).sum().item()
+
     else:
-        grad_norm = 0.0
+        grad_norm_l2 = 0.0
+        grad_norm_l1 = 0.0
         grad_max = 0.0
         grad_mean = 0.0
+        grad_std = 0.0
+        grad_min = 0.0
+        grad_max_signed = 0.0
+        per_material_grads = {}
         has_gradient = False
+        has_nan = False
+        has_inf = False
+        blocks_with_grads = 0
+
+    # Compute gradient health score (0-1, higher is better)
+    health_score = 0.0
+    if has_gradient and not has_nan and not has_inf:
+        # Penalize if very few blocks have gradients
+        block_ratio = blocks_with_grads / len(positions) if len(positions) > 0 else 0
+        # Penalize if gradients are too small or too large
+        magnitude_score = min(1.0, grad_norm_l2 / 100.0) if grad_norm_l2 < 100 else max(0.0, 1.0 - (grad_norm_l2 - 100) / 1000)
+        health_score = 0.5 * block_ratio + 0.5 * magnitude_score
 
     return {
+        # Overall gradient metrics
+        'view_index': view_index,
         'has_gradient': has_gradient,
-        'grad_norm': float(grad_norm),
-        'grad_max': float(grad_max),
-        'grad_mean': float(grad_mean),
-        'loss': float(loss.item()),
+        'gradient_norm_l2': float(grad_norm_l2),
+        'gradient_norm_l1': float(grad_norm_l1),
+        'gradient_max_abs': float(grad_max),
+        'gradient_mean_abs': float(grad_mean),
+        'gradient_std': float(grad_std),
+        'gradient_min': float(grad_min),
+        'gradient_max': float(grad_max_signed),
+
+        # Gradient health indicators
+        'has_nan_gradients': has_nan,
+        'has_inf_gradients': has_inf,
+        'blocks_with_gradients': int(blocks_with_grads),
+        'blocks_total': len(positions),
+        'gradient_coverage_ratio': float(blocks_with_grads / len(positions)) if len(positions) > 0 else 0.0,
+        'gradient_health_score': float(health_score),
+
+        # Loss breakdown
+        'loss_total': float(loss.item()),
+        'loss_rgb': float(loss_rgb.item()),
+        'loss_alpha_weighted': float(loss_alpha_weighted.item()),
+
+        # Rendering metrics
         'pixels_rendered': int(pixels_rendered),
-        'coverage': float(coverage),
-        'differentiable': has_gradient and pixels_rendered > 0
+        'pixel_coverage': float(coverage),
+
+        # Per-material gradients
+        'per_material_gradients': per_material_grads,
+
+        # Overall differentiability flag
+        'differentiable': has_gradient and pixels_rendered > 0 and not has_nan and not has_inf
     }
 
 
@@ -276,10 +422,14 @@ def render_view(
             camera_view,
             camera_proj,
             img_h,
-            img_w
+            img_w,
+            view_index
         )
-        print(f"  Gradients: {'✓ FLOW' if gradient_result['differentiable'] else '✗ BLOCKED'} "
-              f"(coverage: {gradient_result['coverage']*100:.1f}%, grad_norm: {gradient_result['grad_norm']:.6f})")
+        print(f"  Gradients: {'✓ FLOW' if gradient_result['differentiable'] else '✗ BLOCKED'}")
+        print(f"    Pixel coverage: {gradient_result['pixel_coverage']*100:.1f}%")
+        print(f"    Gradient L2 norm: {gradient_result['gradient_norm_l2']:.6f}")
+        print(f"    Gradient health score: {gradient_result['gradient_health_score']:.3f}")
+        print(f"    Blocks with gradients: {gradient_result['blocks_with_gradients']}/{gradient_result['blocks_total']}")
 
     # Convert to numpy (H, W, 3)
     rgb = rgba[0, :3, :, :].permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
@@ -350,8 +500,13 @@ def main():
     parser.add_argument('--all_views', action='store_true', help="Render all views")
     parser.add_argument('--device', type=str, default='cuda', help="Device (cuda or cpu)")
     parser.add_argument('--compare', action='store_true', help="Compare with ground truth")
-    parser.add_argument('--test_gradients', action='store_true', help="Test gradient flow for each view")
+    parser.add_argument('--test_gradients', action='store_true', default=True, help="Test gradient flow for each view (default: True)")
+    parser.add_argument('--no_test_gradients', action='store_true', help="Disable gradient testing")
     args = parser.parse_args()
+
+    # Override test_gradients if --no_test_gradients is set
+    if args.no_test_gradients:
+        args.test_gradients = False
 
     # Setup device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
