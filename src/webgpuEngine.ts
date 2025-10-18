@@ -2,6 +2,7 @@
 import terrainWGSL from './pipelines/render/terrain.wgsl?raw'
 import { createPerspective, lookAt, multiplyMat4 } from './camera'
 import { ChunkManager, BlockType, type BlockFaceKey, buildChunkMesh, setBlockTextureIndices } from './chunks'
+import { parseDSL, type DSLAction, type BlockTypeName } from '../dsl/ts/index'
 import { API_BASE_URL, blockFaceOrder, TILE_BASE_URL, blockPalette } from './blockUtils'
 import type { CustomBlock, FaceTileInfo, HighlightSelection, HighlightShape, InteractionMode } from './stores'
 import { get } from 'svelte/store'
@@ -1078,75 +1079,23 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     }
   }
 
-  function parseDSLCommands(text: string): WorldAction[] {
+  function mapDSLToWorldActions(dsl: DSLAction[]): WorldAction[] {
     const actions: WorldAction[] = []
-
-    // Match place_block and remove_block function calls
-    const placeBlockPattern = /place_block\s*\(\s*\{([^}]+)\}\s*\)/gi
-    const removeBlockPattern = /remove_block\s*\(\s*\{([^}]+)\}\s*\)/gi
-
-    // Parse place_block commands
-    let match: RegExpExecArray | null
-    while ((match = placeBlockPattern.exec(text)) !== null) {
-      try {
-        const params = match[1]!
-        const posMatch = params.match(/position\s*:\s*\[(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\]/)
-        const blockTypeMatch = params.match(/blockType\s*:\s*["'](\w+)["']/)
-        const customBlockIdMatch = params.match(/customBlockId\s*:\s*(\d+)/)
-
-        if (posMatch && blockTypeMatch) {
-          const position: BlockPosition = [
-            parseInt(posMatch[1]!, 10),
-            parseInt(posMatch[2]!, 10),
-            parseInt(posMatch[3]!, 10)
-          ]
-          const blockTypeName = blockTypeMatch[1]!
-          const blockType = BlockType[blockTypeName as keyof typeof BlockType]
-
-          if (blockType !== undefined) {
-            const placeParams: PlaceBlockParams = {
-              position,
-              blockType,
-              source: 'llm'
-            }
-
-            if (customBlockIdMatch) {
-              placeParams.customBlockId = parseInt(customBlockIdMatch[1]!, 10)
-            }
-
-            actions.push({ type: 'place_block', params: placeParams })
-          } else {
-            console.warn(`[dsl-parser] Unknown block type: ${blockTypeName}`)
-          }
+    for (const a of dsl) {
+      if (a.type === 'place_block') {
+        const [x,y,z] = a.params.position
+        const name = a.params.blockType as BlockTypeName
+        const blockType = BlockType[name as keyof typeof BlockType]
+        if (blockType === undefined) {
+          console.warn(`[dsl] Unknown block type: ${name}`)
+          continue
         }
-      } catch (err) {
-        console.warn('[dsl-parser] Failed to parse place_block command:', err)
+        actions.push({ type: 'place_block', params: { position: [x,y,z], blockType, customBlockId: a.params.customBlockId, source: 'llm' } })
+      } else if (a.type === 'remove_block') {
+        const [x,y,z] = a.params.position
+        actions.push({ type: 'remove_block', params: { position: [x,y,z], source: 'llm' } })
       }
     }
-
-    // Parse remove_block commands
-    while ((match = removeBlockPattern.exec(text)) !== null) {
-      try {
-        const params = match[1]!
-        const posMatch = params.match(/position\s*:\s*\[(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\]/)
-
-        if (posMatch) {
-          const position: BlockPosition = [
-            parseInt(posMatch[1]!, 10),
-            parseInt(posMatch[2]!, 10),
-            parseInt(posMatch[3]!, 10)
-          ]
-
-          actions.push({
-            type: 'remove_block',
-            params: { position, source: 'llm' }
-          })
-        }
-      } catch (err) {
-        console.warn('[dsl-parser] Failed to parse remove_block command:', err)
-      }
-    }
-
     return actions
   }
 
@@ -1198,7 +1147,8 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       console.log('[llm] Reconstruction guidance received:', message)
 
       // Parse and execute DSL commands from LLM output
-      const actions = parseDSLCommands(message)
+      const dsl = parseDSL(message)
+      const actions = mapDSLToWorldActions(dsl)
       console.log(`[llm] Parsed ${actions.length} DSL commands from LLM output`)
 
       let successCount = 0
@@ -1232,6 +1182,25 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     requestFaceBitmaps: fetchFaceBitmaps,
     uploadFaceBitmapsToGPU: applyFaceBitmapsToGPU
   })
+
+  // DSL application helpers (exposed via return value)
+  function applyDSLText(text: string) {
+    const dsl = parseDSL(text)
+    return applyDSLActions(dsl)
+  }
+
+  function applyDSLActions(dsl: DSLAction[]) {
+    const actions = mapDSLToWorldActions(dsl)
+    let success = 0
+    let fail = 0
+    for (const action of actions) {
+      const result = worldDSL.execute(action)
+      if (result.success) success++
+      else fail++
+    }
+    meshDirty = true
+    return { success, fail, total: actions.length }
+  }
 
   const pressedKeys = new Set<string>()
   let pointerActive = false
@@ -1785,6 +1754,7 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       storeUnsubscribers.forEach(unsub => unsub())
     }
   }
+  return { applyDSLText, applyDSLActions }
 }
 
 function createSimpleWorldConfig(seed: number = Date.now()) {

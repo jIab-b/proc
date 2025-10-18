@@ -52,7 +52,19 @@ def main() -> None:
     files = sorted([p for p in images_dir.glob("*.png")])
     if not files:
         return
-    h, w = IMG_HW
+    # Match exported dataset dimensions if available; otherwise fall back.
+    meta_file = images_dir.parent / 'metadata.json'
+    if meta_file.exists():
+        try:
+            import json
+            with meta_file.open('r', encoding='utf-8') as fh:
+                meta = json.load(fh)
+            w = int(meta.get('imageSize', {}).get('width', IMG_HW[1]))
+            h = int(meta.get('imageSize', {}).get('height', IMG_HW[0]))
+        except Exception:
+            h, w = IMG_HW
+    else:
+        h, w = IMG_HW
     X, Y, Z = GRID_XYZ
     num_mats = int(c_m.size(0))
     renderer = DifferentiableRenderer(sigma_m.to(DEVICE), c_m.to(DEVICE))
@@ -61,7 +73,7 @@ def main() -> None:
         img_r = resize_image_to_hw(img, (h, w))
         mat_idx = image_to_material_indices(img_r, c_m, dark_air_threshold=0.08)
         W_logits = build_w_logits_from_indices(mat_idx, (X, Y, Z), num_mats, DEVICE)
-        I = renderer.render(W_logits, RendererConfig(image_height=h, image_width=w, temperature=0.7))
+        I = renderer.render(W_logits, RendererConfig(height=h, width=w, temperature=0.7, step_size=0.2, srgb=True))
         x = I.detach().cpu()[0, :3].permute(1, 2, 0).numpy()
         img_out = (x * 255.0).clip(0, 255).astype(np.uint8)
         Image.fromarray(img_out).save(out_dir / f"{idx:04d}.png")
@@ -69,5 +81,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
