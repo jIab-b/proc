@@ -10,6 +10,7 @@ from dsl.python import parse_dsl, apply_actions, DSLAction, BlockTypeName
 from ..materials import MATERIALS, c_m, sigma_m, AIR
 from ..config import DEVICE, GRID_XYZ, IMG_HW, TEST_IMGS_DIR
 from .api import RendererConfig, DifferentiableRenderer
+from .textures import load_face_textures
 
 
 class WorldGrid:
@@ -66,6 +67,12 @@ def main() -> None:
     ap.add_argument("--size", type=str, default=None, help="HxW (e.g. 512x512). Defaults to dataset IMG_HW or metadata if used elsewhere.")
     ap.add_argument("--temperature", type=float, default=0.6)
     ap.add_argument("--step-size", dest="step_size", type=float, default=0.2)
+    ap.add_argument("--use-textures", action="store_true", help="Use per-material face textures if present")
+    ap.add_argument("--tile-size", type=int, default=64, help="Face texture tile size for loading")
+    ap.add_argument("--normal-sharpness", type=float, default=10.0, help="Soft face-normal sharpness (0 disables)")
+    ap.add_argument("--occupancy-hardness", type=float, default=12.0, help="Sigmoid hardening factor for occupancy (0 disables)")
+    ap.add_argument("--occupancy-threshold", type=float, default=0.35, help="Sigmoid threshold for occupancy hardening")
+    ap.add_argument("--texture-scale", type=float, default=1.0, help="UV scale inside a voxel for textures")
     args = ap.parse_args()
 
     actions = load_actions_from_path(Path(args.dsl_file))
@@ -85,8 +92,29 @@ def main() -> None:
     else:
         H, W = IMG_HW
 
-    renderer = DifferentiableRenderer(sigma_m.to(DEVICE), c_m.to(DEVICE))
-    I = renderer.render(W_logits, RendererConfig(height=H, width=W, temperature=args.temperature, step_size=args.step_size, srgb=True))
+    texture_atlas = None
+    if args.use_textures:
+        try:
+            texture_atlas = load_face_textures(MATERIALS, base_dir="textures", tile_size=args.tile_size, device=DEVICE)
+        except Exception as e:
+            print(f"[warn] Failed to load textures: {e}")
+            texture_atlas = None
+    renderer = DifferentiableRenderer(sigma_m.to(DEVICE), c_m.to(DEVICE), texture_atlas=texture_atlas)
+    I = renderer.render(
+        W_logits,
+        RendererConfig(
+            height=H,
+            width=W,
+            temperature=args.temperature,
+            step_size=args.step_size,
+            srgb=True,
+            use_textures=bool(texture_atlas is not None and args.use_textures),
+            normal_sharpness=args.normal_sharpness,
+            occupancy_hardness=args.occupancy_hardness,
+            occupancy_threshold=args.occupancy_threshold,
+            texture_scale=args.texture_scale,
+        ),
+    )
     img = (I[0, :3].clamp(0, 1).permute(1, 2, 0).detach().cpu().numpy() * 255.0).astype("uint8")
 
     out_path = Path(args.out)
@@ -106,4 +134,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

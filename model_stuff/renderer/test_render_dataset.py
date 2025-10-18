@@ -91,9 +91,22 @@ def main() -> None:
         W_logits = actions_to_logits(actions, (X, Y, Z), num_mats, DEVICE)
         renderer = DifferentiableRenderer(sigma_m.to(DEVICE), c_m.to(DEVICE))
         views = meta.get('views', []) if meta else []
+        def pick_orientation(vm: torch.Tensor, pm: torch.Tensor, expected_pos: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            def origin_from_view(v: torch.Tensor) -> torch.Tensor:
+                inv = torch.linalg.inv(v)
+                o = inv @ torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=v.dtype, device=v.device)
+                return o[:3]
+            o_row = origin_from_view(vm)
+            o_col = origin_from_view(vm.T)
+            e_row = torch.linalg.norm(o_row - expected_pos)
+            e_col = torch.linalg.norm(o_col - expected_pos)
+            return (vm, pm) if e_row <= e_col else (vm.T, pm.T)
+
         for idx, view in enumerate(views[:len(files)]):
-            vm = torch.tensor(view['viewMatrix'], dtype=torch.float32, device=DEVICE).view(4, 4)
-            pm = torch.tensor(view['projectionMatrix'], dtype=torch.float32, device=DEVICE).view(4, 4)
+            vm0 = torch.tensor(view['viewMatrix'], dtype=torch.float32, device=DEVICE).view(4, 4)
+            pm0 = torch.tensor(view['projectionMatrix'], dtype=torch.float32, device=DEVICE).view(4, 4)
+            pos = torch.tensor(view.get('position', [0,0,0]), dtype=torch.float32, device=DEVICE)
+            vm, pm = pick_orientation(vm0, pm0, pos)
             I = renderer.render(
                 W_logits,
                 RendererConfig(height=h, width=w, temperature=0.7, step_size=0.2, srgb=True, camera_view=vm, camera_proj=pm, world_scale=world_scale)
