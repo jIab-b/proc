@@ -48,7 +48,8 @@ image = (
         "pillow",
         "torch",
         "torchvision",
-        "transformers"
+        "transformers",
+        "accelerate"
     )
 )
 
@@ -260,29 +261,7 @@ def run_probabilistic_training(config: dict) -> dict:
 
     os.chdir("/workspace")
 
-    args = ["python", "-m", "model_stuff.train.run_sds"]
-
-    def extend(flag: str, value):
-        if value is None:
-            return
-        args.extend([flag, str(value)])
-
-    extend("--dataset-sequence", config.get("dataset_sequence"))
-    extend("--dataset-dir", config.get("dataset_dir"))
-    extend("--map-sequence", config.get("map_sequence"))
-    extend("--map-path", config.get("map_path"))
-    extend("--output-dir", config.get("output_dir", "/workspace/out_local"))
-    extend("--steps", config.get("steps"))
-    extend("--rays-per-batch", config.get("rays_per_batch"))
-    extend("--num-samples", config.get("num_samples"))
-    extend("--lr", config.get("lr"))
-    extend("--log-every", config.get("log_every"))
-    extend("--eval-every", config.get("eval_every"))
-    extend("--min-probability", config.get("min_probability"))
-    extend("--step-size", config.get("step_size"))
-    extend("--mode", config.get("mode"))
-    extend("--run-name", config.get("run_name"))
-    extend("--seed", config.get("seed"))
+    args = ["python", "-m", "model_stuff.train_sds"]
 
     print(f"[modal] Executing training command: {' '.join(args)}")
     subprocess.run(args, check=True)
@@ -298,6 +277,22 @@ def train_voxel(
     num_samples: int = 96,
     lr: float = 5e-3,
     mode: str = "l2",
+    prompt: str = "",
+    negative_prompt: str = "",
+    guidance_scale: float = 3.0,
+    lambda_sds: float = 1.0,
+    lambda_l2: float = 1.0,
+    sds_image_size: int = 256,
+    snapshot_every: int = 100,
+    snapshot_view: Optional[str] = None,
+    log_every: int = 10,
+    eval_every: int = 100,
+    min_probability: float = 0.6,
+    step_size: Optional[float] = None,
+    sdxl_root: str = "/workspace/models/sdxl-base",
+    lightning_repo: str = "ByteDance/SDXL-Lightning",
+    lightning_ckpt: str = "sdxl_lightning_4step_unet.safetensors",
+    seed: int = 42,
     run_name: Optional[str] = None,
 ):
     """Sync assets, launch the differentiable training job on Modal, then download outputs."""
@@ -315,18 +310,32 @@ def train_voxel(
         "num_samples": num_samples,
         "lr": lr,
         "mode": mode,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "guidance_scale": guidance_scale,
+        "lambda_sds": lambda_sds,
+        "lambda_l2": lambda_l2,
+        "sds_image_size": sds_image_size,
+        "snapshot_every": snapshot_every,
+        "snapshot_view": snapshot_view,
+        "log_every": log_every,
+        "eval_every": eval_every,
+        "min_probability": min_probability,
+        "step_size": step_size,
+        "sdxl_root": sdxl_root,
+        "lightning_repo": lightning_repo,
+        "lightning_ckpt": lightning_ckpt,
+        "seed": seed,
         "output_dir": "/workspace/out_local",
         "run_name": run_name,
     }
     print("Dispatching training job with config:", json.dumps(config, indent=2))
-    print("Equivalent CLI:")
-    print(
-        "modal run modal_temp.py::train_voxel "
-        f"--dataset-sequence {dataset_sequence} --map-sequence {map_sequence} "
-        f"--steps {steps} --rays-per-batch {rays_per_batch} --num-samples {num_samples} "
-        f"--lr {lr} --mode {mode}"
-        + (f" --run-name {run_name}" if run_name else "")
-    )
+    print("Launching training: python -m model_stuff.train_sds on Modal")
+
+    print("Ensuring model assets are available on the worker...")
+    download_ml_models.remote()
+    print("Model assets check initiated. Starting training...")
+    
     result = run_probabilistic_training.remote(config)
     print("Training finished. Result:", result)
 
@@ -348,6 +357,7 @@ def shell():
 @app.function(
     image=image,
     volumes={"/workspace": splats_wspace},
+    timeout=3600,
 )
 def download_ml_models():
     """Download pretrained assets into the shared Modal volume."""
