@@ -26,6 +26,17 @@ class RendererConfig:
     # Textures (Phase 2)
     use_textures: bool = False
     texture_scale: float = 1.0  # UV scale inside a voxel (1.0 = one tile per voxel)
+    # WebGPU color/parity helpers
+    # If True, adjust defaults to better match the WebGPU dataset captures
+    # (no sRGB gamma at the end, harder occupancy, face-aligned normals, and
+    # optional per-face palette colors when textures are unavailable).
+    webgpu_parity: bool = False
+    # Use per-face palette colors (top/bottom/side) instead of a single base color
+    # per material when textures are not used. Defaults to False; enabled automatically
+    # if webgpu_parity is True.
+    use_palette_faces: bool = False
+    # Backend: None/'vol' for volumetric (default), 'nv' for nvdiffrast triangle path
+    backend: Optional[str] = None
 
     def resolve_size(self) -> tuple[int, int]:
         h = self.height if self.height is not None else self.image_height
@@ -47,7 +58,51 @@ class DifferentiableRenderer:
 
     def render(self, W_logits: torch.Tensor, config: RendererConfig) -> torch.Tensor:
         from .core import render_ortho, render_perspective
+        # Resolve size and derive parity-driven overrides without mutating the input dataclass
         H, W = config.resolve_size()
+        use_palette_faces = bool(config.use_palette_faces or config.webgpu_parity)
+        normal_sharpness = config.normal_sharpness
+        occupancy_hardness = config.occupancy_hardness
+        step_size = config.step_size
+        srgb_out = config.srgb
+        if config.webgpu_parity:
+            # Emulate WebGPU capture look by default:
+            # - no gamma encode at end (canvas capture path already ends in sRGB)
+            # - encourage face-aligned normals/hard occupancy if not explicitly set
+            srgb_out = False if config.srgb is True else config.srgb
+            if not normal_sharpness or normal_sharpness <= 0:
+                normal_sharpness = 10.0
+            if not occupancy_hardness or occupancy_hardness <= 0:
+                occupancy_hardness = 12.0
+            # Step size used across codebase for dataset rendering parity
+            if step_size is None or step_size == 0.25:
+                step_size = 0.2
+
+        # Optional nvdiffrast backend for WebGPU-parity triangle rendering
+        backend = (config.backend or '').lower()
+        if backend in ('nv', 'nvdiffrast', 'tri'):
+            if config.camera_view is None or config.camera_proj is None:
+                raise ValueError("nvdiffrast backend requires perspective camera_view and camera_proj")
+            # Lazy import to avoid hard dep when unused
+            from ..nv_diff_render import NvDiffRenderer, NvRenderConfig  # type: ignore
+            nv = NvDiffRenderer(self.sigma_m, self.c_m, texture_atlas=self.texture_atlas)
+            img = nv.render(
+                W_logits,
+                NvRenderConfig(
+                    height=H,
+                    width=W,
+                    temperature=config.temperature,
+                    world_scale=config.world_scale,
+                    camera_view=config.camera_view,
+                    camera_proj=config.camera_proj,
+                    face_steepness=float(occupancy_hardness) if (occupancy_hardness and occupancy_hardness > 0) else 12.0,
+                    face_threshold=0.01,
+                    use_palette_faces=use_palette_faces,
+                    srgb=srgb_out,
+                ),
+            )
+            return img
+
         if config.camera_view is not None and config.camera_proj is not None:
             I = render_perspective(
                 W_logits,
@@ -59,12 +114,13 @@ class DifferentiableRenderer:
                 camera_view=config.camera_view,
                 camera_proj=config.camera_proj,
                 steps=config.steps,
-                step_size=config.step_size,
+                step_size=step_size,
                 world_scale=config.world_scale,
-                normal_sharpness=config.normal_sharpness,
-                occupancy_hardness=config.occupancy_hardness,
+                normal_sharpness=normal_sharpness,
+                occupancy_hardness=occupancy_hardness,
                 occupancy_threshold=config.occupancy_threshold,
                 use_textures=config.use_textures,
+                use_palette_faces=use_palette_faces,
                 texture_scale=config.texture_scale,
                 texture_atlas=self.texture_atlas,
             )
@@ -77,15 +133,16 @@ class DifferentiableRenderer:
                 W,
                 config.temperature,
                 steps=config.steps,
-                step_size=config.step_size,
-                normal_sharpness=config.normal_sharpness,
-                occupancy_hardness=config.occupancy_hardness,
+                step_size=step_size,
+                normal_sharpness=normal_sharpness,
+                occupancy_hardness=occupancy_hardness,
                 occupancy_threshold=config.occupancy_threshold,
                 use_textures=config.use_textures,
+                use_palette_faces=use_palette_faces,
                 texture_scale=config.texture_scale,
                 texture_atlas=self.texture_atlas,
             )
-        if config.srgb:
+        if srgb_out:
             # Apply simple sRGB EOTF to match typical canvas export look
             rgb = I[..., :3, :, :].clamp(0, 1)
             rgb = torch.pow(rgb + 1e-8, 1.0 / 2.2)

@@ -47,6 +47,11 @@ def build_w_logits_from_indices(indices: np.ndarray, grid_xyz: Tuple[int, int, i
 
 
 def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--backend', type=str, default='vol', choices=['vol','nv'], help='Rendering backend: vol (default) or nv (nvdiffrast)')
+    ap.add_argument('--parity', action='store_true', help='Enable WebGPU parity knobs (palette faces, no sRGB gamma, harder faces)')
+    args, _ = ap.parse_known_args()
     out_dir = TEST_IMGS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     images_dir = Path(DATA_IMAGES)
@@ -109,7 +114,13 @@ def main() -> None:
             vm, pm = pick_orientation(vm0, pm0, pos)
             I = renderer.render(
                 W_logits,
-                RendererConfig(height=h, width=w, temperature=0.7, step_size=0.2, srgb=True, camera_view=vm, camera_proj=pm, world_scale=world_scale)
+                RendererConfig(
+                    height=h, width=w, temperature=0.7, step_size=0.2,
+                    srgb=not args.parity,
+                    camera_view=vm, camera_proj=pm, world_scale=world_scale,
+                    webgpu_parity=bool(args.parity), use_palette_faces=args.parity,
+                    backend=('nv' if args.backend=='nv' else None),
+                )
             )
             x = I.detach().cpu()[0, :3].permute(1, 2, 0).numpy()
             img_out = (x * 255.0).clip(0, 255).astype(np.uint8)
@@ -131,10 +142,16 @@ def main() -> None:
             pm = torch.tensor(view['projectionMatrix'], dtype=torch.float32, device=DEVICE).view(4, 4)
             I = renderer.render(
                 W_logits,
-                RendererConfig(height=h, width=w, temperature=0.7, step_size=0.2, srgb=True, camera_view=vm, camera_proj=pm, world_scale=2.0)
+                RendererConfig(
+                    height=h, width=w, temperature=0.7, step_size=0.2,
+                    srgb=not args.parity,
+                    camera_view=vm, camera_proj=pm, world_scale=2.0,
+                    webgpu_parity=bool(args.parity), use_palette_faces=args.parity,
+                    backend=('nv' if args.backend=='nv' else None),
+                )
             )
         else:
-            I = renderer.render(W_logits, RendererConfig(height=h, width=w, temperature=0.7, step_size=0.2, srgb=True))
+            I = renderer.render(W_logits, RendererConfig(height=h, width=w, temperature=0.7, step_size=0.2, srgb=not args.parity, webgpu_parity=bool(args.parity), use_palette_faces=args.parity, backend=('nv' if args.backend=='nv' else None)))
         x = I.detach().cpu()[0, :3].permute(1, 2, 0).numpy()
         img_out = (x * 255.0).clip(0, 255).astype(np.uint8)
         Image.fromarray(img_out).save(out_dir / f"{idx:04d}.png")

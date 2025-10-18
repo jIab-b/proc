@@ -73,6 +73,8 @@ def main() -> None:
     ap.add_argument("--occupancy-hardness", type=float, default=12.0, help="Sigmoid hardening factor for occupancy (0 disables)")
     ap.add_argument("--occupancy-threshold", type=float, default=0.35, help="Sigmoid threshold for occupancy hardening")
     ap.add_argument("--texture-scale", type=float, default=1.0, help="UV scale inside a voxel for textures")
+    ap.add_argument("--backend", type=str, default="vol", choices=["vol","nv"], help="Rendering backend: vol (default) or nv (nvdiffrast)")
+    ap.add_argument("--parity", action="store_true", help="Enable WebGPU parity knobs (palette faces, no sRGB gamma, harder faces)")
     args = ap.parse_args()
 
     actions = load_actions_from_path(Path(args.dsl_file))
@@ -107,12 +109,15 @@ def main() -> None:
             width=W,
             temperature=args.temperature,
             step_size=args.step_size,
-            srgb=True,
+            srgb=not args.parity,
             use_textures=bool(texture_atlas is not None and args.use_textures),
             normal_sharpness=args.normal_sharpness,
             occupancy_hardness=args.occupancy_hardness,
             occupancy_threshold=args.occupancy_threshold,
             texture_scale=args.texture_scale,
+            backend=("nv" if args.backend=="nv" else None),
+            webgpu_parity=bool(args.parity),
+            use_palette_faces=bool(args.parity),
         ),
     )
     img = (I[0, :3].clamp(0, 1).permute(1, 2, 0).detach().cpu().numpy() * 255.0).astype("uint8")

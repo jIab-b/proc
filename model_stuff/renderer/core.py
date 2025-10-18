@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from .palette import get_face_palette
 
 
 def soft_fields(W: torch.Tensor, sigma_m: torch.Tensor, c_m: torch.Tensor, temperature: float) -> tuple[torch.Tensor, torch.Tensor]:
@@ -57,6 +58,7 @@ def render_ortho(
     occupancy_hardness: float = 0.0,
     occupancy_threshold: float = 0.35,
     use_textures: bool = False,
+    use_palette_faces: bool = False,
     texture_scale: float = 1.0,
     texture_atlas: torch.Tensor | None = None,
 ) -> torch.Tensor:
@@ -151,14 +153,21 @@ def render_ortho(
     ambient = ((1.0 - sky_factor)[..., None] * horizon_color.view(1, 1, 1, 3) + sky_factor[..., None] * sky_color.view(1, 1, 1, 3)) * 0.55
     diffuse = sun_dot[..., None] * sun_color.view(1, 1, 1, 3)
     shading = ambient + diffuse
-    # Build textured color if requested
+    # Build colored line samples
     rgb_line_source = rgb_s_base
-    if use_textures and texture_atlas is not None:
-        # Per-voxel probabilities sampled along ray for material mixing
+    need_probs = (use_textures and texture_atlas is not None) or use_palette_faces
+    P_vol = None
+    if need_probs:
+        # Prepare per-voxel probabilities volume for sampling along rays
         P_vox = _compute_probs(W, sigma_m, temperature)  # (X,Y,Z,M)
         P_vol = P_vox.permute(3, 2, 1, 0).contiguous().unsqueeze(0)  # (1,M,Z,Y,X)
+
+    if use_textures and texture_atlas is not None:
+        # Sample full probability field along rays (fits typical sizes)
         P_s = F.grid_sample(P_vol, grid, align_corners=True, mode='bilinear', padding_mode='zeros').squeeze(0)  # (M,S,H,W)
         P_s = P_s.permute(2, 3, 1, 0).clamp_min(0.0)  # (H,W,S,M)
+        # Per-voxel probabilities sampled along ray for material mixing
+        # (already computed above as P_s)
 
         # Compute fractional coordinates inside voxel for UVs
         xg = grid[..., 0]
@@ -248,6 +257,42 @@ def render_ortho(
         color_mat = base_colors * (1.0 - tex_a_acc) + tex_rgb_acc * tex_a_acc  # (H,W,S,M,3)
         # Mix across materials by probability
         rgb_line_source = (P_s.unsqueeze(-1) * color_mat).sum(dim=-2)  # (H,W,S,3)
+    elif use_palette_faces:
+        # Blend fixed per-face palette colors; do it in S-chunks to reduce memory.
+        # Directional face weights (H,W,S)
+        if normal_sharpness and normal_sharpness > 0:
+            w_east_f = w_east
+            w_west_f = w_west
+            w_top_f = w_top
+            w_bottom_f = w_bottom
+            w_south_f = w_south
+            w_north_f = w_north
+        else:
+            w_east_f = nx.clamp(min=0.0)
+            w_west_f = (-nx).clamp(min=0.0)
+            w_top_f = ny.clamp(min=0.0)
+            w_bottom_f = (-ny).clamp(min=0.0)
+            w_south_f = nz.clamp(min=0.0)
+            w_north_f = (-nz).clamp(min=0.0)
+            sfaces = (w_east_f + w_west_f + w_top_f + w_bottom_f + w_south_f + w_north_f + 1e-8)
+            w_east_f /= sfaces; w_west_f /= sfaces; w_top_f /= sfaces; w_bottom_f /= sfaces; w_south_f /= sfaces; w_north_f /= sfaces
+
+        assert P_vol is not None, "P_vol must be prepared when use_palette_faces is True"
+        face_palette = get_face_palette(c_m).to(device)
+        rgb_line_source = torch.empty((img_h, img_w, S, 3), device=device, dtype=rgb.dtype)
+        s_chunk = max(1, min(16, S))
+        for s0 in range(0, S, s_chunk):
+            s1 = min(S, s0 + s_chunk)
+            grid_slice = grid[:, s0:s1, :, :, :]  # (1,s, H, W, 3)
+            P_slice = F.grid_sample(P_vol, grid_slice, align_corners=True, mode='bilinear', padding_mode='zeros').squeeze(0)  # (M,s,H,W)
+            P_s_slice = P_slice.permute(2, 3, 1, 0).clamp_min(0.0)  # (H,W,s,M)
+            # Contract materials then faces
+            e = torch.einsum('hwsm,mlc->hwslc', P_s_slice, face_palette)  # (H,W,s,6,3)
+            w_faces = torch.stack([
+                w_top_f[:, :, s0:s1], w_bottom_f[:, :, s0:s1], w_north_f[:, :, s0:s1], w_south_f[:, :, s0:s1], w_east_f[:, :, s0:s1], w_west_f[:, :, s0:s1]
+            ], dim=-1)  # (H,W,s,6)
+            rgb_slice = torch.einsum('hwsl,hwslc->hwsc', w_faces, e)  # (H,W,s,3)
+            rgb_line_source[:, :, s0:s1, :] = rgb_slice
 
     # Apply per-sample shading then composite.
     rgb_line = (rgb_line_source * shading).clamp(0.0, 1.0)
@@ -289,6 +334,7 @@ def render_perspective(
     occupancy_hardness: float = 0.0,
     occupancy_threshold: float = 0.35,
     use_textures: bool = False,
+    use_palette_faces: bool = False,
     texture_scale: float = 1.0,
     texture_atlas: torch.Tensor | None = None,
 ) -> torch.Tensor:
@@ -432,14 +478,20 @@ def render_perspective(
     ambient = ((1.0 - sky_factor)[..., None] * horizon_color.view(1, 1, 1, 3) + sky_factor[..., None] * sky_color.view(1, 1, 1, 3)) * 0.55
     diffuse = sun_dot[..., None] * sun_color.view(1, 1, 1, 3)
     shading = ambient + diffuse
-    # Textured color if requested
+    # Colored line samples
     rgb_line_source = rgb_s_base
-    if use_textures and texture_atlas is not None:
-        # Sample material probabilities along ray for mixing
+    need_probs = (use_textures and texture_atlas is not None) or use_palette_faces
+    P_vol = None
+    if need_probs:
+        # Prepare per-voxel probabilities volume for sampling along rays
         P_vox = _compute_probs(W, sigma_m, temperature)  # (X,Y,Z,M)
         P_vol = P_vox.permute(3, 2, 1, 0).contiguous().unsqueeze(0)  # (1,M,Z,Y,X)
+
+    if use_textures and texture_atlas is not None:
+        # Sample material probabilities along ray for mixing (full S)
         P_s = F.grid_sample(P_vol, grid, align_corners=True, mode='bilinear', padding_mode='zeros').squeeze(0)  # (M,S,H,W)
         P_s = P_s.permute(2, 3, 1, 0).clamp_min(0.0)  # (H,W,S,M)
+        # (already computed above as P_s)
 
         # Fractional coords in a voxel for UVs
         pos_grid = pos_grid  # (H,W,S,3) already computed above
@@ -500,6 +552,30 @@ def render_perspective(
         base_colors = c_m.to(device).view(1, 1, 1, M, 3)
         color_mat = base_colors * (1.0 - tex_a_acc) + tex_rgb_acc * tex_a_acc
         rgb_line_source = (P_s.unsqueeze(-1) * color_mat).sum(dim=-2)
+    elif use_palette_faces:
+        # Face palette blending path (see ortho implementation for details)
+        if normal_sharpness and normal_sharpness > 0:
+            w_east_f = w_east; w_west_f = w_west; w_top_f = w_top; w_bottom_f = w_bottom; w_south_f = w_south; w_north_f = w_north
+        else:
+            w_east_f = nx.clamp(min=0.0); w_west_f = (-nx).clamp(min=0.0); w_top_f = ny.clamp(min=0.0); w_bottom_f = (-ny).clamp(min=0.0); w_south_f = nz.clamp(min=0.0); w_north_f = (-nz).clamp(min=0.0)
+            sfaces = (w_east_f + w_west_f + w_top_f + w_bottom_f + w_south_f + w_north_f + 1e-8)
+            w_east_f /= sfaces; w_west_f /= sfaces; w_top_f /= sfaces; w_bottom_f /= sfaces; w_south_f /= sfaces; w_north_f /= sfaces
+
+        assert P_vol is not None, "P_vol must be prepared when use_palette_faces is True"
+        face_palette = get_face_palette(c_m).to(device)
+        rgb_line_source = torch.empty((img_h, img_w, S, 3), device=device, dtype=rgb.dtype)
+        s_chunk = max(1, min(16, S))
+        for s0 in range(0, S, s_chunk):
+            s1 = min(S, s0 + s_chunk)
+            grid_slice = grid[:, s0:s1, :, :, :]
+            P_slice = F.grid_sample(P_vol, grid_slice, align_corners=True, mode='bilinear', padding_mode='zeros').squeeze(0)  # (M,s,H,W)
+            P_s_slice = P_slice.permute(2, 3, 1, 0).clamp_min(0.0)  # (H,W,s,M)
+            e = torch.einsum('hwsm,mlc->hwslc', P_s_slice, face_palette)  # (H,W,s,6,3)
+            w_faces = torch.stack([
+                w_top_f[:, :, s0:s1], w_bottom_f[:, :, s0:s1], w_north_f[:, :, s0:s1], w_south_f[:, :, s0:s1], w_east_f[:, :, s0:s1], w_west_f[:, :, s0:s1]
+            ], dim=-1)  # (H,W,s,6)
+            rgb_slice = torch.einsum('hwsl,hwslc->hwsc', w_faces, e)
+            rgb_line_source[:, :, s0:s1, :] = rgb_slice
 
     rgb_line = (rgb_line_source * shading).clamp(0.0, 1.0)
 
