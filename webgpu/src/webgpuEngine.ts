@@ -1359,10 +1359,10 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
       const spanY = maxY - minY + 1
       const spanZ = maxZ - minZ + 1
       const span = Math.max(spanX, spanY * 1.5, spanZ, 1)
-      const distance = Math.max(span * worldScale * 1.8, 24 * worldScale)
+      const distance = Math.max(span * worldScale * 1.2, 15 * worldScale)
 
       cameraPos[0] = target[0] + distance
-      cameraPos[1] = target[1] + Math.max(spanY * worldScale * 2, 18 * worldScale)
+      cameraPos[1] = target[1] + Math.max(spanY * worldScale * 1.5, 12 * worldScale)
       cameraPos[2] = target[2] + distance
     }
 
