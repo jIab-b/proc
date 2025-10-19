@@ -137,6 +137,7 @@ def main():
         print("🚀 Starting Vite dev server on http://localhost:5173")
         vite_process = subprocess.Popen(
             ["npm", "run", "dev"],
+            cwd="webgpu",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
