@@ -188,14 +188,6 @@ class ReconstructionResponse(BaseModel):
     tokens: Optional[Dict[str, Any]] = None
 
 
-class DSLLogEntry(BaseModel):
-    action: str
-    params: Dict[str, Any]
-    result: Dict[str, Any]
-    source: Optional[str] = None
-    timestamp: Optional[str] = None
-
-
 class MapDimensions(BaseModel):
     x: int
     y: int
@@ -237,27 +229,6 @@ async def options_texture_file(file_path: str):
             "Access-Control-Max-Age": "86400"
         }
     )
-
-# Canonical DSL parse and schema endpoints
-class ParseDSLRequest(BaseModel):
-    text: str
-
-
-@app.post("/api/parse-dsl")
-async def parse_dsl_endpoint(req: ParseDSLRequest):
-    try:
-        from dsl.python import parse_dsl as _parse_text, to_canonical
-        raw_actions = _parse_text(req.text)
-        actions = [a.model_dump() for a in to_canonical(raw_actions)]
-        return {"dslVersion": "1.0", "actions": actions}
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"DSL parse failed: {exc}") from exc
-
-
-@app.get("/api/dsl-schema")
-async def dsl_schema_endpoint():
-    from dsl.python import schema as _schema
-    return _schema()
 
 @app.get("/textures/{file_path:path}")
 async def get_texture_file(file_path: str):
@@ -1107,25 +1078,6 @@ async def reconstruct_dataset(request: ReconstructionRequest):
         "tokens": llm_response.tokens,
         "summary": summary,
     }
-
-
-@app.post("/api/log-dsl")
-async def log_dsl(entry: DSLLogEntry):
-    """Append DSL action logs to session file."""
-    record = {
-        "event": "dsl_action",
-        "timestamp": entry.timestamp or datetime.utcnow().isoformat(),
-        "action": entry.action,
-        "params": entry.params,
-        "result": entry.result,
-        "source": entry.source,
-    }
-    try:
-        write_log_entry(record)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[DSL] Failed to write log entry: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to write DSL log") from exc
-    return {"status": "ok"}
 
 
 @app.post("/api/save-map")
