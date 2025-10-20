@@ -16,6 +16,7 @@ import argparse
 from pathlib import Path
 from PIL import Image
 import numpy as np
+from datetime import datetime
 
 from .voxel_grid import DifferentiableVoxelGrid
 from .map_io import load_map_to_grid, save_grid_to_map, init_grid_from_primitive, get_grid_stats
@@ -53,15 +54,14 @@ def compute_sds_loss(
     rgb = rgba[:, :3, :, :].clamp(0, 1)
     print(f"    [SDS DEBUG] RGB: min={rgb.min().item():.4f}, max={rgb.max().item():.4f}, nan={torch.isnan(rgb).any().item()}")
 
-    # SDXL VAE expects input in [-1, 1] range, not [0, 1]
-    rgb_normalized = rgb * 2.0 - 1.0
+    # SDXL VAE expects input in [-1, 1] and same dtype as VAE weights
+    rgb_normalized = (rgb * 2.0 - 1.0).to(sdxl.dtype)
     print(f"    [SDS DEBUG] RGB normalized: min={rgb_normalized.min().item():.4f}, max={rgb_normalized.max().item():.4f}")
 
-    # Encode to latent (use FP32 for stability, then convert to FP16)
+    # Encode to latent; keep VAE frozen but allow dtype-correct forward
     with torch.no_grad():
-        latent_dist = sdxl.vae.encode(rgb_normalized.float()).latent_dist
-        z0 = latent_dist.mean * 0.18215  # Use mean instead of sample for stability
-        z0 = z0.to(sdxl.dtype)
+        latent_dist = sdxl.vae.encode(rgb_normalized).latent_dist
+        z0 = latent_dist.mean * 0.18215  # mean for stability
     print(f"    [SDS DEBUG] Latent z0: min={z0.min().item():.4f}, max={z0.max().item():.4f}, nan={torch.isnan(z0).any().item()}")
 
     # Sample timestep
@@ -180,14 +180,17 @@ def train_sds(
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Create output directories
-    output_path = Path(output_dir)
+    # Create timestamped run directory under output_dir
+    base_dir = Path(output_dir)
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = base_dir / run_id
     output_path.mkdir(parents=True, exist_ok=True)
     images_dir = output_path / "images"
     images_dir.mkdir(exist_ok=True)
     maps_dir = output_path / "maps"
     maps_dir.mkdir(exist_ok=True)
     log_file = output_path / "train.jsonl"
+    session_file = output_path / "session.json"
 
     # Load dataset cameras
     dataset_path = Path(f"datasets/{dataset_id}")
@@ -214,6 +217,7 @@ def train_sds(
 
     # Training resolution (configurable)
     print(f"  Training resolution: {train_w}×{train_h}")
+    print(f"  Run directory: {output_path}")
 
     # Initialize voxel grid
     print(f"\nInitializing voxel grid (mode={init_mode})...")
@@ -260,6 +264,26 @@ def train_sds(
 
     print(f"  Grid: {grid}")
 
+    # Save session metadata early
+    try:
+        session = {
+            "run_id": run_id,
+            "prompt": prompt,
+            "dataset_id": dataset_id,
+            "train_h": train_h,
+            "train_w": train_w,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "init_mode": init_mode,
+            "output_dir": str(output_path),
+            "grid_size": grid.grid_size,
+            "world_scale": grid.world_scale,
+        }
+        with open(session_file, "w") as f:
+            json.dump(session, f, indent=2)
+    except Exception as e:
+        print(f"⚠️  Failed to write session.json: {e}")
+
     # Initialize SDXL
     print(f"\nInitializing SDXL...")
     print(f"  Prompt: '{prompt}'")
@@ -273,6 +297,30 @@ def train_sds(
     )
 
     pe, pe_pooled, ue, ue_pooled, add_time_ids = sdxl.encode_prompt(prompt)
+
+    # Preview render before training (view 0)
+    try:
+        pv_view, pv_proj = cameras[0]
+        rgba_prev = grid(pv_view, pv_proj, train_h, train_w, temperature=temp_start)
+        rgb_prev = rgba_prev[0, :3, :, :].detach().cpu().permute(1, 2, 0).numpy()
+        rgb_prev = (np.clip(rgb_prev, 0, 1) * 255).astype(np.uint8)
+        Image.fromarray(rgb_prev).save(images_dir / "preview_init_cam0.png")
+        # Save initial map snapshot
+        save_grid_to_map(
+            grid.occupancy_logits.data,
+            grid.material_logits.data,
+            maps_dir / "step_0000.json",
+            world_scale=grid.world_scale,
+            threshold=0.5,
+            metadata={
+                "prompt": prompt,
+                "step": 0,
+                "total_steps": steps,
+                "cfg_scale": cfg_scale
+            }
+        )
+    except Exception as e:
+        print(f"⚠️  Preview render/save failed: {e}")
 
     # Optimizer
     optimizer = torch.optim.Adam(grid.parameters(), lr=lr)
@@ -491,7 +539,10 @@ def main():
             setattr(args, k, v)
         print(f"\nUsing preset: {args.preset} → {preset}")
 
-    train_sds(**vars(args))
+    kwargs = vars(args).copy()
+    # Remove CLI-only keys not in train_sds signature
+    kwargs.pop("preset", None)
+    train_sds(**kwargs)
 
 
 if __name__ == "__main__":
