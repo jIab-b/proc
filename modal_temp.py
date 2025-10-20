@@ -20,7 +20,10 @@ splats_wspace = Volume.from_name("workspace", create_if_missing=True)
 
 image = (
     Image.from_registry("pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel")
-    .env({"HF_HOME": "/workspace/hf"})
+    .env({
+        "HF_HOME": "/workspace/hf",
+        "HUGGINGFACE_HUB_CACHE": "/workspace/hf",
+    })
     .run_commands(
         "apt-get update && apt-get install -y curl ca-certificates gnupg",
         "curl -fsSL -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb",
@@ -59,7 +62,7 @@ MODEL_REPOS = [
 ]
 
 MODEL_ROOT = Path("/workspace/models")
-DEFAULT_SYNC_DIRS = ["model_stuff", "datasets", "maps"]
+DEFAULT_SYNC_DIRS = ["model_stuff", "datasets", "maps", "third_party"]
 
 def compute_hashes(dir_path: str) -> dict:
     if not os.path.exists(dir_path):
@@ -86,7 +89,7 @@ GPU      = {"L4": "L4", "L40S": "L40S", "A100": "A100-40GB", "H100": "H100"}.get
 @app.function(
     image=image,
     volumes={"/workspace": splats_wspace},
-    gpu=gpu.A100(),
+    gpu=GPU,
 )
 def run_sdxl_lightning_infer(
     prompt: str = "A girl smiling",
@@ -146,6 +149,7 @@ def _sync_workspace_dirs(dirs_to_sync):
             print(f"Skipping {src}; local path missing")
             continue
 
+        # Replicate top-level folder into /workspace
         remote_rel_root = base  # Path inside the Modal volume
         remote_abs_root = f"/workspace/{remote_rel_root}"
 
@@ -165,6 +169,14 @@ def _sync_workspace_dirs(dirs_to_sync):
                 subprocess.run(["modal", "volume", "put", "workspace", local_file, remote_file], check=True)
 
         print(f"Done syncing {src}.")
+
+    # Also sync top-level requirements.txt if present (needed for installs)
+    req = os.path.abspath("requirements.txt")
+    if os.path.exists(req):
+        print("Syncing requirements.txt -> /workspace/requirements.txt ...")
+        subprocess.run(["modal", "volume", "rm", "workspace", "requirements.txt"], check=False)
+        subprocess.run(["modal", "volume", "put", "workspace", req, "requirements.txt"], check=True)
+        print("Done syncing requirements.txt.")
 
 
 
@@ -250,141 +262,101 @@ def sync_outputs(local_dir: str = "./out_local"):
     print(f"Downloaded to {local_path}")
 
 
+# --- SDS training on Modal (minimal) ---
+
 @app.function(
     image=image,
     volumes={"/workspace": splats_wspace},
-    gpu=gpu.A100(),
+    gpu=GPU,
+    timeout=86400,
 )
-def run_probabilistic_training(config: dict) -> dict:
-    import os
-    import subprocess
+def run_sds_train(train_args: List[str]) -> str:
+    """
+    Minimal SDS training runner:
+    - Creates venv in /workspace/venv
+    - Installs requirements.txt with uv
+    - Installs local third_party/nvdiffrast
+    - Runs `python -m model_stuff.train_sds_final ...`
+    - Returns the timestamped run directory path
+    """
+    import os, subprocess, sys
+    from pathlib import Path
 
-    os.chdir("/workspace")
+    os.environ.setdefault("HF_HOME", "/workspace/hf")
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/workspace/hf")
+    Path("/workspace/hf").mkdir(parents=True, exist_ok=True)
+    Path("/workspace/out_local").mkdir(parents=True, exist_ok=True)
 
-    args = ["python", "-m", "model_stuff.train_sds"]
+    def sh(cmd, **kwargs):
+        print("$", cmd if isinstance(cmd, str) else " ".join(cmd))
+        if isinstance(cmd, list):
+            return subprocess.run(cmd, shell=False, check=True, **kwargs)
+        return subprocess.run(cmd, shell=True, check=True, **kwargs)
 
-    print(f"[modal] Executing training command: {' '.join(args)}")
-    subprocess.run(args, check=True)
-    return {"command": args, "output_dir": config.get("output_dir", "out_local")}
+    # Create venv
+    if not Path("/workspace/venv/bin/python").exists():
+        sh("python -m venv /workspace/venv")
+    venv_dir = "/workspace/venv"
+    py = f"{venv_dir}/bin/python"
+    venv_env = os.environ.copy()
+    venv_env["VIRTUAL_ENV"] = venv_dir
+    venv_env["PATH"] = f"{venv_dir}/bin:" + venv_env.get("PATH", "")
+
+    # Install uv and deps
+    sh(f"{py} -m pip install -U pip uv wheel setuptools", env=venv_env)
+    if Path("/workspace/requirements.txt").exists():
+        sh("uv pip install -r /workspace/requirements.txt", env=venv_env)
+
+    # Install local nvdiffrast copy (requires CUDA toolchain present)
+    if Path("/workspace/third_party/nvdiffrast").exists():
+        sh("uv pip install /workspace/third_party/nvdiffrast", env=venv_env)
+
+    # Run training (cwd=/workspace)
+    cmd = [py, "-m", "model_stuff.train_sds_final", *train_args]
+    print("Running:", " ".join(cmd))
+    sh(cmd, cwd="/workspace")
+
+    # Identify latest timestamped run dir to return
+    runs = sorted(Path("/workspace/out_local/sds_training").glob("*/"), key=lambda p: p.name)
+    return str(runs[-1]) if runs else "/workspace/out_local/sds_training"
 
 
 @app.local_entrypoint()
-def train_voxel(
-    dataset_sequence: int = 1,
-    map_sequence: int = 1,
-    steps: int = 500,
-    rays_per_batch: int = 4096,
-    num_samples: int = 96,
-    lr: float = 5e-3,
-    mode: str = "l2",
-    prompt: str = "",
-    negative_prompt: str = "",
-    guidance_scale: float = 3.0,
-    lambda_sds: float = 1.0,
-    lambda_l2: float = 1.0,
-    sds_image_size: int = 256,
-    snapshot_every: int = 100,
-    snapshot_view: Optional[str] = None,
-    log_every: int = 10,
-    eval_every: int = 100,
-    min_probability: float = 0.6,
-    step_size: Optional[float] = None,
-    sdxl_root: str = "/workspace/models/sdxl-base",
-    lightning_repo: str = "ByteDance/SDXL-Lightning",
-    lightning_ckpt: str = "sdxl_lightning_4step_unet.safetensors",
-    seed: int = 42,
-    run_name: Optional[str] = None,
+def run_train(
+    prompt: str = "a stone tower",
+    dataset_id: int = 1,
+    init_mode: str = "ground_plane",
+    preset: str = "small",
+    steps: int = 60,
+    image_every: int = 5,
+    save_map_every: int = 20,
+    train_h: int = 160,
+    train_w: int = 160,
+    max_blocks: int = 20000,
+    local_dir: str = "./out_local",
 ):
-    """Sync assets, launch the differentiable training job on Modal, then download outputs."""
+    """Sync code, run SDS training on Modal, then sync out_local locally."""
+    # Sync essentials, including third_party (nvdiffrast)
+    sync_workspace(["model_stuff", "datasets", "maps", "third_party"])
 
-    dirs = DEFAULT_SYNC_DIRS.copy()
-    if "out_local" not in dirs:
-        dirs.append("out_local")
-    _sync_workspace_dirs(dirs)
+    # Build train args list (ASCII hyphens only)
+    args = [
+        "--prompt", prompt,
+        "--dataset_id", str(dataset_id),
+        "--init_mode", init_mode,
+        "--preset", preset,
+        "--steps", str(steps),
+        "--image_every", str(image_every),
+        "--save_map_every", str(save_map_every),
+        "--train_h", str(train_h),
+        "--train_w", str(train_w),
+        "--max_blocks", str(max_blocks),
+        "--output_dir", "/workspace/out_local/sds_training",
+    ]
 
-    config = {
-        "dataset_sequence": dataset_sequence,
-        "map_sequence": map_sequence,
-        "steps": steps,
-        "rays_per_batch": rays_per_batch,
-        "num_samples": num_samples,
-        "lr": lr,
-        "mode": mode,
-        "prompt": prompt,
-        "negative_prompt": negative_prompt,
-        "guidance_scale": guidance_scale,
-        "lambda_sds": lambda_sds,
-        "lambda_l2": lambda_l2,
-        "sds_image_size": sds_image_size,
-        "snapshot_every": snapshot_every,
-        "snapshot_view": snapshot_view,
-        "log_every": log_every,
-        "eval_every": eval_every,
-        "min_probability": min_probability,
-        "step_size": step_size,
-        "sdxl_root": sdxl_root,
-        "lightning_repo": lightning_repo,
-        "lightning_ckpt": lightning_ckpt,
-        "seed": seed,
-        "output_dir": "/workspace/out_local",
-        "run_name": run_name,
-    }
-    print("Dispatching training job with config:", json.dumps(config, indent=2))
-    print("Launching training: python -m model_stuff.train_sds on Modal")
+    run_dir = run_sds_train.remote(args)
+    print(f"Remote run dir: {run_dir}")
 
-    print("Ensuring model assets are available on the worker...")
-    download_ml_models.remote()
-    print("Model assets check initiated. Starting training...")
-    
-    result = run_probabilistic_training.remote(config)
-    print("Training finished. Result:", result)
-
-    print("Syncing outputs back to local machine...")
-    sync_outputs()
-    print("All outputs available under ./out_local")
-
-
-@app.function(
-    image=image,
-    volumes={"/workspace": splats_wspace},
-)
-def shell():
-    import sys
-    import subprocess
-    subprocess.call(["/bin/bash"], cwd="/workspace", stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
-
-
-@app.function(
-    image=image,
-    volumes={"/workspace": splats_wspace},
-    timeout=3600,
-)
-def download_ml_models():
-    """Download pretrained assets into the shared Modal volume."""
-    from huggingface_hub import snapshot_download
-
-    MODEL_ROOT.mkdir(parents=True, exist_ok=True)
-
-    hf_token = os.environ.get("HUGGINGFACE_TOKEN") or os.environ.get("HF_TOKEN")
-
-    for repo_id, alias in MODEL_REPOS:
-        target_dir = MODEL_ROOT / alias
-        target_dir.mkdir(parents=True, exist_ok=True)
-        print(f"[modal] Downloading {repo_id} -> {target_dir}")
-        snapshot_download(
-            repo_id=repo_id,
-            local_dir=str(target_dir),
-            local_dir_use_symlinks=False,
-            resume_download=True,
-            token=hf_token,
-        )
-
-    print("[modal] Model assets synced to /workspace/models")
-
-
-@app.local_entrypoint()
-def prepare_models():
-    """Trigger remote model downloads so Flux/ControlNet assets are ready."""
-    print("Dispatching download_ml_models job to Modal...")
-    download_ml_models.remote()
-    print("Download initiated. Monitor Modal logs for completion details.")
+    # Sync out_local back to local filesystem
+    sync_outputs(local_dir=local_dir)
+    print("Training outputs synced.")
