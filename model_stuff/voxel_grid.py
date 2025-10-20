@@ -106,8 +106,8 @@ class DifferentiableVoxelGrid(nn.Module):
             alpha = torch.zeros(1, 1, img_h, img_w, device=self.device)
             return torch.cat([rgb, alpha], dim=1)
 
-        # Extract positions
-        positions = [(int(x), int(y), int(z)) for x, y, z in active_indices]
+        # Extract positions (keep as list for compatibility, but convert more efficiently)
+        positions = active_indices.tolist()
 
         # Extract occupancy and material logits for active voxels
         active_occ = occ_probs[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]]

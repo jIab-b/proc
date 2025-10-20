@@ -64,12 +64,37 @@ def build_block_mesh(
         pos_set = set(positions)
         neighbor_check = lambda p: p in pos_set
 
-    # Collect all weighted colors (this is what needs gradients)
-    all_weighted_colors = []
-    all_mat_probs = []
-    all_vertex_info = []  # (block_idx, face_idx, corner_idx) for building geometry
+    # First pass: count visible faces to pre-allocate tensors
+    num_visible_vertices = 0
+    for block_idx, (bx, by, bz) in enumerate(positions):
+        for face_idx in range(6):
+            face_def = FACE_DEFS[face_idx]
+            offset = face_def['offset']
+            neighbor_pos = (bx + offset[0], by + offset[1], bz + offset[2])
 
-    # For each block
+            if not neighbor_check(neighbor_pos):
+                num_visible_vertices += 6  # 6 vertices per face
+
+    # Handle empty mesh
+    if num_visible_vertices == 0:
+        return (
+            torch.zeros((0, 3), dtype=torch.float32, device=device),
+            torch.zeros((0, 3), dtype=torch.int32, device=device),
+            {
+                'normals': torch.zeros((0, 3), dtype=torch.float32, device=device),
+                'colors': torch.zeros((0, 3), dtype=torch.float32, device=device),
+                'uvs': torch.zeros((0, 2), dtype=torch.float32, device=device),
+                'material_weights': torch.zeros((0, M), dtype=torch.float32, device=device)
+            }
+        )
+
+    # Pre-allocate tensors (CRITICAL: avoids Python list accumulation)
+    colors = torch.zeros((num_visible_vertices, 3), dtype=torch.float32, device=device)
+    mat_weights = torch.zeros((num_visible_vertices, M), dtype=torch.float32, device=device)
+    vertex_info = []  # Still need this for geometry, but much smaller impact
+
+    v_idx = 0
+    # Second pass: fill pre-allocated tensors
     for block_idx, (bx, by, bz) in enumerate(positions):
         block_mat_probs = material_probs[block_idx]  # (M,)
 
@@ -97,34 +122,18 @@ def build_block_mesh(
             # Store for each vertex in this face (6 vertices = 2 triangles)
             for tri_idx in FACE_INDICES:
                 corner_idx = tri_idx
-                all_weighted_colors.append(weighted_color)
-                all_mat_probs.append(block_mat_probs)
-                all_vertex_info.append((bx, by, bz, face_idx, corner_idx))
-
-    # Handle empty mesh
-    if len(all_vertex_info) == 0:
-        return (
-            torch.zeros((0, 3), dtype=torch.float32, device=device),
-            torch.zeros((0, 3), dtype=torch.int32, device=device),
-            {
-                'normals': torch.zeros((0, 3), dtype=torch.float32, device=device),
-                'colors': torch.zeros((0, 3), dtype=torch.float32, device=device),
-                'uvs': torch.zeros((0, 2), dtype=torch.float32, device=device),
-                'material_weights': torch.zeros((0, M), dtype=torch.float32, device=device)
-            }
-        )
-
-    # Stack weighted colors (CRITICAL: this must maintain gradients)
-    colors = torch.stack(all_weighted_colors, dim=0)  # (V, 3)
-    mat_weights = torch.stack(all_mat_probs, dim=0)  # (V, M)
+                colors[v_idx] = weighted_color
+                mat_weights[v_idx] = block_mat_probs
+                vertex_info.append((bx, by, bz, face_idx, corner_idx))
+                v_idx += 1
 
     # Build geometry (positions, normals, UVs) without requiring gradients
-    num_vertices = len(all_vertex_info)
+    num_vertices = len(vertex_info)
     vertices = torch.zeros((num_vertices, 3), dtype=torch.float32, device=device)
     normals = torch.zeros((num_vertices, 3), dtype=torch.float32, device=device)
     uvs = torch.zeros((num_vertices, 2), dtype=torch.float32, device=device)
 
-    for v_idx, (bx, by, bz, face_idx, corner_idx) in enumerate(all_vertex_info):
+    for v_idx, (bx, by, bz, face_idx, corner_idx) in enumerate(vertex_info):
         face_def = FACE_DEFS[face_idx]
 
         # World position
