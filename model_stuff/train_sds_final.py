@@ -13,6 +13,7 @@ import torch.nn.functional as F
 import json
 import random
 import argparse
+import logging
 from pathlib import Path
 from PIL import Image
 import numpy as np
@@ -23,6 +24,9 @@ from .map_io import load_map_to_grid, save_grid_to_map, init_grid_from_primitive
 from .sdxl_lightning import SDXLLightning
 from .nv_diff_render.utils import load_camera_matrices_from_metadata
 from .config import get_preset
+
+# Global logger for the module
+logger = logging.getLogger(__name__)
 
 
 def compute_sds_loss(
@@ -52,38 +56,38 @@ def compute_sds_loss(
         SDS loss scalar
     """
     rgb = rgba[:, :3, :, :].clamp(0, 1)
-    print(f"    [SDS DEBUG] RGB: min={rgb.min().item():.4f}, max={rgb.max().item():.4f}, nan={torch.isnan(rgb).any().item()}")
+    logger.debug(f"SDS RGB: min={rgb.min().item():.4f}, max={rgb.max().item():.4f}, nan={torch.isnan(rgb).any().item()}")
 
     # SDXL VAE expects input in [-1, 1] and same dtype as VAE weights
     rgb_normalized = (rgb * 2.0 - 1.0).to(sdxl.dtype)
-    print(f"    [SDS DEBUG] RGB normalized: min={rgb_normalized.min().item():.4f}, max={rgb_normalized.max().item():.4f}")
+    logger.debug(f"SDS RGB normalized: min={rgb_normalized.min().item():.4f}, max={rgb_normalized.max().item():.4f}")
 
     # Encode to latent; keep VAE frozen but allow dtype-correct forward
     with torch.no_grad():
         latent_dist = sdxl.vae.encode(rgb_normalized).latent_dist
         z0 = latent_dist.mean * 0.18215  # mean for stability
-    print(f"    [SDS DEBUG] Latent z0: min={z0.min().item():.4f}, max={z0.max().item():.4f}, nan={torch.isnan(z0).any().item()}")
+    logger.debug(f"SDS Latent z0: min={z0.min().item():.4f}, max={z0.max().item():.4f}, nan={torch.isnan(z0).any().item()}")
 
     # Sample timestep
     t_min, t_max = timestep_range
     ts = torch.randint(t_min, t_max, (1,), device=sdxl.device, dtype=torch.long)
-    print(f"    [SDS DEBUG] Timestep: {ts.item()}")
+    logger.debug(f"SDS Timestep: {ts.item()}")
 
     # Add noise
     noise = torch.randn_like(z0)
     x_t = sdxl.add_noise(z0, noise, ts)
-    print(f"    [SDS DEBUG] Noised latent x_t: min={x_t.min().item():.4f}, max={x_t.max().item():.4f}, nan={torch.isnan(x_t).any().item()}")
+    logger.debug(f"SDS Noised latent x_t: min={x_t.min().item():.4f}, max={x_t.max().item():.4f}, nan={torch.isnan(x_t).any().item()}")
 
     # Predict noise with CFG
     eps_cfg = sdxl.eps_pred_cfg(
         x_t, ts, pe, pe_pooled, ue, ue_pooled, add_time_ids, cfg_scale
     )
-    print(f"    [SDS DEBUG] Predicted noise eps_cfg: min={eps_cfg.min().item():.4f}, max={eps_cfg.max().item():.4f}, nan={torch.isnan(eps_cfg).any().item()}")
+    logger.debug(f"SDS Predicted noise eps_cfg: min={eps_cfg.min().item():.4f}, max={eps_cfg.max().item():.4f}, nan={torch.isnan(eps_cfg).any().item()}")
 
     # SDS loss
     # TODO: Add timestep weighting w(t) = (1 - alpha_t) / sqrt(1 - alpha_t)
     loss = (eps_cfg - noise).pow(2).mean()
-    print(f"    [SDS DEBUG] Loss: {loss.item()}, nan={torch.isnan(loss).any().item()}")
+    logger.debug(f"SDS Loss: {loss.item()}, nan={torch.isnan(loss).any().item()}")
 
     return loss
 
@@ -191,8 +195,24 @@ def train_sds(
     images_dir.mkdir(exist_ok=True)
     maps_dir = output_path / "maps"
     maps_dir.mkdir(exist_ok=True)
+    logs_dir = output_path / "logs"
+    logs_dir.mkdir(exist_ok=True)
     log_file = output_path / "train.jsonl"
     session_file = output_path / "session.json"
+
+    # Set up logging to file
+    log_filename = logs_dir / "training.log"
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_filename),
+            logging.StreamHandler()  # Keep console output for important messages
+        ]
+    )
+    # Configure the global logger
+    global logger
+    logger = logging.getLogger(__name__)
 
     # Load dataset cameras
     dataset_path = Path(f"datasets/{dataset_id}")
@@ -345,7 +365,7 @@ def train_sds(
         rgba = grid(view, proj, train_h, train_w, temperature=t, max_blocks=max_blocks)
 
         # DEBUG: Check render output
-        print(f"  [DEBUG] RGBA shape: {rgba.shape}, min: {rgba.min().item():.4f}, max: {rgba.max().item():.4f}, has_nan: {torch.isnan(rgba).any().item()}")
+        logger.debug(f"RGBA shape: {rgba.shape}, min: {rgba.min().item():.4f}, max: {rgba.max().item():.4f}, has_nan: {torch.isnan(rgba).any().item()}")
 
         # SDS loss
         loss_sds = compute_sds_loss(
@@ -353,7 +373,7 @@ def train_sds(
         )
 
         # DEBUG: Check SDS loss
-        print(f"  [DEBUG] SDS loss: {loss_sds.item()}, has_nan: {torch.isnan(loss_sds).any().item()}")
+        logger.debug(f"SDS loss: {loss_sds.item()}, has_nan: {torch.isnan(loss_sds).any().item()}")
 
         # Regularization losses
         reg_losses = compute_regularization_losses(
@@ -361,14 +381,14 @@ def train_sds(
         )
 
         # DEBUG: Check reg losses
-        print(f"  [DEBUG] Reg losses - sparsity: {reg_losses['sparsity'].item():.6f}, entropy: {reg_losses['entropy'].item():.6f}")
+        logger.debug(f"Reg losses - sparsity: {reg_losses['sparsity'].item():.6f}, entropy: {reg_losses['entropy'].item():.6f}")
 
         # Total loss
         loss_total = loss_sds + reg_losses['sparsity'] + reg_losses['entropy'] + reg_losses['smooth']
 
         # DEBUG: Check if loss is valid before backward
         if torch.isnan(loss_total).any():
-            print(f"  [ERROR] NaN loss detected! Skipping backward pass.")
+            logger.error(f"NaN loss detected! Skipping backward pass.")
             continue
 
         # Optimize (and capture gradient diagnostics before step)
@@ -388,7 +408,7 @@ def train_sds(
 
         optimizer.step()
 
-        print(f"  [DEBUG] Backward pass completed")
+        logger.debug(f"Backward pass completed")
 
         # Logging
         if (step + 1) % log_every == 0 or step == 0:

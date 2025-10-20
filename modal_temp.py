@@ -279,7 +279,7 @@ def run_sds_train(train_args: List[str]) -> str:
     - Runs `python -m model_stuff.train_sds_final ...`
     - Returns the timestamped run directory path
     """
-    import os, subprocess, sys
+    import os, subprocess, sys, shlex
     from pathlib import Path
 
     os.environ.setdefault("HF_HOME", "/workspace/hf")
@@ -287,34 +287,12 @@ def run_sds_train(train_args: List[str]) -> str:
     Path("/workspace/hf").mkdir(parents=True, exist_ok=True)
     Path("/workspace/out_local").mkdir(parents=True, exist_ok=True)
 
-    def sh(cmd, **kwargs):
-        print("$", cmd if isinstance(cmd, str) else " ".join(cmd))
-        if isinstance(cmd, list):
-            return subprocess.run(cmd, shell=False, check=True, **kwargs)
-        return subprocess.run(cmd, shell=True, check=True, **kwargs)
-
-    # Create venv
-    if not Path("/workspace/venv/bin/python").exists():
-        sh("python -m venv /workspace/venv")
-    venv_dir = "/workspace/venv"
-    py = f"{venv_dir}/bin/python"
-    venv_env = os.environ.copy()
-    venv_env["VIRTUAL_ENV"] = venv_dir
-    venv_env["PATH"] = f"{venv_dir}/bin:" + venv_env.get("PATH", "")
-
-    # Install uv and deps
-    sh(f"{py} -m pip install -U pip uv wheel setuptools", env=venv_env)
-    if Path("/workspace/requirements.txt").exists():
-        sh("uv pip install -r /workspace/requirements.txt", env=venv_env)
-
-    # Install local nvdiffrast copy (requires CUDA toolchain present)
-    if Path("/workspace/third_party/nvdiffrast").exists():
-        sh("uv pip install /workspace/third_party/nvdiffrast", env=venv_env)
-
-    # Run training (cwd=/workspace)
-    cmd = [py, "-m", "model_stuff.train_sds_final", *train_args]
-    print("Running:", " ".join(cmd))
-    sh(cmd, cwd="/workspace")
+    # Change to workspace and run training with venv activated
+    os.chdir("/workspace")
+    quoted_args = ' '.join(shlex.quote(arg) for arg in train_args)
+    cmd = f"source /workspace/venv/bin/activate && python -m model_stuff.train_sds_final {quoted_args}"
+    print("Running:", cmd)
+    subprocess.run(cmd, shell=True, check=True, executable="/bin/bash")
 
     # Identify latest timestamped run dir to return
     runs = sorted(Path("/workspace/out_local/sds_training").glob("*/"), key=lambda p: p.name)
@@ -337,7 +315,7 @@ def run_train(
 ):
     """Sync code, run SDS training on Modal, then sync out_local locally."""
     # Sync essentials, including third_party (nvdiffrast)
-    sync_workspace(["model_stuff", "datasets", "maps", "third_party"])
+    sync_workspace(["model_stuff"])
 
     # Build train args list (ASCII hyphens only)
     args = [

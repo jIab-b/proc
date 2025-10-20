@@ -1,6 +1,9 @@
 import torch
 from typing import Tuple
-from diffusers import StableDiffusionXLPipeline, DDPMScheduler
+from diffusers import StableDiffusionXLPipeline, EulerDiscreteScheduler
+from diffusers.models import UNet2DConditionModel
+from huggingface_hub import hf_hub_download
+from safetensors.torch import load_file
 
 LATENT_SCALING = 0.18215
 
@@ -10,13 +13,33 @@ class SDXLLightning:
         self.dtype = dtype
         self.height = height
         self.width = width
-        pipe = StableDiffusionXLPipeline.from_pretrained(model_id, torch_dtype=dtype, use_safetensors=True)
-        pipe.to(device)
+        
+        unet = UNet2DConditionModel.from_config(model_id, subfolder="unet")
+        unet = unet.to(device, dtype)
+        
+        repo = "ByteDance/SDXL-Lightning"
+        ckpt = "sdxl_lightning_4step_unet.safetensors"
+        ckpt_path = hf_hub_download(repo_id=repo, filename=ckpt)
+        state_dict = load_file(ckpt_path, device=device)
+        unet.load_state_dict(state_dict, strict=True)
+        
+        pipe = StableDiffusionXLPipeline.from_pretrained(
+            model_id,
+            torch_dtype=dtype,
+            variant="fp16" if dtype == torch.float16 else None,
+            unet=unet,
+            use_safetensors=True
+        ).to(device)
+        
+        pipe.scheduler = EulerDiscreteScheduler.from_config(
+            pipe.scheduler.config,
+            timestep_spacing="trailing",
+        )
+        
         self.pipe = pipe
         self.vae = pipe.vae
         self.unet = pipe.unet
-        # Use a DDPM training schedule to define add_noise and timesteps
-        self.scheduler = DDPMScheduler.from_pretrained(model_id, subfolder="scheduler")
+        self.scheduler = pipe.scheduler
 
     @torch.no_grad()
     def encode_prompt(self, prompt: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
