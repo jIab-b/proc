@@ -28,6 +28,8 @@ def preset_small(output_dir: str = "out_local/sds_training") -> Dict[str, Any]:
         # Render resolution (kept low for VRAM headroom)
         "train_h": 160,
         "train_w": 160,
+        # Renderer safety caps
+        "max_blocks": 20000,
     }
 
 
@@ -47,6 +49,7 @@ def preset_medium(output_dir: str = "out_local/sds_training") -> Dict[str, Any]:
         "output_dir": output_dir,
         "train_h": 256,
         "train_w": 256,
+        "max_blocks": 60000,
     }
 
 
@@ -66,6 +69,7 @@ def preset_large(output_dir: str = "out_local/sds_training") -> Dict[str, Any]:
         "output_dir": output_dir,
         "train_h": 320,
         "train_w": 320,
+        "max_blocks": 120000,
     }
 
 
@@ -80,4 +84,3 @@ def get_preset(name: str, output_dir: str = "out_local/sds_training") -> Dict[st
     if name not in PRESETS:
         raise KeyError(f"Unknown preset '{name}'. Valid: {list(PRESETS)}")
     return PRESETS[name](output_dir)
-

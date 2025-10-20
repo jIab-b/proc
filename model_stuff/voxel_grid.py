@@ -76,7 +76,8 @@ class DifferentiableVoxelGrid(nn.Module):
         img_h: int,
         img_w: int,
         temperature: float = 1.0,
-        occupancy_threshold: float = 0.01
+        occupancy_threshold: float = 0.01,
+        max_blocks: int | None = None
     ) -> torch.Tensor:
         """
         Render grid from camera view.
@@ -98,6 +99,11 @@ class DifferentiableVoxelGrid(nn.Module):
         # Find active voxels
         active_mask = occ_probs > occupancy_threshold
         active_indices = torch.nonzero(active_mask, as_tuple=False)
+
+        # Cap number of active voxels to avoid OOM/driver instability on small GPUs
+        if max_blocks is not None and active_indices.shape[0] > max_blocks:
+            perm = torch.randperm(active_indices.shape[0], device=self.device)
+            active_indices = active_indices[perm[:max_blocks]]
 
         # Handle empty scene
         if len(active_indices) == 0:

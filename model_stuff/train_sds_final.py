@@ -151,6 +151,8 @@ def train_sds(
     # New: training render resolution (VRAM control)
     train_h: int = 256,
     train_w: int = 256,
+    # Safety cap for active blocks (prevents OOM/segfault on small GPUs)
+    max_blocks: int | None = None,
 ):
     """
     Train voxel grid with SDS.
@@ -301,7 +303,7 @@ def train_sds(
     # Preview render before training (view 0)
     try:
         pv_view, pv_proj = cameras[0]
-        rgba_prev = grid(pv_view, pv_proj, train_h, train_w, temperature=temp_start)
+        rgba_prev = grid(pv_view, pv_proj, train_h, train_w, temperature=temp_start, max_blocks=max_blocks // 4 if max_blocks else None)
         rgb_prev = rgba_prev[0, :3, :, :].detach().cpu().permute(1, 2, 0).numpy()
         rgb_prev = (np.clip(rgb_prev, 0, 1) * 255).astype(np.uint8)
         Image.fromarray(rgb_prev).save(images_dir / "preview_init_cam0.png")
@@ -340,7 +342,7 @@ def train_sds(
         view, proj = cameras[cam_idx]
 
         # Forward pass
-        rgba = grid(view, proj, train_h, train_w, temperature=t)
+        rgba = grid(view, proj, train_h, train_w, temperature=t, max_blocks=max_blocks)
 
         # DEBUG: Check render output
         print(f"  [DEBUG] RGBA shape: {rgba.shape}, min: {rgba.min().item():.4f}, max: {rgba.max().item():.4f}, has_nan: {torch.isnan(rgba).any().item()}")
@@ -369,9 +371,21 @@ def train_sds(
             print(f"  [ERROR] NaN loss detected! Skipping backward pass.")
             continue
 
-        # Optimize
+        # Optimize (and capture gradient diagnostics before step)
         optimizer.zero_grad()
         loss_total.backward()
+
+        # Gradient diagnostics
+        occ_grad_norm = float('nan')
+        mat_grad_norm = float('nan')
+        try:
+            if grid.occupancy_logits.grad is not None:
+                occ_grad_norm = float(grid.occupancy_logits.grad.norm().item())
+            if grid.material_logits.grad is not None:
+                mat_grad_norm = float(grid.material_logits.grad.norm().item())
+        except Exception:
+            pass
+
         optimizer.step()
 
         print(f"  [DEBUG] Backward pass completed")
@@ -392,6 +406,12 @@ def train_sds(
                     "smooth": float(reg_losses['smooth'].item())
                 },
                 "grid_stats": stats
+            }
+
+            # Attach gradient norms
+            log_entry["grads"] = {
+                "occupancy_l2": occ_grad_norm,
+                "materials_l2": mat_grad_norm,
             }
 
             with open(log_file, "a") as f:
@@ -528,16 +548,22 @@ def main():
     parser.add_argument("--preset", type=str, default=None,
                         choices=["small", "medium", "large"],
                         help="Preset to override hyperparameters and training resolution")
+    parser.add_argument("--max_blocks", type=int, default=None,
+                        help="Cap number of active voxels rendered each step (prevents OOM)")
 
     args = parser.parse_args()
 
-    # Apply preset if provided (overrides relevant args)
+    # Apply preset if provided: preset fills only values the user didn't change from defaults
     if args.preset:
         preset = get_preset(args.preset, args.output_dir)
-        # Merge: preset values override CLI defaults/values
+        defaults = parser.parse_args([])
+        applied = {}
         for k, v in preset.items():
-            setattr(args, k, v)
-        print(f"\nUsing preset: {args.preset} → {preset}")
+            # Only apply if user did not override from default
+            if getattr(args, k, None) == getattr(defaults, k, None):
+                setattr(args, k, v)
+                applied[k] = v
+        print(f"\nUsing preset: {args.preset} → {applied}")
 
     kwargs = vars(args).copy()
     # Remove CLI-only keys not in train_sds signature
