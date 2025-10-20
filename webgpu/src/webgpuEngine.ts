@@ -471,17 +471,10 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
   }
 
   function scheduleMapPersist() {
+    // Auto-save disabled - changes only persist when user explicitly presses "Save Map" in context menu
     mapDirty = true
-    if (mapSaveHandle !== null) return
-    mapSaveHandle = window.setTimeout(() => {
-      mapSaveHandle = null
-      if (!mapDirty) return
-      mapDirty = false
-      void persistMapState()
-    }, mapSaveDebounceMs)
+    // Previously would auto-save after mapSaveDebounceMs - now we just track dirty state
   }
-
-  scheduleMapPersist()
 
   function positionInBounds([x, y, z]: BlockPosition) {
     return x >= 0 && y >= 0 && z >= 0 && x < chunk.size.x && y < chunk.size.y && z < chunk.size.z
@@ -1751,8 +1744,7 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
         console.log('[map] Created new empty map')
       }
 
-      // Auto-save the new map
-      await saveMap()
+      // Don't auto-save - user must explicitly press Save Map in context menu
     } catch (err) {
       console.error('[map] Failed to create new map:', err)
       throw err
