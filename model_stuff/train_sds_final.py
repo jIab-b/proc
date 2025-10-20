@@ -193,7 +193,12 @@ def train_sds(
 
     img_w = metadata['imageSize']['width']
     img_h = metadata['imageSize']['height']
-    print(f"  Image size: {img_w}×{img_h}")
+    print(f"  Dataset image size: {img_w}×{img_h}")
+
+    # Use lower resolution for training to fit in 8GB VRAM
+    train_h = 256
+    train_w = 256
+    print(f"  Training resolution: {train_w}×{train_h}")
 
     # Initialize voxel grid
     print(f"\nInitializing voxel grid (mode={init_mode})...")
@@ -248,8 +253,8 @@ def train_sds(
         model_id="stabilityai/stable-diffusion-xl-base-1.0",
         device=device,
         dtype=torch.float16 if device.type == 'cuda' else torch.float32,
-        height=img_h,
-        width=img_w
+        height=train_h,
+        width=train_w
     )
 
     pe, pe_pooled, ue, ue_pooled, add_time_ids = sdxl.encode_prompt(prompt)
@@ -272,7 +277,7 @@ def train_sds(
         view, proj = cameras[cam_idx]
 
         # Forward pass
-        rgba = grid(view, proj, img_h, img_w, temperature=t)
+        rgba = grid(view, proj, train_h, train_w, temperature=t)
 
         # SDS loss
         loss_sds = compute_sds_loss(
