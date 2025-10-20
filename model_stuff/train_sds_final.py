@@ -566,7 +566,7 @@ def main():
     parser.add_argument("--train_w", type=int, default=256,
                         help="Training image width for SDS")
     parser.add_argument("--preset", type=str, default=None,
-                        choices=["small", "medium", "large"],
+                        choices=["tiny", "small", "medium", "large"],
                         help="Preset to override hyperparameters and training resolution")
     parser.add_argument("--max_blocks", type=int, default=None,
                         help="Cap number of active voxels rendered each step (prevents OOM)")

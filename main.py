@@ -1159,7 +1159,8 @@ async def list_maps():
                 "lastUpdated": map_data.get("lastUpdated"),
                 "captureId": map_data.get("captureId"),
                 "blockCount": len(map_data.get("blocks", [])),
-                "customBlockCount": len(map_data.get("customBlocks", []))
+                "customBlockCount": len(map_data.get("customBlocks", [])),
+                "isTrained": entry.name.startswith("trained_map_")
             })
         except Exception as exc:
             print(f"[API] Failed to load map {entry.name}: {exc}")

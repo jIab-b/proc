@@ -52,8 +52,6 @@ class DifferentiableVoxelGrid(nn.Module):
 
         X, Y, Z = grid_size
 
-        # Learnable parameters
-        # Start with low occupancy (air) and uniform materials
         self.occupancy_logits = nn.Parameter(
             torch.full((X, Y, Z), -5.0, dtype=torch.float32, device=device)
         )

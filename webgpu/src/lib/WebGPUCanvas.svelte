@@ -209,7 +209,7 @@
         {:else}
           {#each availableMaps as map}
             <button class="submenu-item" on:click={() => handleLoadMap(map.sequence)}>
-              Map {map.sequence} ({map.blockCount} blocks)
+              {map.isTrained ? '🤖 ' : ''}Map {map.sequence} ({map.blockCount} blocks)
             </button>
           {/each}
         {/if}
@@ -228,7 +228,7 @@
           <div class="submenu-label">Copy From:</div>
           {#each availableMaps as map}
             <button class="submenu-item" on:click={() => handleCopyFromMap(map.sequence)}>
-              Map {map.sequence} ({map.blockCount} blocks)
+              {map.isTrained ? '🤖 ' : ''}Map {map.sequence} ({map.blockCount} blocks)
             </button>
           {/each}
         {/if}

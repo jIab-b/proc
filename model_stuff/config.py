@@ -3,9 +3,30 @@ Training presets for SDS voxel optimization with SDXL guidance.
 
 Small is a smoke test for ~8GB GPUs (e.g., RTX 2060 Super).
 Medium and Large scale steps and resolution.
+Tiny is ultra-reductionist for 4GB GPUs (~RTX 2050 / 3050).
 """
 
 from typing import Dict, Any
+
+
+def preset_tiny(output_dir: str = "out_local/sds_training") -> Dict[str, Any]:
+    return {
+        "steps": 20,
+        "lr": 0.02,
+        "cfg_scale": 5.0,
+        "temp_start": 2.0,
+        "temp_end": 0.5,
+        "lambda_sparsity": 5e-3,
+        "lambda_entropy": 1e-4,
+        "lambda_smooth": 0.0,
+        "log_every": 5,
+        "image_every": 2,
+        "save_map_every": 10,
+        "output_dir": output_dir,
+        "train_h": 96,
+        "train_w": 96,
+        "max_blocks": 1000,
+    }
 
 
 def preset_small(output_dir: str = "out_local/sds_training") -> Dict[str, Any]:
@@ -74,6 +95,7 @@ def preset_large(output_dir: str = "out_local/sds_training") -> Dict[str, Any]:
 
 
 PRESETS = {
+    "tiny": preset_tiny,
     "small": preset_small,
     "medium": preset_medium,
     "large": preset_large,

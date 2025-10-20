@@ -14,14 +14,22 @@ class SDXLLightning:
         self.height = height
         self.width = width
         
+        device_obj = torch.device(device) if isinstance(device, str) else device
+        
         unet = UNet2DConditionModel.from_config(model_id, subfolder="unet")
-        unet = unet.to(device, dtype)
+        unet = unet.to(device_obj, dtype)
         
         repo = "ByteDance/SDXL-Lightning"
         ckpt = "sdxl_lightning_4step_unet.safetensors"
         ckpt_path = hf_hub_download(repo_id=repo, filename=ckpt)
-        state_dict = load_file(ckpt_path, device=device)
+        
+        device_str = str(device_obj)
+        if ":" not in device_str:
+            device_str = f"{device_str}:0"
+        state_dict = load_file(ckpt_path, device=device_str)
         unet.load_state_dict(state_dict, strict=True)
+        
+        unet.enable_gradient_checkpointing()
         
         pipe = StableDiffusionXLPipeline.from_pretrained(
             model_id,
@@ -29,7 +37,7 @@ class SDXLLightning:
             variant="fp16" if dtype == torch.float16 else None,
             unet=unet,
             use_safetensors=True
-        ).to(device)
+        ).to(device_obj)
         
         pipe.scheduler = EulerDiscreteScheduler.from_config(
             pipe.scheduler.config,
@@ -40,9 +48,14 @@ class SDXLLightning:
         self.vae = pipe.vae
         self.unet = pipe.unet
         self.scheduler = pipe.scheduler
+        
+        self.cached_embeddings = None
 
     @torch.no_grad()
     def encode_prompt(self, prompt: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.cached_embeddings is not None:
+            return self.cached_embeddings
+        
         pe, ue, pe_pooled, ue_pooled = self.pipe.encode_prompt(
             prompt=[prompt],
             device=self.device,
@@ -68,7 +81,18 @@ class SDXLLightning:
             add_time_ids = add_time_ids.unsqueeze(0)
         if add_time_ids.ndim == 3 and add_time_ids.size(1) == 1:
             add_time_ids = add_time_ids.squeeze(1)
-        return pe, pe_pooled, ue, ue_pooled, add_time_ids
+        
+        embeddings = (pe, pe_pooled, ue, ue_pooled, add_time_ids)
+        self.cached_embeddings = embeddings
+        
+        try:
+            del self.pipe.text_encoder
+            del self.pipe.text_encoder_2
+            torch.cuda.empty_cache()
+        except:
+            pass
+        
+        return embeddings
 
     def vae_encode(self, images: torch.Tensor) -> torch.Tensor:
         latents = self.vae.encode(images).latent_dist.sample()
