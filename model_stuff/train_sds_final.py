@@ -21,6 +21,7 @@ from .voxel_grid import DifferentiableVoxelGrid
 from .map_io import load_map_to_grid, save_grid_to_map, init_grid_from_primitive, get_grid_stats
 from .sdxl_lightning import SDXLLightning
 from .nv_diff_render.utils import load_camera_matrices_from_metadata
+from .config import get_preset
 
 
 def compute_sds_loss(
@@ -146,7 +147,10 @@ def train_sds(
     save_map_every: int = 50,
     output_dir: str = "out_local/sds_training",
     init_mode: str = "from_map",  # 'from_map', 'ground_plane', 'cube'
-    seed: int = 42
+    seed: int = 42,
+    # New: training render resolution (VRAM control)
+    train_h: int = 256,
+    train_w: int = 256,
 ):
     """
     Train voxel grid with SDS.
@@ -208,9 +212,7 @@ def train_sds(
     img_h = metadata['imageSize']['height']
     print(f"  Dataset image size: {img_w}×{img_h}")
 
-    # Use lower resolution for training to fit in 8GB VRAM
-    train_h = 256
-    train_w = 256
+    # Training resolution (configurable)
     print(f"  Training resolution: {train_w}×{train_h}")
 
     # Initialize voxel grid
@@ -354,10 +356,10 @@ def train_sds(
                   f"({stats['density']*100:.1f}%)")
 
         # Save images (every 5 steps by default)
-        if (step + 1) % image_every == 0 or step == 0 or step == steps - 1:
-            rgb = rgba[0, :3, :, :].detach().cpu().permute(1, 2, 0).numpy()
-            rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-            Image.fromarray(rgb).save(images_dir / f"step_{step+1:04d}_cam{cam_idx}.png")
+    if (step + 1) % image_every == 0 or step == 0 or step == steps - 1:
+        rgb = rgba[0, :3, :, :].detach().cpu().permute(1, 2, 0).numpy()
+        rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+        Image.fromarray(rgb).save(images_dir / f"step_{step+1:04d}_cam{cam_idx}.png")
 
         # Save intermediate maps (every 50 steps by default)
         if (step + 1) % save_map_every == 0 or step == steps - 1:
@@ -471,8 +473,23 @@ def main():
                         help="Initialization mode")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
+    parser.add_argument("--train_h", type=int, default=256,
+                        help="Training image height for SDS")
+    parser.add_argument("--train_w", type=int, default=256,
+                        help="Training image width for SDS")
+    parser.add_argument("--preset", type=str, default=None,
+                        choices=["small", "medium", "large"],
+                        help="Preset to override hyperparameters and training resolution")
 
     args = parser.parse_args()
+
+    # Apply preset if provided (overrides relevant args)
+    if args.preset:
+        preset = get_preset(args.preset, args.output_dir)
+        # Merge: preset values override CLI defaults/values
+        for k, v in preset.items():
+            setattr(args, k, v)
+        print(f"\nUsing preset: {args.preset} → {preset}")
 
     train_sds(**vars(args))
 

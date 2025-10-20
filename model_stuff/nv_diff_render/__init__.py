@@ -40,8 +40,6 @@ from .shading import (
 
 from .renderer import DifferentiableBlockRenderer
 
-from .diff_world import DifferentiableBlockWorld
-
 __all__ = [
     # Materials
     'MATERIALS',
@@ -74,7 +72,4 @@ __all__ = [
 
     # Renderer
     'DifferentiableBlockRenderer',
-
-    # World
-    'DifferentiableBlockWorld',
 ]
