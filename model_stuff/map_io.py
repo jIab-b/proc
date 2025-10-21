@@ -103,57 +103,41 @@ def save_grid_to_map(
     """
     output_path = Path(output_path)
 
-    # Convert logits to probabilities
-    occupancy_probs = torch.sigmoid(occupancy_logits)
-    material_probs = torch.softmax(material_logits, dim=-1)
-
     X, Y, Z = occupancy_logits.shape
 
     print(f"Exporting grid to {output_path}")
     print(f"  Grid size: {X}×{Y}×{Z}")
     print(f"  Occupancy threshold: {threshold}")
 
-    # Extract blocks
-    blocks = []
-    for x in range(X):
-        for y in range(Y):
-            for z in range(Z):
-                occ = occupancy_probs[x, y, z].item()
-
-                if occ > threshold:
-                    mat_idx = material_probs[x, y, z].argmax().item()
-                    mat_name = MATERIALS[mat_idx]
-
-                    # Don't export Air blocks
-                    if mat_name != "Air":
-                        blocks.append({
-                            "position": [x, y, z],
-                            "blockType": mat_name
-                        })
-
-    # Build map data
-    map_data = {
-        "sequence": 1,
-        "blocks": blocks,
-        "worldConfig": {
-            "dimensions": {"x": X, "y": Y, "z": Z},
-            "worldScale": world_scale
-        }
-    }
-
-    # Add metadata if provided
-    if metadata:
-        map_data["metadata"] = metadata
-
-    # Save
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    count = 0
     with open(output_path, 'w') as f:
-        json.dump(map_data, f, indent=2)
+        f.write('{')
+        f.write('"sequence": 1,')
+        f.write('"worldConfig": {"dimensions": {"x": %d, "y": %d, "z": %d}, "worldScale": %s},' % (X, Y, Z, json.dumps(world_scale)))
+        if metadata:
+            f.write('"metadata": %s,' % json.dumps(metadata))
+        f.write('"blocks": [')
+        first = True
+        for x in range(X):
+            for y in range(Y):
+                for z in range(Z):
+                    occ = torch.sigmoid(occupancy_logits[x, y, z]).item()
+                    if occ > threshold:
+                        mat_idx = int(torch.argmax(material_logits[x, y, z]).item())
+                        mat_name = MATERIALS[mat_idx]
+                        if mat_name != "Air":
+                            if not first:
+                                f.write(',')
+                            json.dump({"position": [x, y, z], "blockType": mat_name}, f)
+                            first = False
+                            count += 1
+        f.write(']}')
 
-    print(f"  Exported {len(blocks)} blocks")
+    print(f"  Exported {count} blocks")
 
-    return len(blocks)
+    return count
 
 
 def init_grid_from_primitive(

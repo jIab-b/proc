@@ -11,3 +11,4 @@ datasets/
 logs/
 maps/
 out_local/
+*.png

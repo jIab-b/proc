@@ -13,6 +13,41 @@ from typing import Tuple, Optional
 
 from .nv_diff_render import DifferentiableBlockRenderer
 from .nv_diff_render.materials import MATERIALS
+from .nv_diff_render.utils import world_to_clip
+
+
+def voxel_index_to_world_position(index: torch.Tensor, grid_size: Tuple[int, int, int], world_scale: float) -> torch.Tensor:
+    """Convert voxel grid index (x,y,z) to world position."""
+    X, Y, Z = grid_size
+    # Convert to normalized coordinates [-0.5, 0.5] then scale
+    pos = (index.float() / torch.tensor([X-1, Y-1, Z-1], device=index.device) - 0.5) * world_scale
+    return pos
+
+
+def is_in_view_frustum(positions: torch.Tensor, camera_view: torch.Tensor,
+                      camera_proj: torch.Tensor, img_w: int, img_h: int,
+                      near_clip: float = 0.1, far_clip: float = 100.0) -> torch.Tensor:
+    """Check if 3D world positions are visible in camera frustum."""
+    device = positions.device
+
+    # Ensure camera matrices are on the same device as positions
+    camera_view = camera_view.to(device)
+    camera_proj = camera_proj.to(device)
+
+    # Convert world positions to clip space
+    clip_pos = world_to_clip(positions, camera_view, camera_proj)
+
+    # Check if points are within clip space bounds
+    # x,y in [-1,1], z in [0,1] for OpenGL/Vulkan clip space
+    x_in_bounds = (clip_pos[:, 0] >= -1.0) & (clip_pos[:, 0] <= 1.0)
+    y_in_bounds = (clip_pos[:, 1] >= -1.0) & (clip_pos[:, 1] <= 1.0)
+    z_in_bounds = (clip_pos[:, 2] >= 0.0) & (clip_pos[:, 2] <= 1.0)
+
+    # Also check near/far clip planes in world space for better culling
+    view_pos = torch.matmul(positions, camera_view[:3, :3].T) + camera_view[:3, 3]
+    depth_in_bounds = (view_pos[:, 2] >= -far_clip) & (view_pos[:, 2] <= -near_clip)
+
+    return x_in_bounds & y_in_bounds & z_in_bounds & depth_in_bounds
 
 
 class DifferentiableVoxelGrid(nn.Module):
@@ -98,6 +133,25 @@ class DifferentiableVoxelGrid(nn.Module):
         active_mask = occ_probs > occupancy_threshold
         active_indices = torch.nonzero(active_mask, as_tuple=False)
 
+        # View frustum culling: only render visible voxels
+        if len(active_indices) > 0:
+            # TEMPORARILY DISABLE FRUSTUM CULLING FOR DEBUGGING
+            print(f"DEBUG: Active voxels: {len(active_indices)}")
+            # Convert voxel indices to world positions
+            # world_positions = voxel_index_to_world_position(
+            #     active_indices.float(), self.grid_size, self.world_scale
+            # )
+
+            # Check which voxels are in camera view frustum
+            # visible_mask = is_in_view_frustum(
+            #     world_positions, camera_view, camera_proj, img_w, img_h
+            # )
+
+            # print(f"DEBUG: Active voxels before culling: {len(active_indices)}, after: {visible_mask.sum().item()}")
+
+            # Filter to only visible active voxels
+            # active_indices = active_indices[visible_mask]
+
         # Cap number of active voxels to avoid OOM/driver instability on small GPUs
         if max_blocks is not None and active_indices.shape[0] > max_blocks:
             perm = torch.randperm(active_indices.shape[0], device=self.device)
@@ -110,21 +164,11 @@ class DifferentiableVoxelGrid(nn.Module):
             alpha = torch.zeros(1, 1, img_h, img_w, device=self.device)
             return torch.cat([rgb, alpha], dim=1)
 
-        # Extract positions (convert to list of tuples for set hashing in mesh_builder)
-        positions = [tuple(pos) for pos in active_indices.tolist()]
+        modulated_dense = self.material_logits * occ_probs.unsqueeze(-1)
 
-        # Extract occupancy and material logits for active voxels
-        active_occ = occ_probs[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]]
-        active_mat_logits = self.material_logits[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]]
-
-        # CRITICAL: Modulate material logits by occupancy
-        # This creates gradient path: pixels → materials → occupancy
-        modulated_logits = active_mat_logits * active_occ.unsqueeze(-1)
-
-        # Render
-        rgba = self.renderer.render(
-            positions,
-            modulated_logits,
+        rgba = self.renderer.render_from_grid(
+            active_mask,
+            modulated_dense,
             camera_view,
             camera_proj,
             img_h,

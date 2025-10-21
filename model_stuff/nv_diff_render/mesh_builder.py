@@ -58,9 +58,7 @@ def build_block_mesh(
     # Get material palette (M, 3, 3) -> [material, face_type, RGB]
     palette = get_material_palette().to(device)
 
-    # Build position lookup for neighbor checking
     if neighbor_check is None:
-        # Default: check if position is in our block list
         pos_set = set(positions)
         neighbor_check = lambda p: p in pos_set
 
@@ -88,80 +86,51 @@ def build_block_mesh(
             }
         )
 
-    # Pre-allocate tensors (CRITICAL: avoids Python list accumulation)
     colors = torch.zeros((num_visible_vertices, 3), dtype=torch.float32, device=device)
-    mat_weights = torch.zeros((num_visible_vertices, M), dtype=torch.float32, device=device)
-    vertex_info = []  # Still need this for geometry, but much smaller impact
+    vertices = torch.zeros((num_visible_vertices, 3), dtype=torch.float32, device=device)
+    normals = torch.zeros((num_visible_vertices, 3), dtype=torch.float32, device=device)
+    uvs = torch.zeros((num_visible_vertices, 2), dtype=torch.float32, device=device)
 
     v_idx = 0
-    # Second pass: fill pre-allocated tensors
     for block_idx, (bx, by, bz) in enumerate(positions):
         block_mat_probs = material_probs[block_idx]  # (M,)
 
-        # For each face direction
         for face_idx in range(6):
             face_def = FACE_DEFS[face_idx]
 
-            # Check if neighbor is solid (cull if so)
             offset = face_def['offset']
             neighbor_pos = (bx + offset[0], by + offset[1], bz + offset[2])
 
-            # Render face if neighbor is Air or out of bounds
             if neighbor_check(neighbor_pos):
                 continue  # Neighbor is solid, cull this face
 
-            # Get palette slot for this face (0=top, 1=bottom, 2=side)
             palette_slot = face_def['palette_slot']
 
-            # Compute weighted color for this face
-            # palette shape: (M, 3, 3)
-            # palette[:, palette_slot, :] -> (M, 3) colors for this face type
             face_colors = palette[:, palette_slot, :]  # (M, 3)
             weighted_color = (block_mat_probs.unsqueeze(-1) * face_colors).sum(dim=0)  # (3,)
 
-            # Store for each vertex in this face (6 vertices = 2 triangles)
             for tri_idx in FACE_INDICES:
                 corner_idx = tri_idx
                 colors[v_idx] = weighted_color
-                mat_weights[v_idx] = block_mat_probs
-                vertex_info.append((bx, by, bz, face_idx, corner_idx))
+                normals[v_idx, 0] = face_def['normal'][0]
+                normals[v_idx, 1] = face_def['normal'][1]
+                normals[v_idx, 2] = face_def['normal'][2]
+                uv = face_def['uvs'][corner_idx]
+                uvs[v_idx, 0] = uv[0]
+                uvs[v_idx, 1] = uv[1]
+                wx, wy, wz = get_face_vertex_world(bx, by, bz, face_idx, corner_idx, grid_size, world_scale)
+                vertices[v_idx, 0] = wx
+                vertices[v_idx, 1] = wy
+                vertices[v_idx, 2] = wz
                 v_idx += 1
 
-    # Build geometry (positions, normals, UVs) without requiring gradients
-    num_vertices = len(vertex_info)
-    vertices = torch.zeros((num_vertices, 3), dtype=torch.float32, device=device)
-    normals = torch.zeros((num_vertices, 3), dtype=torch.float32, device=device)
-    uvs = torch.zeros((num_vertices, 2), dtype=torch.float32, device=device)
-
-    for v_idx, (bx, by, bz, face_idx, corner_idx) in enumerate(vertex_info):
-        face_def = FACE_DEFS[face_idx]
-
-        # World position
-        wx, wy, wz = get_face_vertex_world(
-            bx, by, bz, face_idx, corner_idx, grid_size, world_scale
-        )
-        vertices[v_idx, 0] = wx
-        vertices[v_idx, 1] = wy
-        vertices[v_idx, 2] = wz
-
-        # Normal
-        normals[v_idx, 0] = face_def['normal'][0]
-        normals[v_idx, 1] = face_def['normal'][1]
-        normals[v_idx, 2] = face_def['normal'][2]
-
-        # UV
-        uv = face_def['uvs'][corner_idx]
-        uvs[v_idx, 0] = uv[0]
-        uvs[v_idx, 1] = uv[1]
-
     # Build face indices (every 3 vertices is a triangle)
-    faces = torch.arange(num_vertices, dtype=torch.int32, device=device).reshape(-1, 3)
+    faces = torch.arange(v_idx, dtype=torch.int32, device=device).reshape(-1, 3)
 
     attributes = {
         'normals': normals,
         'colors': colors,
-        'uvs': uvs,
-        'material_weights': mat_weights
+        'uvs': uvs
     }
 
     return vertices, faces, attributes

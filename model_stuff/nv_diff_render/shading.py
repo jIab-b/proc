@@ -69,6 +69,7 @@ class TerrainShader:
         """
         # Ensure normals are normalized (terrain.wgsl:41)
         n = normals / (torch.linalg.norm(normals, dim=-1, keepdim=True) + 1e-6)
+        n = torch.nan_to_num(n)
 
         # Sun diffuse lighting (terrain.wgsl:42)
         # sunDiffuse = max(dot(n, -sunDir), 0.0)
@@ -93,10 +94,12 @@ class TerrainShader:
         # Final shading (terrain.wgsl:53)
         # litColor = surfaceColor * (ambient + diffuse)
         lit_color = colors * (ambient + diffuse)
+        lit_color = torch.nan_to_num(lit_color)
 
         # Apply mask if provided
         if mask is not None:
             lit_color = lit_color * mask
+            lit_color = torch.nan_to_num(lit_color)
 
         return lit_color
 

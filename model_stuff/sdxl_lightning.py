@@ -28,6 +28,10 @@ class SDXLLightning:
             device_str = f"{device_str}:0"
         state_dict = load_file(ckpt_path, device=device_str)
         unet.load_state_dict(state_dict, strict=True)
+
+        # We never train UNet/VAEs themselves; freeze their params
+        for p in unet.parameters():
+            p.requires_grad_(False)
         
         unet.enable_gradient_checkpointing()
         
@@ -36,7 +40,8 @@ class SDXLLightning:
             torch_dtype=dtype,
             variant="fp16" if dtype == torch.float16 else None,
             unet=unet,
-            use_safetensors=True
+            use_safetensors=True,
+            low_cpu_mem_usage=True
         ).to(device_obj)
         
         pipe.scheduler = EulerDiscreteScheduler.from_config(
@@ -48,6 +53,16 @@ class SDXLLightning:
         self.vae = pipe.vae
         self.unet = pipe.unet
         self.scheduler = pipe.scheduler
+        
+        # Ensure VAE/UNet are eval-mode and frozen while still allowing
+        # gradient flow to inputs (image/latents) through their ops.
+        self.vae.eval()
+        self.unet.eval()
+        for p in self.vae.parameters():
+            p.requires_grad_(False)
+
+        # Keep checkpointing off by default for speed; caller may enable if needed
+        # (it only matters if params require grad, which they do not here)
         
         self.cached_embeddings = None
 
@@ -118,6 +133,5 @@ class SDXLLightning:
         num_train = self.scheduler.config.num_train_timesteps
         ts = torch.randint(low=0, high=num_train, size=(batch_size,), device=self.device, dtype=torch.long)
         return ts
-
 
 

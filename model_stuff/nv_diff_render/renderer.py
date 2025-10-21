@@ -164,11 +164,12 @@ class DifferentiableBlockRenderer(nn.Module):
         faces_int32 = faces.int()
 
         # Rasterize
-        rast, rast_db = dr.rasterize(
+        rast, _ = dr.rasterize(
             self.glctx,
             clip_pos_batch,
             faces_int32,
-            resolution=[img_h, img_w]
+            resolution=[img_h, img_w],
+            grad_db=False
         )
 
         # Interpolate attributes
@@ -191,9 +192,11 @@ class DifferentiableBlockRenderer(nn.Module):
 
         # Apply lighting shader
         lit_colors = self.shader.shade(normals, colors, mask)
+        lit_colors = torch.nan_to_num(lit_colors.clamp(0.0, 1.0))
 
         # Composite over sky
         rgb = composite_over_sky(lit_colors, mask, self.shader.sky_color)
+        rgb = torch.nan_to_num(rgb.clamp(0.0, 1.0))
 
         # Flip vertically (nvdiffrast uses bottom-left origin, we want top-left)
         rgb = torch.flip(rgb, dims=[0])
@@ -203,6 +206,7 @@ class DifferentiableBlockRenderer(nn.Module):
         rgb_out = rgb.permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
         alpha_out = mask.permute(2, 0, 1).unsqueeze(0)  # (1, 1, H, W)
         result = torch.cat([rgb_out, alpha_out], dim=1)  # (1, 4, H, W)
+        result = torch.nan_to_num(result.clamp(0.0, 1.0))
 
         # Optional depth and normals
         extras = []
@@ -249,33 +253,52 @@ class DifferentiableBlockRenderer(nn.Module):
         """
         from .utils import is_in_bounds
 
-        # Find occupied positions
-        occupied = torch.nonzero(block_grid, as_tuple=False)
-        positions = [(int(x), int(y), int(z)) for x, y, z in occupied]
+        # Ensure rasterizer context
+        self._ensure_context()
 
-        if len(positions) == 0:
+        # Fast empty check
+        if not torch.any(block_grid):
             device = material_logits.device
             rgb = self.shader.sky_color.view(1, 3, 1, 1).expand(1, 3, img_h, img_w).to(device)
             alpha = torch.zeros(1, 1, img_h, img_w, device=device)
             return torch.cat([rgb, alpha], dim=1)
 
-        # Extract material logits for occupied voxels
-        logits = material_logits[occupied[:, 0], occupied[:, 1], occupied[:, 2]]
+        from .mesh_builder import build_mesh_from_grid
 
-        # Neighbor check using grid
-        def neighbor_check(pos):
-            x, y, z = pos
-            if not is_in_bounds(x, y, z, self.grid_size):
-                return False
-            return block_grid[x, y, z].item()
-
-        return self.render(
-            positions,
-            logits,
-            camera_view,
-            camera_proj,
-            img_h,
-            img_w,
-            neighbor_check=neighbor_check,
-            **kwargs
+        vertices, faces, attributes = build_mesh_from_grid(
+            block_grid,
+            material_logits,
+            world_scale=self.world_scale,
+            temperature=kwargs.get('temperature', 1.0),
+            hard_assignment=kwargs.get('hard_materials', False)
         )
+
+        if vertices.shape[0] == 0:
+            device = material_logits.device
+            rgb = self.shader.sky_color.view(1, 3, 1, 1).expand(1, 3, img_h, img_w).to(device)
+            alpha = torch.zeros(1, 1, img_h, img_w, device=device)
+            return torch.cat([rgb, alpha], dim=1)
+
+        clip_pos = world_to_clip(vertices, camera_view.to(vertices.device), camera_proj.to(vertices.device))
+        clip_pos_batch = clip_pos.unsqueeze(0)
+        faces_int32 = faces.int()
+
+        rast, _ = dr.rasterize(self.glctx, clip_pos_batch, faces_int32, resolution=[img_h, img_w], grad_db=False)
+
+        normals, _ = dr.interpolate(attributes['normals'].unsqueeze(0), rast, faces_int32)
+        normals = normals[0]
+        colors, _ = dr.interpolate(attributes['colors'].unsqueeze(0), rast, faces_int32)
+        colors = colors[0]
+
+        mask = (rast[0, :, :, 3:4] > 0).float()
+        lit_colors = self.shader.shade(normals, colors, mask)
+        lit_colors = torch.nan_to_num(lit_colors.clamp(0.0, 1.0))
+        rgb = composite_over_sky(lit_colors, mask, self.shader.sky_color)
+        rgb = torch.nan_to_num(rgb.clamp(0.0, 1.0))
+        rgb = torch.flip(rgb, dims=[0])
+        mask = torch.flip(mask, dims=[0])
+        rgb_out = rgb.permute(2, 0, 1).unsqueeze(0)
+        alpha_out = mask.permute(2, 0, 1).unsqueeze(0)
+        result = torch.cat([rgb_out, alpha_out], dim=1)
+        result = torch.nan_to_num(result.clamp(0.0, 1.0))
+        return result

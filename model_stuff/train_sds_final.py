@@ -18,6 +18,7 @@ from pathlib import Path
 from PIL import Image
 import numpy as np
 from datetime import datetime
+from contextlib import nullcontext
 
 from .voxel_grid import DifferentiableVoxelGrid
 from .map_io import load_map_to_grid, save_grid_to_map, init_grid_from_primitive, get_grid_stats
@@ -56,37 +57,48 @@ def compute_sds_loss(
         SDS loss scalar
     """
     rgb = rgba[:, :3, :, :].clamp(0, 1)
+    rgb = torch.nan_to_num(rgb)
     logger.debug(f"SDS RGB: min={rgb.min().item():.4f}, max={rgb.max().item():.4f}, nan={torch.isnan(rgb).any().item()}")
 
-    # SDXL VAE expects input in [-1, 1] and same dtype as VAE weights
     rgb_normalized = (rgb * 2.0 - 1.0).to(sdxl.dtype)
+    rgb_normalized = torch.nan_to_num(rgb_normalized)
     logger.debug(f"SDS RGB normalized: min={rgb_normalized.min().item():.4f}, max={rgb_normalized.max().item():.4f}")
 
-    # Encode to latent; keep VAE frozen but allow dtype-correct forward
-    with torch.no_grad():
-        latent_dist = sdxl.vae.encode(rgb_normalized).latent_dist
-        z0 = latent_dist.mean * 0.18215  # mean for stability
+    # IMPORTANT: do NOT detach VAE encode. We need gradients w.r.t. the image/latents
+    # while keeping VAE params frozen (requires_grad=False is set in SDXLLightning).
+    use_cuda_amp = hasattr(sdxl.device, 'type') and sdxl.device.type == 'cuda' and sdxl.dtype == torch.float16
+    amp_ctx = torch.autocast(device_type='cuda', dtype=sdxl.dtype) if use_cuda_amp else nullcontext()
+    with amp_ctx:
+        latent = sdxl.vae.encode(rgb_normalized).latent_dist.mean
+        z0 = latent * 0.18215
+        z0 = torch.nan_to_num(z0)
     logger.debug(f"SDS Latent z0: min={z0.min().item():.4f}, max={z0.max().item():.4f}, nan={torch.isnan(z0).any().item()}")
 
-    # Sample timestep
-    t_min, t_max = timestep_range
-    ts = torch.randint(t_min, t_max, (1,), device=sdxl.device, dtype=torch.long)
+    # Sample timestep using scheduler's range
+    try:
+        ts = sdxl.sample_timesteps(1)
+    except Exception:
+        t_min, t_max = timestep_range
+        ts = torch.randint(t_min, t_max, (1,), device=sdxl.device, dtype=torch.long)
     logger.debug(f"SDS Timestep: {ts.item()}")
 
     # Add noise
     noise = torch.randn_like(z0)
     x_t = sdxl.add_noise(z0, noise, ts)
+    x_t = torch.nan_to_num(x_t)
     logger.debug(f"SDS Noised latent x_t: min={x_t.min().item():.4f}, max={x_t.max().item():.4f}, nan={torch.isnan(x_t).any().item()}")
 
     # Predict noise with CFG
-    eps_cfg = sdxl.eps_pred_cfg(
-        x_t, ts, pe, pe_pooled, ue, ue_pooled, add_time_ids, cfg_scale
-    )
+    with amp_ctx:
+        eps_cfg = sdxl.eps_pred_cfg(
+            x_t, ts, pe, pe_pooled, ue, ue_pooled, add_time_ids, cfg_scale
+        )
+    eps_cfg = torch.nan_to_num(eps_cfg)
     logger.debug(f"SDS Predicted noise eps_cfg: min={eps_cfg.min().item():.4f}, max={eps_cfg.max().item():.4f}, nan={torch.isnan(eps_cfg).any().item()}")
 
-    # SDS loss
-    # TODO: Add timestep weighting w(t) = (1 - alpha_t) / sqrt(1 - alpha_t)
-    loss = (eps_cfg - noise).pow(2).mean()
+    # SDS loss (compute in fp32 for stability)
+    delta = (eps_cfg - noise).float()
+    loss = delta.pow(2).mean()
     logger.debug(f"SDS Loss: {loss.item()}, nan={torch.isnan(loss).any().item()}")
 
     return loss
@@ -146,17 +158,15 @@ def train_sds(
     lambda_sparsity: float = 0.001,
     lambda_entropy: float = 0.0001,
     lambda_smooth: float = 0.0,
-    log_every: int = 10,
+    log_every: int = 1,
     image_every: int = 5,
     save_map_every: int = 50,
     output_dir: str = "out_local/sds_training",
-    init_mode: str = "from_map",  # 'from_map', 'ground_plane', 'cube'
+    init_mode: str = "from_map",
     seed: int = 42,
-    # New: training render resolution (VRAM control)
-    train_h: int = 256,
-    train_w: int = 256,
-    # Safety cap for active blocks (prevents OOM/segfault on small GPUs)
-    max_blocks: int | None = None,
+    train_h: int = 192,
+    train_w: int = 192,
+    max_blocks: int | None = 50000,
 ):
     """
     Train voxel grid with SDS.
@@ -172,7 +182,7 @@ def train_sds(
         lambda_sparsity: Sparsity loss weight
         lambda_entropy: Entropy loss weight
         lambda_smooth: Smoothness loss weight
-        log_every: Log frequency
+        log_every: Log frequency (default: every step)
         image_every: Image save frequency (default: every 5 steps)
         save_map_every: Intermediate map save frequency (default: every 50 steps)
         output_dir: Output directory
@@ -202,17 +212,19 @@ def train_sds(
 
     # Set up logging to file
     log_filename = logs_dir / "training.log"
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(logging.INFO)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.INFO)
+    
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.WARNING,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_filename),
-            logging.StreamHandler()  # Keep console output for important messages
-        ]
+        handlers=[file_handler, stream_handler]
     )
-    # Configure the global logger
     global logger
     logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
 
     # Load dataset cameras
     dataset_path = Path(f"datasets/{dataset_id}")
@@ -320,6 +332,24 @@ def train_sds(
 
     pe, pe_pooled, ue, ue_pooled, add_time_ids = sdxl.encode_prompt(prompt)
 
+    # Generate reference image using SDXL for comparison
+    print(f"Generating reference image with SDXL...")
+    try:
+        with torch.no_grad():
+            reference_image = sdxl.pipe(
+                prompt=[prompt],
+                height=train_h,
+                width=train_w,
+                num_inference_steps=20,
+                guidance_scale=1.0,  # Match our CFG scale
+                generator=torch.Generator(device=device).manual_seed(seed)
+            ).images[0]
+
+        reference_image.save(images_dir / "reference_sdxl.png")
+        print(f"✅ Reference image saved to: {images_dir / 'reference_sdxl.png'}")
+    except Exception as e:
+        print(f"⚠️  Failed to generate reference image: {e}")
+
     # Preview render before training (view 0)
     try:
         pv_view, pv_proj = cameras[0]
@@ -347,10 +377,10 @@ def train_sds(
     # Optimizer
     optimizer = torch.optim.Adam(grid.parameters(), lr=lr)
 
-    print(f"\nStarting training for {steps} steps...")
-    print(f"  Learning rate: {lr}")
-    print(f"  CFG scale: {cfg_scale}")
-    print(f"  Temperature: {temp_start} → {temp_end}")
+    logger.info(f"Starting training for {steps} steps...")
+    logger.info(f"  Learning rate: {lr}")
+    logger.info(f"  CFG scale: {cfg_scale}")
+    logger.info(f"  Temperature: {temp_start} → {temp_end}")
 
     # Training loop
     for step in range(steps):
@@ -368,6 +398,7 @@ def train_sds(
         logger.debug(f"RGBA shape: {rgba.shape}, min: {rgba.min().item():.4f}, max: {rgba.max().item():.4f}, has_nan: {torch.isnan(rgba).any().item()}")
 
         # SDS loss
+        #with torch.no_grad():
         loss_sds = compute_sds_loss(
             rgba, sdxl, pe, pe_pooled, ue, ue_pooled, add_time_ids, cfg_scale
         )
@@ -408,6 +439,10 @@ def train_sds(
 
         optimizer.step()
 
+        # Avoid flushing the CUDA cache each step; do it occasionally to limit overhead
+        if torch.cuda.is_available() and ((step + 1) % 50 == 0):
+            torch.cuda.empty_cache()
+
         logger.debug(f"Backward pass completed")
 
         # Logging
@@ -437,17 +472,27 @@ def train_sds(
             with open(log_file, "a") as f:
                 f.write(json.dumps(log_entry) + "\n")
 
-            print(f"Step {step+1}/{steps}: "
+            logger.info(f"Step {step+1}/{steps}: "
                   f"loss={loss_total.item():.4f} "
                   f"(sds={loss_sds.item():.4f}) "
                   f"active={stats['num_active_voxels']}/{stats['total_voxels']} "
                   f"({stats['density']*100:.1f}%)")
 
         # Save images (every 5 steps by default)
-    if (step + 1) % image_every == 0 or step == 0 or step == steps - 1:
-        rgb = rgba[0, :3, :, :].detach().cpu().permute(1, 2, 0).numpy()
-        rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-        Image.fromarray(rgb).save(images_dir / f"step_{step+1:04d}_cam{cam_idx}.png")
+        if (step + 1) % image_every == 0 or step == 0 or step == steps - 1:
+            rgb = rgba[0, :3, :, :].detach().cpu().permute(1, 2, 0).numpy()
+            rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+            Image.fromarray(rgb).save(images_dir / f"step_{step+1:04d}_cam{cam_idx}.png")
+
+        if (step + 1) % image_every == 0:
+            try:
+                pv_view, pv_proj = cameras[0]
+                rgba_preview = grid(pv_view, pv_proj, train_h, train_w, temperature=t, max_blocks=max_blocks)
+                rgb_preview = rgba_preview[0, :3, :, :].detach().cpu().permute(1, 2, 0).numpy()
+                rgb_preview = (np.clip(rgb_preview, 0, 1) * 255).astype(np.uint8)
+                Image.fromarray(rgb_preview).save(images_dir / f"preview_step_{step+1:04d}.png")
+            except Exception as e:
+                logger.warning(f"Failed to save preview: {e}")
 
         # Save intermediate maps (every 50 steps by default)
         if (step + 1) % save_map_every == 0 or step == steps - 1:
@@ -467,7 +512,7 @@ def train_sds(
             )
 
     # Export final grid with distinct name
-    print(f"\nTraining complete!")
+    logger.info(f"Training complete!")
 
     # Save as final_map.json (distinct name)
     final_map_path = output_path / "final_map.json"
@@ -548,8 +593,8 @@ def main():
                         help="Entropy loss weight")
     parser.add_argument("--lambda_smooth", type=float, default=0.0,
                         help="Smoothness loss weight")
-    parser.add_argument("--log_every", type=int, default=10,
-                        help="Log frequency")
+    parser.add_argument("--log_every", type=int, default=1,
+                        help="Log frequency (default: every step)")
     parser.add_argument("--image_every", type=int, default=5,
                         help="Image save frequency (default: every 5 steps)")
     parser.add_argument("--save_map_every", type=int, default=50,
@@ -561,14 +606,14 @@ def main():
                         help="Initialization mode")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
-    parser.add_argument("--train_h", type=int, default=256,
+    parser.add_argument("--train_h", type=int, default=192,
                         help="Training image height for SDS")
-    parser.add_argument("--train_w", type=int, default=256,
+    parser.add_argument("--train_w", type=int, default=192,
                         help="Training image width for SDS")
     parser.add_argument("--preset", type=str, default=None,
                         choices=["tiny", "small", "medium", "large"],
                         help="Preset to override hyperparameters and training resolution")
-    parser.add_argument("--max_blocks", type=int, default=None,
+    parser.add_argument("--max_blocks", type=int, default=50000,
                         help="Cap number of active voxels rendered each step (prevents OOM)")
 
     args = parser.parse_args()

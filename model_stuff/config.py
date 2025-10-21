@@ -34,7 +34,7 @@ def preset_small(output_dir: str = "out_local/sds_training") -> Dict[str, Any]:
         # Core
         "steps": 60,
         "lr": 0.01,
-        "cfg_scale": 6.0,
+        "cfg_scale": 1.0,
         "temp_start": 2.0,
         "temp_end": 0.5,
         # Reg
