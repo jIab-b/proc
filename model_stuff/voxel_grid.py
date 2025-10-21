@@ -17,31 +17,36 @@ from .nv_diff_render.utils import world_to_clip
 
 
 def voxel_index_to_world_position(index: torch.Tensor, grid_size: Tuple[int, int, int], world_scale: float) -> torch.Tensor:
-    """Convert voxel grid index (x,y,z) to world position."""
+    """Convert voxel index to world-space center matching block_to_world."""
     X, Y, Z = grid_size
-    # Convert to normalized coordinates [-0.5, 0.5] then scale
-    pos = (index.float() / torch.tensor([X-1, Y-1, Z-1], device=index.device) - 0.5) * world_scale
+    device = index.device
+    offsets = torch.tensor([-(X / 2.0), 0.0, -(Z / 2.0)], device=device)
+    centers = index.float() + 0.5
+    pos = (centers + offsets) * world_scale
     return pos
 
 
 def is_in_view_frustum(positions: torch.Tensor, camera_view: torch.Tensor,
                       camera_proj: torch.Tensor, img_w: int, img_h: int,
                       near_clip: float = 0.1, far_clip: float = 100.0) -> torch.Tensor:
-    """Check if 3D world positions are visible in camera frustum."""
+    """Check if 3D world positions are visible in camera frustum (NDC)."""
     device = positions.device
 
     # Ensure camera matrices are on the same device as positions
     camera_view = camera_view.to(device)
     camera_proj = camera_proj.to(device)
 
-    # Convert world positions to clip space
+    # Convert world positions to NDC by perspective divide
     clip_pos = world_to_clip(positions, camera_view, camera_proj)
+    w = clip_pos[:, 3].clamp(min=1e-6)
+    ndc_x = clip_pos[:, 0] / w
+    ndc_y = clip_pos[:, 1] / w
+    ndc_z = clip_pos[:, 2] / w
 
-    # Check if points are within clip space bounds
-    # x,y in [-1,1], z in [0,1] for OpenGL/Vulkan clip space
-    x_in_bounds = (clip_pos[:, 0] >= -1.0) & (clip_pos[:, 0] <= 1.0)
-    y_in_bounds = (clip_pos[:, 1] >= -1.0) & (clip_pos[:, 1] <= 1.0)
-    z_in_bounds = (clip_pos[:, 2] >= 0.0) & (clip_pos[:, 2] <= 1.0)
+    # OpenGL NDC ranges: x,y,z in [-1, 1]
+    x_in_bounds = (ndc_x >= -1.0) & (ndc_x <= 1.0)
+    y_in_bounds = (ndc_y >= -1.0) & (ndc_y <= 1.0)
+    z_in_bounds = (ndc_z >= -1.0) & (ndc_z <= 1.0)
 
     # Also check near/far clip planes in world space for better culling
     view_pos = torch.matmul(positions, camera_view[:3, :3].T) + camera_view[:3, 3]
@@ -135,27 +140,35 @@ class DifferentiableVoxelGrid(nn.Module):
 
         # View frustum culling: only render visible voxels
         if len(active_indices) > 0:
-            # TEMPORARILY DISABLE FRUSTUM CULLING FOR DEBUGGING
-            print(f"DEBUG: Active voxels: {len(active_indices)}")
-            # Convert voxel indices to world positions
-            # world_positions = voxel_index_to_world_position(
-            #     active_indices.float(), self.grid_size, self.world_scale
-            # )
+            X, Y, Z = self.grid_size
+            offsets = torch.tensor([-(X / 2.0), 0.0, -(Z / 2.0)], device=self.device)
 
-            # Check which voxels are in camera view frustum
-            # visible_mask = is_in_view_frustum(
-            #     world_positions, camera_view, camera_proj, img_w, img_h
-            # )
+            centers = active_indices.float() + 0.5
+            centers = centers + offsets
+            world_centers = centers * self.world_scale
 
-            # print(f"DEBUG: Active voxels before culling: {len(active_indices)}, after: {visible_mask.sum().item()}")
+            visible_mask = is_in_view_frustum(
+                world_centers, camera_view, camera_proj, img_w, img_h
+            )
 
-            # Filter to only visible active voxels
-            # active_indices = active_indices[visible_mask]
+            if visible_mask.any():
+                active_indices = active_indices[visible_mask]
+                world_centers = world_centers[visible_mask]
+            else:
+                active_indices = active_indices[:0]
 
-        # Cap number of active voxels to avoid OOM/driver instability on small GPUs
-        if max_blocks is not None and active_indices.shape[0] > max_blocks:
-            perm = torch.randperm(active_indices.shape[0], device=self.device)
-            active_indices = active_indices[perm[:max_blocks]]
+            if max_blocks is not None and active_indices.shape[0] > max_blocks:
+                view_pos = world_centers @ camera_view[:3, :3].T + camera_view[:3, 3]
+                depth = (-view_pos[:, 2]).clamp(min=0.0)
+                keep = torch.argsort(depth, descending=False)[:max_blocks]
+                active_indices = active_indices[keep]
+
+        # Build pruned occupancy mask grid
+        if active_indices.shape[0] > 0:
+            pruned_mask = torch.zeros_like(active_mask)
+            pruned_mask[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]] = True
+        else:
+            pruned_mask = active_mask & False
 
         # Handle empty scene
         if len(active_indices) == 0:
@@ -167,7 +180,7 @@ class DifferentiableVoxelGrid(nn.Module):
         modulated_dense = self.material_logits * occ_probs.unsqueeze(-1)
 
         rgba = self.renderer.render_from_grid(
-            active_mask,
+            pruned_mask,
             modulated_dense,
             camera_view,
             camera_proj,
