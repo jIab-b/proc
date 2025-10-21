@@ -57,7 +57,27 @@ def add_noise_to_logits(occ_logits, mat_logits, noise_scale=0.1, temp: float = 1
 
     start_time = time.time()
 
-    noisy_occ = occ_logits
+    occ_orig = torch.sigmoid(occ_logits)
+    solid = occ_orig > 0.5
+    X, Y, Z = occ_orig.shape
+
+    nb = torch.zeros_like(solid)
+    nb[:-1, :, :] |= solid[1:, :, :]
+    nb[1:, :, :] |= solid[:-1, :, :]
+    nb[:, :-1, :] |= solid[:, 1:, :]
+    nb[:, 1:, :] |= solid[:, :-1, :]
+    nb[:, :, :-1] |= solid[:, :, 1:]
+    nb[:, :, 1:] |= solid[:, :, :-1]
+    near_solid = nb | solid
+
+    edge_strength = 0.25
+    far_strength = 0.02
+    occ_alpha = torch.where(near_solid, torch.full_like(occ_orig, noise_scale * edge_strength), torch.full_like(occ_orig, noise_scale * far_strength))
+
+    occ_target = torch.rand_like(occ_orig)
+    occ_mixed = occ_orig * (1.0 - occ_alpha) + occ_target * occ_alpha
+    occ_mixed = occ_mixed.clamp(1e-6, 1 - 1e-6)
+    noisy_occ = torch.log(occ_mixed) - torch.log(1.0 - occ_mixed)
 
     probs_orig = torch.softmax(mat_logits / max(temp, 1e-6), dim=-1)
     probs_rand = torch.softmax(torch.randn_like(mat_logits), dim=-1)
