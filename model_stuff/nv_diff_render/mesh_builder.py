@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from typing import List, Tuple, Dict, Optional, Callable
 from .materials import FACE_DEFS, FACE_INDICES, get_material_palette
-from .utils import get_face_vertex_world, is_in_bounds
+from .utils import get_face_vertex_world, is_in_bounds, world_to_clip
 
 
 def build_block_mesh(
@@ -139,6 +139,8 @@ def build_block_mesh(
 def build_mesh_from_grid(
     block_grid: torch.Tensor,
     material_logits: torch.Tensor,
+    camera_view: torch.Tensor,
+    camera_proj: torch.Tensor,
     world_scale: float = 2.0,
     temperature: float = 1.0,
     hard_assignment: bool = False
@@ -179,6 +181,58 @@ def build_mesh_from_grid(
     else:
         mat_probs_full = F.softmax(material_logits / temperature, dim=-1)
     palette = get_material_palette().to(device)
+
+    # Block AABB frustum culling (conservative)
+    occ_idx = torch.nonzero(block_grid, as_tuple=False)
+    if occ_idx.shape[0] > 0:
+        offset_x = -sx / 2.0
+        offset_y = 0.0
+        offset_z = -sz / 2.0
+        bx = occ_idx[:, 0].float()
+        by = occ_idx[:, 1].float()
+        bz = occ_idx[:, 2].float()
+        base = torch.stack([
+            (bx + offset_x) * world_scale,
+            (by + offset_y) * world_scale,
+            (bz + offset_z) * world_scale
+        ], dim=1)
+        corner_offsets = torch.tensor([
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0]
+        ], dtype=torch.float32, device=device)
+        corners_world = base[:, None, :] + corner_offsets[None, :, :] * world_scale
+        corners_flat = corners_world.reshape(-1, 3)
+        clip = world_to_clip(corners_flat, camera_view.to(device), camera_proj.to(device))
+        w = clip[:, 3].clamp(min=1e-6)
+        ndc = (clip[:, :3] / w.unsqueeze(1)).reshape(-1, 8, 3)
+        ndc_min = ndc.min(dim=1).values
+        ndc_max = ndc.max(dim=1).values
+        culled = (ndc_max[:, 0] < -1.0) | (ndc_min[:, 0] > 1.0) | \
+                 (ndc_max[:, 1] < -1.0) | (ndc_min[:, 1] > 1.0) | \
+                 (ndc_max[:, 2] < -1.0) | (ndc_min[:, 2] > 1.0)
+        inside_mask = ~culled
+        if inside_mask.any():
+            pruned_grid = torch.zeros_like(block_grid)
+            kept = occ_idx[inside_mask]
+            pruned_grid[kept[:, 0], kept[:, 1], kept[:, 2]] = True
+            block_grid = pruned_grid
+        else:
+            M = material_logits.shape[-1]
+            return (
+                torch.zeros((0, 3), dtype=torch.float32, device=device),
+                torch.zeros((0, 3), dtype=torch.int32, device=device),
+                {
+                    'normals': torch.zeros((0, 3), dtype=torch.float32, device=device),
+                    'colors': torch.zeros((0, 3), dtype=torch.float32, device=device),
+                    'uvs': torch.zeros((0, 2), dtype=torch.float32, device=device)
+                }
+            )
 
     mask_px = torch.zeros_like(block_grid, dtype=torch.bool)
     mask_px[:-1, :, :] = block_grid[:-1, :, :] & ~block_grid[1:, :, :]

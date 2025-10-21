@@ -268,6 +268,8 @@ class DifferentiableBlockRenderer(nn.Module):
         vertices, faces, attributes = build_mesh_from_grid(
             block_grid,
             material_logits,
+            camera_view,
+            camera_proj,
             world_scale=self.world_scale,
             temperature=kwargs.get('temperature', 1.0),
             hard_assignment=kwargs.get('hard_materials', False)

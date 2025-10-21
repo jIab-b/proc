@@ -52,18 +52,23 @@ def load_test_camera(dataset_path="datasets/1"):
     return view, proj
 
 
-def add_noise_to_logits(occ_logits, mat_logits, noise_scale=0.1):
-    """Add random noise to voxel logits."""
+def add_noise_to_logits(occ_logits, mat_logits, noise_scale=0.1, temp: float = 1.0):
     print(f"Adding noise with scale {noise_scale}")
 
     start_time = time.time()
-    # Add noise to occupancy logits
-    occ_noise = torch.randn_like(occ_logits) * noise_scale
-    noisy_occ = occ_logits + occ_noise
 
-    # Add noise to material logits
-    mat_noise = torch.randn_like(mat_logits) * noise_scale
-    noisy_mat = mat_logits + mat_noise
+    occ_orig = torch.sigmoid(occ_logits)
+    occ_rand = torch.rand_like(occ_orig)
+    occ_mixed = (1.0 - noise_scale) * occ_orig + noise_scale * occ_rand
+    occ_mixed = occ_mixed.clamp(1e-6, 1 - 1e-6)
+    noisy_occ = torch.log(occ_mixed) - torch.log(1.0 - occ_mixed)
+
+    probs_orig = torch.softmax(mat_logits / max(temp, 1e-6), dim=-1)
+    probs_rand = torch.softmax(torch.randn_like(mat_logits), dim=-1)
+    probs_mixed = (1.0 - noise_scale) * probs_orig + noise_scale * probs_rand
+    probs_mixed = probs_mixed / probs_mixed.sum(dim=-1, keepdim=True)
+    probs_mixed = probs_mixed.clamp(min=1e-6)
+    noisy_mat = torch.log(probs_mixed)
 
     noise_gen_time = time.time() - start_time
     print(".4f")
