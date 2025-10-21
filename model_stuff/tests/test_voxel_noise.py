@@ -57,11 +57,7 @@ def add_noise_to_logits(occ_logits, mat_logits, noise_scale=0.1, temp: float = 1
 
     start_time = time.time()
 
-    occ_orig = torch.sigmoid(occ_logits)
-    occ_rand = torch.rand_like(occ_orig)
-    occ_mixed = (1.0 - noise_scale) * occ_orig + noise_scale * occ_rand
-    occ_mixed = occ_mixed.clamp(1e-6, 1 - 1e-6)
-    noisy_occ = torch.log(occ_mixed) - torch.log(1.0 - occ_mixed)
+    noisy_occ = occ_logits
 
     probs_orig = torch.softmax(mat_logits / max(temp, 1e-6), dim=-1)
     probs_rand = torch.softmax(torch.randn_like(mat_logits), dim=-1)

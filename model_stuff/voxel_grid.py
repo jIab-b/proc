@@ -177,11 +177,9 @@ class DifferentiableVoxelGrid(nn.Module):
             alpha = torch.zeros(1, 1, img_h, img_w, device=self.device)
             return torch.cat([rgb, alpha], dim=1)
 
-        modulated_dense = self.material_logits * occ_probs.unsqueeze(-1)
-
         rgba = self.renderer.render_from_grid(
             pruned_mask,
-            modulated_dense,
+            self.material_logits,
             camera_view,
             camera_proj,
             img_h,
