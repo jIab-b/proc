@@ -30,6 +30,8 @@ class CameraSampler:
         dataset: MultiViewDataset,
         grid_size: tuple[int, int, int],
         world_scale: float,
+        render_height: int,
+        render_width: int,
         novel_view_prob: float = 0.2,
         device: torch.device | str = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     ) -> None:
@@ -38,6 +40,9 @@ class CameraSampler:
         self.world_scale = world_scale
         self.novel_view_prob = float(novel_view_prob)
         self.device = torch.device(device)
+
+        self.render_height = int(render_height)
+        self.render_width = int(render_width)
 
         self._height, self._width = dataset.image_size
         self._default_intrinsics = dataset.metadata["views"][0]["intrinsics"]
@@ -52,9 +57,17 @@ class CameraSampler:
     def _sample_dataset(self) -> CameraSample:
         rec = self.dataset.get_view(torch.randint(0, len(self.dataset), (1,)).item())
         rgb = self.dataset.load_image(rec)
+
+        intr = self.dataset.metadata["views"][rec.index]["intrinsics"]
+        fov = math.radians(float(intr.get("fovYDegrees", 60.0)))
+        near = float(intr.get("near", 0.1))
+        far = float(intr.get("far", 500.0))
+        aspect = float(self.render_width / max(self.render_height, 1))
+        proj = create_perspective_matrix(fov, aspect, near, far).to(self.device)
+
         return CameraSample(
             view=rec.view_matrix,
-            proj=rec.proj_matrix,
+            proj=proj,
             from_dataset=True,
             index=rec.index,
             rgb=rgb,
@@ -82,7 +95,7 @@ class CameraSampler:
 
         intr = self._default_intrinsics
         fov = math.radians(float(intr.get("fovYDegrees", 60.0)))
-        aspect = float(intr.get("aspect", self._width / self._height))
+        aspect = float(self.render_width / max(self.render_height, 1))
         near = float(intr.get("near", 0.1))
         far = float(intr.get("far", 500.0))
         proj = create_perspective_matrix(fov, aspect, near, far).to(self.device)
@@ -95,4 +108,3 @@ class CameraSampler:
             rgb=None,
             image_path=None,
         )
-

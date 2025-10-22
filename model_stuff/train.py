@@ -108,6 +108,8 @@ def train(config: TrainConfig) -> Path:
         dataset=dataset,
         grid_size=scene.grid.grid_size,
         world_scale=scene.world_scale,
+        render_height=config.train_height,
+        render_width=config.train_width,
         novel_view_prob=config.novel_view_prob,
         device=device,
     )
