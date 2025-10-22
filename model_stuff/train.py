@@ -7,7 +7,6 @@ import json
 import math
 import random
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
@@ -28,48 +27,6 @@ from .nv_diff_render.utils import create_perspective_matrix
 
 
 # ----------------------------------------------------------------------
-# Configuration container
-# ----------------------------------------------------------------------
-
-
-@dataclass
-class TrainConfig:
-    prompt: str
-    dataset_id: int = 1
-    map_path: Optional[str] = None
-    steps: int = 100
-    learning_rate: float = 0.01
-    cfg_scale: float = 7.5
-    temperature_start: float = 2.0
-    temperature_end: float = 0.5
-    sds_weight: float = 1.0
-    photo_weight: float = 1.0
-    lambda_sparsity: float = 1e-3
-    lambda_entropy: float = 1e-4
-    lambda_tv: float = 0.0
-    novel_view_prob: float = 0.2
-    train_height: int = 192
-    train_width: int = 192
-    max_blocks: Optional[int] = 50000
-    # SDS controls
-    sds_views_per_step: int = 1
-    sds_mask_sky: bool = True
-    sds_use_lightning_ts: bool = True
-    sds_lightning_steps: int = 4
-    # Scheduling
-    occupancy_threshold_start: float = 0.0
-    occupancy_threshold_end: float = 0.01
-    max_blocks_start: Optional[int] = None
-    max_blocks_end: Optional[int] = 50000
-    output_dir: str = "out_local/voxel_sds"
-    fuckdump: bool = False
-    log_interval: int = 10
-    image_interval: int = 50
-    map_interval: int = 100
-    seed: int = 42
-    sdxl_dtype: str = "auto"  # auto|fp16|fp32
-
-
 # ----------------------------------------------------------------------
 
 
@@ -104,14 +61,14 @@ def build_projection(intrinsics: Dict, height: int, width: int, device: torch.de
 # ----------------------------------------------------------------------
 
 
-def train(config: TrainConfig) -> Path:
-    torch.manual_seed(config.seed)
-    random.seed(config.seed)
+def train(args: argparse.Namespace) -> Path:
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dataset = MultiViewDataset(dataset_id=config.dataset_id, device=device)
-    map_path = Path(config.map_path) if config.map_path else Path(f"maps/{config.dataset_id}/map.json")
+    dataset = MultiViewDataset(dataset_id=args.dataset_id, device=device)
+    map_path = Path(args.map_path) if args.map_path else Path(f"maps/{args.dataset_id}/map.json")
     if not map_path.exists():
         raise FileNotFoundError(f"Map not found: {map_path}")
 
@@ -122,18 +79,18 @@ def train(config: TrainConfig) -> Path:
         dataset=dataset,
         grid_size=scene.grid.grid_size,
         world_scale=scene.world_scale,
-        render_height=config.train_height,
-        render_width=config.train_width,
-        novel_view_prob=config.novel_view_prob,
+        render_height=args.train_height,
+        render_width=args.train_width,
+        novel_view_prob=args.novel_view_prob,
         device=device,
     )
 
     debug_view_indices = list(range(min(5, len(dataset))))
 
     model_id = "stabilityai/stable-diffusion-xl-base-1.0"
-    if config.sdxl_dtype == "fp32":
+    if args.sdxl_dtype == "fp32":
         sdxl_dtype = torch.float32
-    elif config.sdxl_dtype == "fp16" and device.type == "cuda":
+    elif args.sdxl_dtype == "fp16" and device.type == "cuda":
         sdxl_dtype = torch.float16
     else:
         sdxl_dtype = torch.float16 if device.type == "cuda" else torch.float32
@@ -141,22 +98,36 @@ def train(config: TrainConfig) -> Path:
         model_id=model_id,
         device=device,
         dtype=sdxl_dtype,
-        height=config.train_height,
-        width=config.train_width,
+        height=args.train_height,
+        width=args.train_width,
     )
-    embeddings = sdxl.encode_prompt(config.prompt)
+    embeddings = sdxl.encode_prompt(args.prompt)
 
-    optimizer = torch.optim.Adam(scene.parameters(), lr=config.learning_rate)
+    optimizer = torch.optim.Adam(scene.parameters(), lr=args.learning_rate)
 
-    run_dir = ensure_dir(Path(config.output_dir) / datetime.now().strftime("%Y%m%d_%H%M%S"))
+    run_dir = ensure_dir(Path(args.output_dir) / datetime.now().strftime("%Y%m%d_%H%M%S"))
     images_dir = ensure_dir(run_dir / "images")
     maps_dir = ensure_dir(run_dir / "maps")
     log_path = run_dir / "train.jsonl"
 
     with (run_dir / "config.json").open("w") as f:
-        json.dump(asdict(config), f, indent=2)
+        json.dump(vars(args), f, indent=2)
 
     fuckdump_dir = images_dir / "fuckdump"
+
+    if args.fuckdump:
+        fuckdump_dir.mkdir(exist_ok=True)
+        initial_views = []
+        for i in range(len(dataset)):
+            cam_view = dataset.get_view(i)
+            cam_proj = build_projection(cam_view.intrinsics, args.train_height, args.train_width, device)
+            initial_views.append({
+                "index": i,
+                "view_matrix": cam_view.view_matrix.cpu().tolist(),
+                "proj_matrix": cam_proj.cpu().tolist()
+            })
+        with open(fuckdump_dir / "initial_views.json", "w") as f:
+            json.dump(initial_views, f, indent=2)
 
     def render_debug_views(step_idx: int, temp: float, occ_threshold: float, max_blocks: Optional[int]) -> None:
         if not debug_view_indices:
@@ -164,12 +135,12 @@ def train(config: TrainConfig) -> Path:
         fuckdump_dir.mkdir(exist_ok=True)
         for cam_idx in debug_view_indices:
             cam_view = dataset.get_view(cam_idx)
-            cam_proj = build_projection(cam_view.intrinsics, config.train_height, config.train_width, device)
+            cam_proj = build_projection(cam_view.intrinsics, args.train_height, args.train_width, device)
             cam_rgba = renderer.render(
                 cam_view.view_matrix,
                 cam_proj,
-                config.train_height,
-                config.train_width,
+                args.train_height,
+                args.train_width,
                 temperature=temp,
                 occupancy_threshold=occ_threshold,
                 max_blocks=max_blocks,
@@ -177,29 +148,60 @@ def train(config: TrainConfig) -> Path:
             cam_rgb = cam_rgba[:, :3]
             save_image(cam_rgb[0], fuckdump_dir / f"step_{step_idx:04d}_cam{cam_idx:02d}.png")
 
+            cam_txt_path = fuckdump_dir / f"step_{step_idx:04d}_cam{cam_idx:02d}.txt"
+            with open(cam_txt_path, "w") as f:
+                f.write(f"Render parameters for step_{step_idx:04d}_cam{cam_idx:02d}.png\n")
+                f.write(f"Height: {args.train_height}\n")
+                f.write(f"Width: {args.train_width}\n")
+                f.write(f"Temperature: {temp:.6f}\n")
+                f.write(f"Occupancy threshold: {occ_threshold:.6f}\n")
+                f.write(f"Max blocks: {max_blocks}\n")
+                f.write("\nView matrix:\n")
+                for row in cam_view.view_matrix.cpu().tolist():
+                    f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
+                f.write("\nProj matrix:\n")
+                for row in cam_proj.cpu().tolist():
+                    f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
+
     # Preview initial state
     jpg_view = dataset.get_view(0)
-    preview_proj = build_projection(jpg_view.intrinsics, config.train_height, config.train_width, device)
+    preview_proj = build_projection(jpg_view.intrinsics, args.train_height, args.train_width, device)
     preview_rgba = renderer.render(
         jpg_view.view_matrix,
         preview_proj,
-        config.train_height,
-        config.train_width,
-        temperature=config.temperature_start,
-        max_blocks=config.max_blocks,
+        args.train_height,
+        args.train_width,
+        temperature=args.temperature_start,
+        max_blocks=args.max_blocks,
     )
     save_image(preview_rgba[0, :3], images_dir / "preview_init.png")
 
-    for step in range(1, config.steps + 1):
-        t = (step - 1) / max(config.steps - 1, 1)
-        temperature = lerp(config.temperature_start, config.temperature_end, t)
+    if args.fuckdump:
+        preview_txt_path = images_dir / "preview_init.txt"
+        with open(preview_txt_path, "w") as f:
+            f.write("Render parameters for preview_init.png\n")
+            f.write(f"Height: {args.train_height}\n")
+            f.write(f"Width: {args.train_width}\n")
+            f.write(f"Temperature: {args.temperature_start}\n")
+            f.write(f"Occupancy threshold: 0.0\n")
+            f.write(f"Max blocks: {args.max_blocks}\n")
+            f.write("\nView matrix:\n")
+            for row in jpg_view.view_matrix.cpu().tolist():
+                f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
+            f.write("\nProj matrix:\n")
+            for row in preview_proj.cpu().tolist():
+                f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
+
+    for step in range(1, args.steps + 1):
+        t = (step - 1) / max(args.steps - 1, 1)
+        temperature = lerp(args.temperature_start, args.temperature_end, t)
 
         sample = sampler.sample()
         # Schedules
-        occ_thr = lerp(config.occupancy_threshold_start, config.occupancy_threshold_end, t)
-        if config.max_blocks_start is not None or config.max_blocks_end is not None:
-            start = config.max_blocks_start
-            end = config.max_blocks_end
+        occ_thr = lerp(args.occupancy_threshold_start, args.occupancy_threshold_end, t)
+        if args.max_blocks_start is not None or args.max_blocks_end is not None:
+            start = args.max_blocks_start
+            end = args.max_blocks_end
             if start is None:
                 max_blocks_cur = None if t < 0.5 else end
             elif end is None:
@@ -207,12 +209,12 @@ def train(config: TrainConfig) -> Path:
             else:
                 max_blocks_cur = int(lerp(float(start), float(end), t))
         else:
-            max_blocks_cur = config.max_blocks
+            max_blocks_cur = args.max_blocks
         rgba = renderer.render(
             sample.view,
             sample.proj,
-            config.train_height,
-            config.train_width,
+            args.train_height,
+            args.train_width,
             temperature=temperature,
             occupancy_threshold=occ_thr,
             max_blocks=max_blocks_cur,
@@ -224,28 +226,28 @@ def train(config: TrainConfig) -> Path:
         losses: Dict[str, float] = {}
 
         # Photometric supervision (dataset cameras only)
-        if sample.from_dataset and config.photo_weight > 0.0:
+        if sample.from_dataset and args.photo_weight > 0.0:
             gt = sample.rgb.unsqueeze(0).to(device)
             gt_resized = F.interpolate(
                 gt,
-                size=(config.train_height, config.train_width),
+                size=(args.train_height, args.train_width),
                 mode="bilinear",
                 align_corners=False,
             )
-            l_photo = photometric_loss(rgb_pred, gt_resized) * config.photo_weight
+            l_photo = photometric_loss(rgb_pred, gt_resized) * args.photo_weight
             total_loss = total_loss + l_photo
             losses["photometric"] = float(l_photo.item())
 
-        if config.sds_weight > 0.0:
+        if args.sds_weight > 0.0:
             l_sds_total = torch.zeros((), device=device)
-            num_views = max(1, int(config.sds_views_per_step))
+            num_views = max(1, int(args.sds_views_per_step))
             for i in range(num_views):
                 s_i = sample if i == 0 else sampler.sample()
                 rgba_i = renderer.render(
                     s_i.view,
                     s_i.proj,
-                    config.train_height,
-                    config.train_width,
+                    args.train_height,
+                    args.train_width,
                     temperature=temperature,
                     occupancy_threshold=occ_thr,
                     max_blocks=max_blocks_cur,
@@ -254,14 +256,14 @@ def train(config: TrainConfig) -> Path:
                     rgba_i,
                     sdxl,
                     embeddings,
-                    cfg_scale=config.cfg_scale,
-                    mask_sky=config.sds_mask_sky,
-                    use_lightning_timesteps=config.sds_use_lightning_ts,
-                    lightning_steps=config.sds_lightning_steps,
+                    cfg_scale=args.cfg_scale,
+                    mask_sky=args.sds_mask_sky,
+                    use_lightning_timesteps=args.sds_use_lightning_ts,
+                    lightning_steps=args.sds_lightning_steps,
                 )
                 if torch.isfinite(l_sds_i):
                     l_sds_total = l_sds_total + l_sds_i
-            l_sds = (l_sds_total / float(num_views)) * config.sds_weight
+            l_sds = (l_sds_total / float(num_views)) * args.sds_weight
             total_loss = total_loss + l_sds
             losses["sds"] = float(l_sds.item())
 
@@ -270,9 +272,9 @@ def train(config: TrainConfig) -> Path:
         reg = regularisation_losses(
             occ_probs=occ,
             mat_probs=mats,
-            lambda_sparsity=config.lambda_sparsity,
-            lambda_entropy=config.lambda_entropy,
-            lambda_tv=config.lambda_tv,
+            lambda_sparsity=args.lambda_sparsity,
+            lambda_entropy=args.lambda_entropy,
+            lambda_tv=args.lambda_tv,
         )
 
         for key, value in reg.items():
@@ -285,7 +287,7 @@ def train(config: TrainConfig) -> Path:
         optimizer.step()
 
         # FUCKDUMP MODE: Extensive debugging output
-        if config.fuckdump:
+        if args.fuckdump:
             stats = scene.stats()
 
             # Create fuckdump subdirectory
@@ -294,11 +296,26 @@ def train(config: TrainConfig) -> Path:
             # Save rendered image at every step
             save_image(rgb_pred[0], fuckdump_dir / f"step_{step:04d}_render.png")
 
+            render_txt_path = fuckdump_dir / f"step_{step:04d}_render.txt"
+            with open(render_txt_path, "w") as f:
+                f.write(f"Render parameters for step_{step:04d}_render.png\n")
+                f.write(f"Height: {args.train_height}\n")
+                f.write(f"Width: {args.train_width}\n")
+                f.write(f"Temperature: {temperature:.6f}\n")
+                f.write(f"Occupancy threshold: {occ_thr:.6f}\n")
+                f.write(f"Max blocks: {max_blocks_cur}\n")
+                f.write("\nView matrix:\n")
+                for row in sample.view.cpu().tolist():
+                    f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
+                f.write("\nProj matrix:\n")
+                for row in sample.proj.cpu().tolist():
+                    f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
+
             # Save ground truth comparison if available
             if sample.from_dataset and sample.rgb is not None:
                 gt_resized = F.interpolate(
                     sample.rgb.unsqueeze(0).to(device),
-                    size=(config.train_height, config.train_width),
+                    size=(args.train_height, args.train_width),
                     mode="bilinear",
                     align_corners=False,
                 )
@@ -307,16 +324,16 @@ def train(config: TrainConfig) -> Path:
             # Render and save from all dataset cameras
             if debug_view_indices:
                 print(
-                    f"\nFUCKDUMP Step {step}/{config.steps} - Rendering {len(debug_view_indices)} dataset views..."
+                    f"\nFUCKDUMP Step {step}/{args.steps} - Rendering {len(debug_view_indices)} dataset views..."
                 )
                 render_debug_views(step, temperature, occ_thr, max_blocks_cur)
 
             # Create noisy/x0 versions for SDS debugging
-            if config.sds_weight > 0.0:
+            if args.sds_weight > 0.0:
                 with torch.no_grad():
                     latents = render_to_latents(rgb_pred, sdxl).float()
-                    if config.sds_use_lightning_ts:
-                        timestep = sdxl.sample_lightning_timesteps(1, steps=config.sds_lightning_steps)
+                    if args.sds_use_lightning_ts:
+                        timestep = sdxl.sample_lightning_timesteps(1, steps=args.sds_lightning_steps)
                     else:
                         timestep = sdxl.sample_timesteps(1)
                     noise = torch.randn_like(latents)
@@ -359,7 +376,7 @@ def train(config: TrainConfig) -> Path:
                         ue,
                         ue_pooled,
                         add_time_ids,
-                        config.cfg_scale,
+                        args.cfg_scale,
                     ).float()
                     # Compute x0 from scheduler alphas
                     alphas_cumprod = sdxl.scheduler.alphas_cumprod.to(noisy_latents.device, dtype=noisy_latents.dtype)
@@ -399,7 +416,7 @@ def train(config: TrainConfig) -> Path:
         elif step % 500 == 0:
             render_debug_views(step, temperature, occ_thr, max_blocks_cur)
 
-        if step % config.log_interval == 0 or step == 1:
+        if step % args.log_interval == 0 or step == 1:
             stats = scene.stats()
             log_entry = {
                 "step": step,
@@ -415,22 +432,22 @@ def train(config: TrainConfig) -> Path:
             with log_path.open("a") as f:
                 f.write(json.dumps(log_entry) + "\n")
             print(
-                f"Step {step}/{config.steps} "
+                f"Step {step}/{args.steps} "
                 f"loss={total_loss.item():.4f} "
                 f"active={stats['num_active_voxels']}/{stats['total_voxels']}"
             )
 
-        if step % config.image_interval == 0:
+        if step % args.image_interval == 0:
             save_image(rgb_pred[0], images_dir / f"step_{step:04d}.png")
 
-        if step % config.map_interval == 0 or step == config.steps:
+        if step % args.map_interval == 0 or step == args.steps:
             scene.save_map(
                 maps_dir / f"step_{step:04d}.json",
-                metadata={"prompt": config.prompt, "step": step},
+                metadata={"prompt": args.prompt, "step": step},
             )
 
     final_map = run_dir / "final_map.json"
-    scene.save_map(final_map, metadata={"prompt": config.prompt, "steps": config.steps})
+    scene.save_map(final_map, metadata={"prompt": args.prompt, "steps": args.steps})
     save_image(rgb_pred[0], images_dir / "final.png")
 
     print(f"Training finished. Outputs saved in {run_dir}")
@@ -440,7 +457,7 @@ def train(config: TrainConfig) -> Path:
 # ----------------------------------------------------------------------
 
 
-def parse_args() -> TrainConfig:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Voxel SDS training")
     parser.add_argument("--prompt", required=True, help="Text prompt for SDS guidance")
     parser.add_argument("--dataset_id", type=int, default=1)
@@ -448,8 +465,8 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--learning_rate", type=float, default=0.01)
     parser.add_argument("--cfg_scale", type=float, default=7.5)
-    parser.add_argument("--temperature_start", type=float, default=2.0)
-    parser.add_argument("--temperature_end", type=float, default=0.5)
+    parser.add_argument("--temperature_start", type=float, default=0.1)
+    parser.add_argument("--temperature_end", type=float, default=0.1)
     parser.add_argument("--sds_weight", type=float, default=1.0)
     parser.add_argument("--photo_weight", type=float, default=1.0)
     parser.add_argument("--lambda_sparsity", type=float, default=1e-3)
@@ -463,8 +480,8 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--sds_mask_sky", action="store_true")
     parser.add_argument("--sds_use_lightning_ts", action="store_true")
     parser.add_argument("--sds_lightning_steps", type=int, default=4)
-    parser.add_argument("--occupancy_threshold_start", type=float, default=0.0)
-    parser.add_argument("--occupancy_threshold_end", type=float, default=0.01)
+    parser.add_argument("--occupancy_threshold_start", type=float, default=0.1)
+    parser.add_argument("--occupancy_threshold_end", type=float, default=0.1)
     parser.add_argument("--max_blocks_start", type=int, default=None)
     parser.add_argument("--max_blocks_end", type=int, default=50000)
     parser.add_argument("--output_dir", type=str, default="out_local/voxel_sds")
@@ -476,19 +493,11 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--sdxl_dtype", type=str, default="auto", choices=["auto", "fp16", "fp32"])
     args = parser.parse_args()
 
-    config = TrainConfig(**vars(args))
     if args.max_blocks <= 0:
-        config.max_blocks = None
-    return config
+        args.max_blocks = None
+    return args
 
 
 if __name__ == "__main__":
-    cfg = parse_args()
-    train(cfg)
-def build_projection(intrinsics: Dict, height: int, width: int, device: torch.device) -> torch.Tensor:
-    fov = math.radians(float(intrinsics.get("fovYDegrees", 60.0)))
-    near = float(intrinsics.get("near", 0.1))
-    far = float(intrinsics.get("far", 500.0))
-    aspect = float(width / max(height, 1))
-    proj = create_perspective_matrix(fov, aspect, near, far)
-    return proj.to(device)
+    args = parse_args()
+    train(args)
