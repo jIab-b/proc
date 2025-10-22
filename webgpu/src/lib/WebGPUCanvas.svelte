@@ -15,7 +15,7 @@
   let overlayCanvasEl: HTMLCanvasElement
   let containerEl: HTMLDivElement
   let availableMaps: Array<{sequence: number, lastUpdated: string, captureId: string, blockCount: number, customBlockCount: number}> = []
-  let loadMapCallback: ((sequence: number) => Promise<void>) | null = null
+  let loadMapCallback: ((mapData: any) => Promise<void>) | null = null
   let saveMapCallback: (() => Promise<void>) | null = null
   let newMapCallback: ((copyFromSequence?: number) => Promise<void>) | null = null
   let isInGame = false
@@ -26,6 +26,8 @@
   let contextMenuY = 0
   let showLoadSubmenu = false
   let showNewMapSubmenu = false
+  let loadMapFileCallback: ((mapData: any) => Promise<void>) | null = null
+  let fileInputRef: HTMLInputElement | null = null
 
   async function fetchAvailableMaps() {
     try {
@@ -129,6 +131,30 @@
     console.log('Download log feature pending')
   }
 
+  async function handleLoadMapFromFile() {
+    closeContextMenu()
+    fileInputRef?.click()
+  }
+
+  async function handleFileInputChange(event: Event) {
+    const input = event.target as HTMLInputElement
+    const file = input.files?.[0]
+    if (!file) return
+
+    try {
+      const contents = await file.text()
+      if (!loadMapFileCallback) return
+
+      await loadMapFileCallback(contents)
+      console.log(`Loaded map from file: ${file.name}`)
+      input.value = ''
+    } catch (err) {
+      console.error('Failed to load map from file:', err)
+      alert(`Failed to load map: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      input.value = ''
+    }
+  }
+
   onMount(async () => {
     try {
       const engine = await initWebGPUEngine({
@@ -153,6 +179,9 @@
       }
       if (engine && typeof engine.newMap === 'function') {
         newMapCallback = engine.newMap
+      }
+      if (engine && typeof engine.loadMapFromFile === 'function') {
+        loadMapFileCallback = engine.loadMapFromFile
       }
 
       // Fetch available maps
@@ -189,6 +218,14 @@
     <canvas class="capture-overlay" bind:this={overlayCanvasEl}></canvas>
   </div>
 </div>
+
+<input
+  type="file"
+  accept=".json"
+  bind:this={fileInputRef}
+  on:change={handleFileInputChange}
+  style="display: none;"
+/>
 
 {#if showContextMenu}
   <div
@@ -236,6 +273,9 @@
     {/if}
     <button class="context-menu-item" on:click={handleDownloadLog}>
       Download Log
+    </button>
+    <button class="context-menu-item" on:click={handleLoadMapFromFile}>
+      Load Map From File
     </button>
     <div class="context-divider"></div>
     <div class="context-section">

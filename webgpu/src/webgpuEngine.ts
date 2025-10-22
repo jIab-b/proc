@@ -1638,29 +1638,45 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     }
   }
 
-  async function loadFirstAvailableMap() {
+  async function loadMapFromFile(jsonContent: string) {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/maps`)
-      if (!response.ok) {
-        console.warn('[map] Failed to fetch maps, generating default terrain')
-        generateRollingHills(chunk, worldConfig)
-        return
+      console.log(`[map] Loading map from file...`)
+
+      const mapData = JSON.parse(jsonContent)
+
+      if (mapData.worldScale) {
+        worldScale = mapData.worldScale
       }
 
-      const data = await response.json()
-      const maps = data.maps || []
-
-      if (maps.length > 0) {
-        const firstMap = maps[0]
-        console.log(`[map] Loading first available map (sequence: ${firstMap.sequence})`)
-        await loadMap(firstMap.sequence)
-      } else {
-        console.log('[map] No maps available, generating default terrain')
-        generateRollingHills(chunk, worldConfig)
+      const { x: sx, y: sy, z: sz } = chunk.size
+      for (let y = 0; y < sy; y++) {
+        for (let z = 0; z < sz; z++) {
+          for (let x = 0; x < sx; x++) {
+            chunk.setBlock(x, y, z, BlockType.Air)
+          }
+        }
       }
+
+      const blocks = mapData.blocks || []
+      for (const blockData of blocks) {
+        const [x, y, z] = blockData.position
+        const blockTypeName = blockData.blockType
+        const blockType = BlockType[blockTypeName as keyof typeof BlockType]
+
+        if (blockType !== undefined && positionInBounds([x, y, z])) {
+          chunk.setBlock(x, y, z, blockType)
+        }
+      }
+
+      activeMapSequence = null
+      meshDirty = true
+
+      focusCameraOnBlocks(blocks)
+
+      console.log(`[map] Successfully loaded map from file with ${blocks.length} blocks`)
     } catch (err) {
-      console.error('[map] Error loading first map, generating default terrain:', err)
-      generateRollingHills(chunk, worldConfig)
+      console.error(`[map] Failed to load map from file:`, err)
+      throw err
     }
   }
 
@@ -1751,6 +1767,32 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
     }
   }
 
+  async function loadFirstAvailableMap() {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/maps`)
+      if (!response.ok) {
+        console.warn('[map] Failed to fetch maps, generating default terrain')
+        generateRollingHills(chunk, worldConfig)
+        return
+      }
+
+      const data = await response.json()
+      const maps = data.maps || []
+
+      if (maps.length > 0) {
+        const firstMap = maps[0]
+        console.log(`[map] Loading first available map (sequence: ${firstMap.sequence})`)
+        await loadMap(firstMap.sequence)
+      } else {
+        console.log('[map] No maps available, generating default terrain')
+        generateRollingHills(chunk, worldConfig)
+      }
+    } catch (err) {
+      console.error('[map] Error loading first map, generating default terrain:', err)
+      generateRollingHills(chunk, worldConfig)
+    }
+  }
+
   // Load first available map on startup
   await loadFirstAvailableMap()
 
@@ -1758,13 +1800,13 @@ export async function initWebGPUEngine(options: WebGPUEngineOptions) {
 
   return {
     loadMap,
+    loadMapFromFile,
     saveMap,
     newMap,
     destroy() {
       storeUnsubscribers.forEach(unsub => unsub())
     }
   }
-  return { applyDSLText, applyDSLActions }
 }
 
 function createSimpleWorldConfig(seed: number = Date.now()) {
