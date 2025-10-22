@@ -35,6 +35,7 @@ class ViewRecord:
     proj_matrix: torch.Tensor
     width: int
     height: int
+    intrinsics: Dict
 
 
 class MultiViewDataset:
@@ -74,6 +75,7 @@ class MultiViewDataset:
             if not rgb_path.exists():
                 raise FileNotFoundError(f"RGB image missing: {rgb_path}")
             view_mat, proj_mat = load_camera_matrices_from_metadata(self._metadata, idx)
+            intrinsics = dict(view_meta.get("intrinsics", {}))
             records.append(
                 ViewRecord(
                     index=idx,
@@ -82,6 +84,7 @@ class MultiViewDataset:
                     proj_matrix=proj_mat.to(self.device),
                     width=width,
                     height=height,
+                    intrinsics=intrinsics,
                 )
             )
 
@@ -131,4 +134,3 @@ def json_load(fp) -> Dict:
     import json
 
     return json.load(fp)
-

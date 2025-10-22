@@ -58,7 +58,7 @@ class CameraSampler:
         rec = self.dataset.get_view(torch.randint(0, len(self.dataset), (1,)).item())
         rgb = self.dataset.load_image(rec)
 
-        intr = self.dataset.metadata["views"][rec.index]["intrinsics"]
+        intr = rec.intrinsics or {}
         fov = math.radians(float(intr.get("fovYDegrees", 60.0)))
         near = float(intr.get("near", 0.1))
         far = float(intr.get("far", 500.0))

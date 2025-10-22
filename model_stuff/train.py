@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
@@ -23,6 +24,7 @@ from .model import VoxelScene
 from .renderer_nvd import VoxelRenderer
 from .sds import score_distillation_loss, render_to_latents
 from .sdxl_lightning import SDXLLightning, LATENT_SCALING
+from .nv_diff_render.utils import create_perspective_matrix
 
 
 # ----------------------------------------------------------------------
@@ -90,6 +92,18 @@ def save_image(rgb: torch.Tensor, path: Path) -> None:
 # ----------------------------------------------------------------------
 
 
+def build_projection(intrinsics: Dict, height: int, width: int, device: torch.device) -> torch.Tensor:
+    fov = math.radians(float(intrinsics.get("fovYDegrees", 60.0)))
+    near = float(intrinsics.get("near", 0.1))
+    far = float(intrinsics.get("far", 500.0))
+    aspect = float(width / max(height, 1))
+    proj = create_perspective_matrix(fov, aspect, near, far)
+    return proj.to(device)
+
+
+# ----------------------------------------------------------------------
+
+
 def train(config: TrainConfig) -> Path:
     torch.manual_seed(config.seed)
     random.seed(config.seed)
@@ -113,6 +127,8 @@ def train(config: TrainConfig) -> Path:
         novel_view_prob=config.novel_view_prob,
         device=device,
     )
+
+    debug_view_indices = list(range(min(5, len(dataset))))
 
     model_id = "stabilityai/stable-diffusion-xl-base-1.0"
     if config.sdxl_dtype == "fp32":
@@ -140,11 +156,33 @@ def train(config: TrainConfig) -> Path:
     with (run_dir / "config.json").open("w") as f:
         json.dump(asdict(config), f, indent=2)
 
+    fuckdump_dir = images_dir / "fuckdump"
+
+    def render_debug_views(step_idx: int, temp: float, occ_threshold: float, max_blocks: Optional[int]) -> None:
+        if not debug_view_indices:
+            return
+        fuckdump_dir.mkdir(exist_ok=True)
+        for cam_idx in debug_view_indices:
+            cam_view = dataset.get_view(cam_idx)
+            cam_proj = build_projection(cam_view.intrinsics, config.train_height, config.train_width, device)
+            cam_rgba = renderer.render(
+                cam_view.view_matrix,
+                cam_proj,
+                config.train_height,
+                config.train_width,
+                temperature=temp,
+                occupancy_threshold=occ_threshold,
+                max_blocks=max_blocks,
+            )
+            cam_rgb = cam_rgba[:, :3]
+            save_image(cam_rgb[0], fuckdump_dir / f"step_{step_idx:04d}_cam{cam_idx:02d}.png")
+
     # Preview initial state
     jpg_view = dataset.get_view(0)
+    preview_proj = build_projection(jpg_view.intrinsics, config.train_height, config.train_width, device)
     preview_rgba = renderer.render(
         jpg_view.view_matrix,
-        jpg_view.proj_matrix,
+        preview_proj,
         config.train_height,
         config.train_width,
         temperature=config.temperature_start,
@@ -244,14 +282,13 @@ def train(config: TrainConfig) -> Path:
         optimizer.zero_grad()
         if torch.isfinite(total_loss):
             total_loss.backward()
-            optimizer.step()
+        optimizer.step()
 
         # FUCKDUMP MODE: Extensive debugging output
         if config.fuckdump:
             stats = scene.stats()
 
             # Create fuckdump subdirectory
-            fuckdump_dir = images_dir / "fuckdump"
             fuckdump_dir.mkdir(exist_ok=True)
 
             # Save rendered image at every step
@@ -268,20 +305,11 @@ def train(config: TrainConfig) -> Path:
                 save_image(gt_resized[0], fuckdump_dir / f"step_{step:04d}_ground_truth.png")
 
             # Render and save from all dataset cameras
-            print(f"\nFUCKDUMP Step {step}/{config.steps} - Rendering all {len(dataset)} dataset views...")
-            for cam_idx in range(len(dataset)):
-                cam_view = dataset.get_view(cam_idx)
-                cam_rgba = renderer.render(
-                    cam_view.view_matrix,
-                    cam_view.proj_matrix,
-                    config.train_height,
-                    config.train_width,
-                    temperature=temperature,
-                    occupancy_threshold=occ_thr,
-                    max_blocks=max_blocks_cur,
+            if debug_view_indices:
+                print(
+                    f"\nFUCKDUMP Step {step}/{config.steps} - Rendering {len(debug_view_indices)} dataset views..."
                 )
-                cam_rgb = cam_rgba[:, :3]
-                save_image(cam_rgb[0], fuckdump_dir / f"step_{step:04d}_cam{cam_idx:02d}.png")
+                render_debug_views(step, temperature, occ_thr, max_blocks_cur)
 
             # Create noisy/x0 versions for SDS debugging
             if config.sds_weight > 0.0:
@@ -367,6 +395,9 @@ def train(config: TrainConfig) -> Path:
             cam_type = "DATASET" if sample.from_dataset else "NOVEL"
             cam_info = f"idx={sample.index}" if sample.from_dataset else "random"
             print(f"  📷 CAMERA: {cam_type} {cam_info}")
+
+        elif step % 500 == 0:
+            render_debug_views(step, temperature, occ_thr, max_blocks_cur)
 
         if step % config.log_interval == 0 or step == 1:
             stats = scene.stats()
@@ -454,3 +485,10 @@ def parse_args() -> TrainConfig:
 if __name__ == "__main__":
     cfg = parse_args()
     train(cfg)
+def build_projection(intrinsics: Dict, height: int, width: int, device: torch.device) -> torch.Tensor:
+    fov = math.radians(float(intrinsics.get("fovYDegrees", 60.0)))
+    near = float(intrinsics.get("near", 0.1))
+    far = float(intrinsics.get("far", 500.0))
+    aspect = float(width / max(height, 1))
+    proj = create_perspective_matrix(fov, aspect, near, far)
+    return proj.to(device)
