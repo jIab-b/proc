@@ -236,6 +236,7 @@ class DifferentiableBlockRenderer(nn.Module):
         camera_proj: torch.Tensor,
         img_h: int,
         img_w: int,
+        occupancy_probs: torch.Tensor | None = None,
         **kwargs
     ) -> torch.Tensor:
         """
@@ -272,7 +273,8 @@ class DifferentiableBlockRenderer(nn.Module):
             camera_proj,
             world_scale=self.world_scale,
             temperature=kwargs.get('temperature', 1.0),
-            hard_assignment=kwargs.get('hard_materials', False)
+            hard_assignment=kwargs.get('hard_materials', False),
+            occupancy_probs=occupancy_probs
         )
 
         if vertices.shape[0] == 0:
@@ -292,7 +294,17 @@ class DifferentiableBlockRenderer(nn.Module):
         colors, _ = dr.interpolate(attributes['colors'].unsqueeze(0), rast, faces_int32)
         colors = colors[0]
 
+        occupancy = None
+        if 'occupancy' in attributes:
+            occupancy_attr = attributes['occupancy'].unsqueeze(0)
+            occupancy, _ = dr.interpolate(occupancy_attr, rast, faces_int32)
+            occupancy = occupancy[0]
+
         mask = (rast[0, :, :, 3:4] > 0).float()
+        if occupancy is not None:
+            occupancy = torch.nan_to_num(occupancy.clamp(0.0, 1.0))
+            mask = mask * occupancy
+
         lit_colors = self.shader.shade(normals, colors, mask)
         lit_colors = torch.nan_to_num(lit_colors.clamp(0.0, 1.0))
         rgb = composite_over_sky(lit_colors, mask, self.shader.sky_color)

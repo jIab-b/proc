@@ -125,13 +125,26 @@ class SDXLLightning:
             "encoder_hidden_states": ue,
             "added_cond_kwargs": {"text_embeds": ue_pooled, "time_ids": add_time_ids},
         }
-        eps = self.unet(x_t, t, **c).sample
-        eps_u = self.unet(x_t, t, **u).sample
+        model_in = self.scheduler.scale_model_input(x_t, t)
+        eps = self.unet(model_in, t, **c).sample
+        eps_u = self.unet(model_in, t, **u).sample
         return eps_u + cfg_scale * (eps - eps_u)
 
     def sample_timesteps(self, batch_size: int) -> torch.Tensor:
         num_train = self.scheduler.config.num_train_timesteps
         ts = torch.randint(low=0, high=num_train, size=(batch_size,), device=self.device, dtype=torch.long)
         return ts
+
+    def sample_lightning_timesteps(self, batch_size: int, steps: int = 4) -> torch.Tensor:
+        steps = max(1, steps)
+        device = getattr(self.pipe, "device", self.device)
+        # Configure scheduler for the intended inference step count
+        try:
+            self.scheduler.set_timesteps(steps, device=device)
+        except Exception:
+            self.scheduler.set_timesteps(steps)
+        timesteps = self.scheduler.timesteps
+        idx = torch.randint(0, timesteps.shape[0], (batch_size,), device=timesteps.device)
+        return timesteps[idx]
 
 

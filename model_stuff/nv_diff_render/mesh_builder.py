@@ -75,14 +75,18 @@ def build_block_mesh(
 
     # Handle empty mesh
     if num_visible_vertices == 0:
+        empty_vec3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
+        empty_vec2 = torch.zeros((0, 2), dtype=torch.float32, device=device)
+        empty_occ = torch.zeros((0, 1), dtype=torch.float32, device=device)
         return (
-            torch.zeros((0, 3), dtype=torch.float32, device=device),
+            empty_vec3,
             torch.zeros((0, 3), dtype=torch.int32, device=device),
             {
-                'normals': torch.zeros((0, 3), dtype=torch.float32, device=device),
-                'colors': torch.zeros((0, 3), dtype=torch.float32, device=device),
-                'uvs': torch.zeros((0, 2), dtype=torch.float32, device=device),
-                'material_weights': torch.zeros((0, M), dtype=torch.float32, device=device)
+                'normals': empty_vec3,
+                'colors': empty_vec3,
+                'uvs': empty_vec2,
+                'material_weights': torch.zeros((0, M), dtype=torch.float32, device=device),
+                'occupancy': empty_occ
             }
         )
 
@@ -143,7 +147,8 @@ def build_mesh_from_grid(
     camera_proj: torch.Tensor,
     world_scale: float = 2.0,
     temperature: float = 1.0,
-    hard_assignment: bool = False
+    hard_assignment: bool = False,
+    occupancy_probs: Optional[torch.Tensor] = None
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Build mesh from dense voxel grid.
@@ -156,7 +161,8 @@ def build_mesh_from_grid(
         hard_assignment: Use hard one-hot
 
     Returns:
-        Same as build_block_mesh()
+        Same as build_block_mesh(), plus an 'occupancy' attribute carrying per-vertex
+        occupancy weights for differentiable alpha blending.
     """
     device = block_grid.device
     X, Y, Z = block_grid.shape
@@ -165,14 +171,18 @@ def build_mesh_from_grid(
 
     if not torch.any(block_grid):
         M = material_logits.shape[-1]
+        empty_vec3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
+        empty_vec2 = torch.zeros((0, 2), dtype=torch.float32, device=device)
+        empty_occ = torch.zeros((0, 1), dtype=torch.float32, device=device)
         return (
-            torch.zeros((0, 3), dtype=torch.float32, device=device),
+            empty_vec3,
             torch.zeros((0, 3), dtype=torch.int32, device=device),
             {
-                'normals': torch.zeros((0, 3), dtype=torch.float32, device=device),
-                'colors': torch.zeros((0, 3), dtype=torch.float32, device=device),
-                'uvs': torch.zeros((0, 2), dtype=torch.float32, device=device),
-                'material_weights': torch.zeros((0, material_logits.shape[-1]), dtype=torch.float32, device=device)
+                'normals': empty_vec3,
+                'colors': empty_vec3,
+                'uvs': empty_vec2,
+                'material_weights': torch.zeros((0, M), dtype=torch.float32, device=device),
+                'occupancy': empty_occ
             }
         )
 
@@ -181,6 +191,11 @@ def build_mesh_from_grid(
     else:
         mat_probs_full = F.softmax(material_logits / temperature, dim=-1)
     palette = get_material_palette().to(device)
+
+    if occupancy_probs is not None:
+        occupancy_probs = occupancy_probs.to(device=device, dtype=torch.float32)
+    else:
+        occupancy_probs = torch.ones_like(block_grid, dtype=torch.float32, device=device)
 
     # Block AABB frustum culling (conservative)
     occ_idx = torch.nonzero(block_grid, as_tuple=False)
@@ -223,14 +238,17 @@ def build_mesh_from_grid(
             pruned_grid[kept[:, 0], kept[:, 1], kept[:, 2]] = True
             block_grid = pruned_grid
         else:
-            M = material_logits.shape[-1]
+            empty_vec3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
+            empty_vec2 = torch.zeros((0, 2), dtype=torch.float32, device=device)
+            empty_occ = torch.zeros((0, 1), dtype=torch.float32, device=device)
             return (
-                torch.zeros((0, 3), dtype=torch.float32, device=device),
+                empty_vec3,
                 torch.zeros((0, 3), dtype=torch.int32, device=device),
                 {
-                    'normals': torch.zeros((0, 3), dtype=torch.float32, device=device),
-                    'colors': torch.zeros((0, 3), dtype=torch.float32, device=device),
-                    'uvs': torch.zeros((0, 2), dtype=torch.float32, device=device)
+                    'normals': empty_vec3,
+                    'colors': empty_vec3,
+                    'uvs': empty_vec2,
+                    'occupancy': empty_occ
                 }
             )
 
@@ -262,6 +280,7 @@ def build_mesh_from_grid(
     faces_out_colors = []
     faces_out_normals = []
     faces_out_uvs = []
+    faces_out_occupancy = []
 
     def emit_for_mask(mask: torch.Tensor, face_index: int, palette_slot: int):
         idx = torch.nonzero(mask, as_tuple=False)
@@ -286,10 +305,13 @@ def build_mesh_from_grid(
         uvs_list = FACE_DEFS[face_index]['uvs']
         uv_ordered = torch.tensor([uvs_list[i] for i in FACE_INDICES], dtype=torch.float32, device=device)
         uvs_expanded = uv_ordered.view(1, 6, 2).expand(idx.shape[0], 6, 2).reshape(-1, 2)
+        occ_vals = occupancy_probs[idx[:, 0], idx[:, 1], idx[:, 2]].reshape(-1, 1)
+        occ_expanded = occ_vals.repeat_interleave(6, dim=0)
         faces_out_vertices.append(verts)
         faces_out_colors.append(weighted)
         faces_out_normals.append(normals)
         faces_out_uvs.append(uvs_expanded)
+        faces_out_occupancy.append(occ_expanded)
 
     emit_for_mask(mask_px, 0, 2)
     emit_for_mask(mask_nx, 1, 2)
@@ -299,13 +321,17 @@ def build_mesh_from_grid(
     emit_for_mask(mask_nz, 5, 2)
 
     if not faces_out_vertices:
+        empty_vec3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
+        empty_vec2 = torch.zeros((0, 2), dtype=torch.float32, device=device)
+        empty_occ = torch.zeros((0, 1), dtype=torch.float32, device=device)
         return (
-            torch.zeros((0, 3), dtype=torch.float32, device=device),
+            empty_vec3,
             torch.zeros((0, 3), dtype=torch.int32, device=device),
             {
-                'normals': torch.zeros((0, 3), dtype=torch.float32, device=device),
-                'colors': torch.zeros((0, 3), dtype=torch.float32, device=device),
-                'uvs': torch.zeros((0, 2), dtype=torch.float32, device=device)
+                'normals': empty_vec3,
+                'colors': empty_vec3,
+                'uvs': empty_vec2,
+                'occupancy': empty_occ
             }
         )
 
@@ -313,11 +339,13 @@ def build_mesh_from_grid(
     colors = torch.cat(faces_out_colors, dim=0)
     normals = torch.cat(faces_out_normals, dim=0)
     uvs = torch.cat(faces_out_uvs, dim=0)
+    occupancy = torch.cat(faces_out_occupancy, dim=0)
 
     faces = torch.arange(vertices.shape[0], dtype=torch.int32, device=device).reshape(-1, 3)
     attributes = {
         'normals': normals,
         'colors': colors,
-        'uvs': uvs
+        'uvs': uvs,
+        'occupancy': occupancy
     }
     return vertices, faces, attributes

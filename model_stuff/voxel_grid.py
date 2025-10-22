@@ -137,6 +137,7 @@ class DifferentiableVoxelGrid(nn.Module):
         # Find active voxels
         active_mask = occ_probs > occupancy_threshold
         active_indices = torch.nonzero(active_mask, as_tuple=False)
+        pruned_weights = torch.zeros_like(occ_probs)
 
         # View frustum culling: only render visible voxels
         if len(active_indices) > 0:
@@ -167,8 +168,12 @@ class DifferentiableVoxelGrid(nn.Module):
         if active_indices.shape[0] > 0:
             pruned_mask = torch.zeros_like(active_mask)
             pruned_mask[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]] = True
+            pruned_weights[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]] = (
+                occ_probs[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]]
+            )
         else:
             pruned_mask = active_mask & False
+            pruned_weights = torch.zeros_like(occ_probs)
 
         # Handle empty scene
         if len(active_indices) == 0:
@@ -184,6 +189,7 @@ class DifferentiableVoxelGrid(nn.Module):
             camera_proj,
             img_h,
             img_w,
+            occupancy_probs=pruned_weights,
             temperature=temperature,
             hard_materials=False
         )
