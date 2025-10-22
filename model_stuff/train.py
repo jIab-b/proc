@@ -20,8 +20,8 @@ from .dataset import MultiViewDataset
 from .losses import photometric_loss, regularisation_losses
 from .model import VoxelScene
 from .renderer_nvd import VoxelRenderer
-from .sds import score_distillation_loss
-from .sdxl_lightning import SDXLLightning
+from .sds import score_distillation_loss, render_to_latents
+from .sdxl_lightning import SDXLLightning, LATENT_SCALING
 
 
 # ----------------------------------------------------------------------
@@ -34,7 +34,7 @@ class TrainConfig:
     prompt: str
     dataset_id: int = 1
     map_path: Optional[str] = None
-    steps: int = 200
+    steps: int = 100
     learning_rate: float = 0.01
     cfg_scale: float = 7.5
     temperature_start: float = 2.0
@@ -49,6 +49,7 @@ class TrainConfig:
     train_width: int = 192
     max_blocks: Optional[int] = 50000
     output_dir: str = "out_local/voxel_sds"
+    fuckdump: bool = False
     log_interval: int = 10
     image_interval: int = 50
     map_interval: int = 100
@@ -185,6 +186,81 @@ def train(config: TrainConfig) -> Path:
         total_loss.backward()
         optimizer.step()
 
+        # FUCKDUMP MODE: Extensive debugging output
+        if config.fuckdump:
+            stats = scene.stats()
+
+            # Create fuckdump subdirectory
+            fuckdump_dir = images_dir / "fuckdump"
+            fuckdump_dir.mkdir(exist_ok=True)
+
+            # Save rendered image at every step
+            save_image(rgb_pred[0], fuckdump_dir / f"step_{step:04d}_render.png")
+
+            # Save ground truth comparison if available
+            if sample.from_dataset and sample.rgb is not None:
+                gt_resized = F.interpolate(
+                    sample.rgb.unsqueeze(0).to(device),
+                    size=(config.train_height, config.train_width),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                save_image(gt_resized[0], fuckdump_dir / f"step_{step:04d}_ground_truth.png")
+
+            # Render and save from all dataset cameras
+            print(f"\nFUCKDUMP Step {step}/{config.steps} - Rendering all {len(dataset)} dataset views...")
+            for cam_idx in range(len(dataset)):
+                cam_view = dataset.get_view(cam_idx)
+                cam_rgba = renderer.render(
+                    cam_view.view_matrix,
+                    cam_view.proj_matrix,
+                    config.train_height,
+                    config.train_width,
+                    temperature=temperature,
+                    max_blocks=config.max_blocks,
+                )
+                cam_rgb = cam_rgba[:, :3]
+                save_image(cam_rgb[0], fuckdump_dir / f"step_{step:04d}_cam{cam_idx:02d}.png")
+
+            # Create noisy version for SDS debugging
+            if config.sds_weight > 0.0:
+                with torch.no_grad():
+                    latents = render_to_latents(rgb_pred, sdxl)
+                    timestep = sdxl.sample_timesteps(1)
+                    noise = torch.randn_like(latents)
+                    noisy_latents = sdxl.add_noise(latents, noise, timestep)
+
+                    # Decode noisy latents back to image space for visualization
+                    from diffusers import AutoencoderKL
+                    vae = sdxl.vae if hasattr(sdxl, 'vae') else sdxl.pipe.vae
+                    noisy_rgb = vae.decode(noisy_latents / LATENT_SCALING).sample
+                    noisy_rgb = (noisy_rgb * 0.5 + 0.5).clamp(0, 1)
+                    save_image(noisy_rgb[0], fuckdump_dir / f"step_{step:04d}_noisy.png")
+
+            # Detailed loss breakdown
+            print(f"  📊 LOSSES:")
+            for loss_name, loss_value in losses.items():
+                print(f"    {loss_name}: {loss_value:.6f}")
+            print(f"    TOTAL: {total_loss.item():.6f}")
+
+            # Voxel statistics
+            print(f"  🧊 VOXELS: active={stats['num_active_voxels']}/{stats['total_voxels']} "
+                  f"({stats['density']*100:.2f}%)")
+            print(f"  🌡️ TEMP: {temperature:.3f}")
+
+            # Material distribution
+            mat_dist = stats.get('material_distribution', {})
+            if mat_dist:
+                print(f"  🎨 MATERIALS:")
+                for mat, pct in sorted(mat_dist.items(), key=lambda x: -x[1])[:5]:
+                    if pct > 0.01:
+                        print(f"    {mat}: {pct:.1f}%")
+
+            # Camera info
+            cam_type = "DATASET" if sample.from_dataset else "NOVEL"
+            cam_info = f"idx={sample.index}" if sample.from_dataset else "random"
+            print(f"  📷 CAMERA: {cam_type} {cam_info}")
+
         if step % config.log_interval == 0 or step == 1:
             stats = scene.stats()
             log_entry = {
@@ -231,7 +307,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--prompt", required=True, help="Text prompt for SDS guidance")
     parser.add_argument("--dataset_id", type=int, default=1)
     parser.add_argument("--map_path", type=str, default=None)
-    parser.add_argument("--steps", type=int, default=200)
+    parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--learning_rate", type=float, default=0.01)
     parser.add_argument("--cfg_scale", type=float, default=7.5)
     parser.add_argument("--temperature_start", type=float, default=2.0)
@@ -246,6 +322,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--train_width", type=int, default=192)
     parser.add_argument("--max_blocks", type=int, default=50000)
     parser.add_argument("--output_dir", type=str, default="out_local/voxel_sds")
+    parser.add_argument("--fuckdump", action="store_true", help="Enable extensive debugging output")
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--image_interval", type=int, default=50)
     parser.add_argument("--map_interval", type=int, default=100)

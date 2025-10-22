@@ -7,7 +7,6 @@ from .sds import score_distillation_loss
 from .losses import photometric_loss, regularisation_losses
 from .renderer_nvd import VoxelRenderer
 from .train import TrainConfig, train
-from .export import export_trained_map
 
 __all__ = [
     "MultiViewDataset",
@@ -21,5 +20,4 @@ __all__ = [
     "score_distillation_loss",
     "photometric_loss",
     "regularisation_losses",
-    "export_trained_map",
 ]
