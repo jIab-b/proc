@@ -6,7 +6,6 @@ import argparse
 import json
 import math
 import random
-from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
@@ -21,8 +20,8 @@ from .dataset import MultiViewDataset
 from .losses import photometric_loss, regularisation_losses
 from .model import VoxelScene
 from .renderer_nvd import VoxelRenderer
-from .sds import score_distillation_loss, render_to_latents
-from .sdxl_lightning import SDXLLightning, LATENT_SCALING
+from .sds import SDSDebugArtifacts, score_distillation_loss
+from .sdxl_lightning import SDXLLightning
 from .nv_diff_render.utils import create_perspective_matrix
 
 
@@ -217,6 +216,7 @@ def train(args: argparse.Namespace) -> Path:
 
         total_loss = torch.zeros((), device=device)
         losses: Dict[str, float] = {}
+        sds_debug_artifacts: Optional[SDSDebugArtifacts] = None
 
         # Photometric supervision (dataset cameras only)
         if sample.from_dataset and args.photo_weight > 0.0:
@@ -245,7 +245,8 @@ def train(args: argparse.Namespace) -> Path:
                     occupancy_threshold=occ_thr,
                     max_blocks=max_blocks_cur,
                 )
-                l_sds_i = score_distillation_loss(
+                collect_debug = args.fuckdump and i == 0
+                l_sds_i, debug_info = score_distillation_loss(
                     rgba_i,
                     sdxl,
                     embeddings,
@@ -253,9 +254,12 @@ def train(args: argparse.Namespace) -> Path:
                     mask_sky=args.sds_mask_sky,
                     use_lightning_timesteps=args.sds_use_lightning_ts,
                     lightning_steps=args.sds_lightning_steps,
+                    collect_debug=collect_debug,
                 )
                 if torch.isfinite(l_sds_i):
                     l_sds_total = l_sds_total + l_sds_i
+                    if debug_info is not None:
+                        sds_debug_artifacts = debug_info
             l_sds = (l_sds_total / float(num_views)) * args.sds_weight
             total_loss = total_loss + l_sds
             losses["sds"] = float(l_sds.item())
@@ -306,66 +310,16 @@ def train(args: argparse.Namespace) -> Path:
                 )
                 render_debug_views(step, temperature, occ_thr, max_blocks_cur)
 
-            # Create noisy/x0 versions for SDS debugging
-            if args.sds_weight > 0.0:
-                with torch.no_grad():
-                    latents = render_to_latents(rgb_pred, sdxl).float()
-                    if args.sds_use_lightning_ts:
-                        timestep = sdxl.sample_lightning_timesteps(1, steps=args.sds_lightning_steps)
-                    else:
-                        timestep = sdxl.sample_timesteps(1)
-                    noise = torch.randn_like(latents)
-                    noisy_latents = sdxl.add_noise(latents, noise, timestep).float()
-                    noisy_latents = noisy_latents.clamp(-3 * LATENT_SCALING, 3 * LATENT_SCALING)
-                    vae = sdxl.vae if hasattr(sdxl, 'vae') else sdxl.pipe.vae
-                    vae_config = getattr(vae, 'config', None)
-                    force_upcast = bool(getattr(vae_config, 'force_upcast', False))
-                    vae_dtype = next(vae.parameters()).dtype
-                    vae_device = next(vae.parameters()).device
-
-                    def decode_latents(latents: torch.Tensor) -> torch.Tensor:
-                        if force_upcast:
-                            vae.to(dtype=torch.float32)
-                            decode_dtype = torch.float32
-                            decode_ctx = nullcontext()
-                        else:
-                            decode_dtype = vae_dtype if vae_device.type == 'cuda' else torch.float32
-                            decode_ctx = (
-                                torch.autocast(device_type=vae_device.type, dtype=vae_dtype)
-                                if vae_device.type == 'cuda' and vae_dtype != torch.float32
-                                else nullcontext()
-                            )
-                        z_local = (latents / LATENT_SCALING).to(device=vae_device, dtype=decode_dtype)
-                        with decode_ctx:
-                            decoded = vae.decode(z_local).sample
-                        decoded = decoded.to(dtype=torch.float32)
-                        return (decoded * 0.5 + 0.5).clamp(0, 1)
-
-                    noisy_rgb = decode_latents(noisy_latents)
-                    save_image(noisy_rgb[0], fuckdump_dir / f"step_{step:04d}_noisy.png")
-
-                    # x0 prediction visualization
-                    pe, pe_pooled, ue, ue_pooled, add_time_ids = embeddings
-                    eps_hat = sdxl.eps_pred_cfg(
-                        noisy_latents.to(sdxl.dtype),
-                        timestep,
-                        pe,
-                        pe_pooled,
-                        ue,
-                        ue_pooled,
-                        add_time_ids,
-                        args.cfg_scale,
-                    ).float()
-                    # Compute x0 from scheduler alphas
-                    alphas_cumprod = sdxl.scheduler.alphas_cumprod.to(noisy_latents.device, dtype=noisy_latents.dtype)
-                    timestep_indices = timestep.to(device=alphas_cumprod.device, dtype=torch.long)
-                    a_t = alphas_cumprod[timestep_indices]
-                    sqrt_a = a_t.sqrt()
-                    sqrt_oma = (1.0 - a_t).sqrt()
-                    x0_pred = (noisy_latents - sqrt_oma * eps_hat) / sqrt_a.clamp_min(1e-6)
-                    x0_pred = x0_pred.clamp(-3 * LATENT_SCALING, 3 * LATENT_SCALING)
-                    x0_rgb = decode_latents(x0_pred)
-                    save_image(x0_rgb[0], fuckdump_dir / f"step_{step:04d}_x0.png")
+            # Create noisy/x0 versions for SDS debugging using training artifacts
+            if args.sds_weight > 0.0 and sds_debug_artifacts is not None:
+                save_image(
+                    sds_debug_artifacts.noisy_rgb[0],
+                    fuckdump_dir / f"step_{step:04d}_noisy.png",
+                )
+                save_image(
+                    sds_debug_artifacts.x0_rgb[0],
+                    fuckdump_dir / f"step_{step:04d}_x0.png",
+                )
 
             # Detailed loss breakdown
             print(f"  📊 LOSSES:")
