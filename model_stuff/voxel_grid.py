@@ -28,7 +28,7 @@ def voxel_index_to_world_position(index: torch.Tensor, grid_size: Tuple[int, int
 
 def is_in_view_frustum(positions: torch.Tensor, camera_view: torch.Tensor,
                       camera_proj: torch.Tensor, img_w: int, img_h: int,
-                      near_clip: float = 0.1, far_clip: float = 100.0) -> torch.Tensor:
+                      near_clip: float = 0.1, far_clip: Optional[float] = None) -> torch.Tensor:
     """Check if 3D world positions are visible in camera frustum (NDC)."""
     device = positions.device
 
@@ -49,8 +49,10 @@ def is_in_view_frustum(positions: torch.Tensor, camera_view: torch.Tensor,
     z_in_bounds = (ndc_z >= -1.0) & (ndc_z <= 1.0)
 
     # Also check near/far clip planes in world space for better culling
-    view_pos = torch.matmul(positions, camera_view[:3, :3].T) + camera_view[:3, 3]
-    depth_in_bounds = (view_pos[:, 2] >= -far_clip) & (view_pos[:, 2] <= -near_clip)
+    depth_in_bounds = torch.ones_like(x_in_bounds, dtype=torch.bool)
+    if far_clip is not None:
+        view_pos = torch.matmul(positions, camera_view[:3, :3].T) + camera_view[:3, 3]
+        depth_in_bounds = (view_pos[:, 2] >= -far_clip) & (view_pos[:, 2] <= -near_clip)
 
     return x_in_bounds & y_in_bounds & z_in_bounds & depth_in_bounds
 

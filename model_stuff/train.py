@@ -117,17 +117,41 @@ def train(args: argparse.Namespace) -> Path:
 
     if args.fuckdump:
         fuckdump_dir.mkdir(exist_ok=True)
-        initial_views = []
-        for i in range(len(dataset)):
-            cam_view = dataset.get_view(i)
-            cam_proj = build_projection(cam_view.intrinsics, args.train_height, args.train_width, device)
-            initial_views.append({
-                "index": i,
-                "view_matrix": cam_view.view_matrix.cpu().tolist(),
-                "proj_matrix": cam_proj.cpu().tolist()
-            })
-        with open(fuckdump_dir / "initial_views.json", "w") as f:
-            json.dump(initial_views, f, indent=2)
+        
+        print("FUCKDUMP: Saving initial primitives")
+        initial_occ_tensor = scene.occupancy_probs().detach().cpu()
+        initial_mat_tensor = scene.material_probs().detach().cpu()
+        
+        initial_dict = {
+            "step": 0,
+            "occupancy_probs": initial_occ_tensor.numpy().tolist(),
+            "material_probs": initial_mat_tensor.numpy().tolist(),
+            "grid_size": list(scene.grid.grid_size),
+            "world_scale": scene.world_scale,
+        }
+        with (fuckdump_dir / "initial_primitives.json").open("w") as f:
+            json.dump(initial_dict, f, indent=2)
+
+        print("FUCKDUMP: Saving initial summary")
+        initial_occ = scene.occupancy_probs().detach().cpu().numpy()
+        initial_mat = scene.material_probs().detach().cpu().numpy()
+        
+        total_voxels = initial_occ.size
+        init_summary = {
+            "step": 0,
+            "total_voxels": total_voxels,
+            "num_changed_voxels": 0,
+            "mean_abs_occ_diff": 0.0,
+            "mean_abs_mat_diff": 0.0,
+            "occ_diff_histogram": [0] * 10,
+            "top_occ_changes": [],
+            "slice_means_occ": [0.0] * initial_occ.shape[2],
+            "mat_mean_changes": [0.0] * initial_mat.shape[-1],
+            "threshold": 0.1,
+        }
+        summary_path = fuckdump_dir / "summaries.json"
+        with summary_path.open("w") as f:
+            json.dump([init_summary], f, indent=2)
 
     def render_debug_views(step_idx: int, temp: float, occ_threshold: float, max_blocks: Optional[int]) -> None:
         if not debug_view_indices:
@@ -148,21 +172,6 @@ def train(args: argparse.Namespace) -> Path:
             cam_rgb = cam_rgba[:, :3]
             save_image(cam_rgb[0], fuckdump_dir / f"step_{step_idx:04d}_cam{cam_idx:02d}.png")
 
-            cam_txt_path = fuckdump_dir / f"step_{step_idx:04d}_cam{cam_idx:02d}.txt"
-            with open(cam_txt_path, "w") as f:
-                f.write(f"Render parameters for step_{step_idx:04d}_cam{cam_idx:02d}.png\n")
-                f.write(f"Height: {args.train_height}\n")
-                f.write(f"Width: {args.train_width}\n")
-                f.write(f"Temperature: {temp:.6f}\n")
-                f.write(f"Occupancy threshold: {occ_threshold:.6f}\n")
-                f.write(f"Max blocks: {max_blocks}\n")
-                f.write("\nView matrix:\n")
-                for row in cam_view.view_matrix.cpu().tolist():
-                    f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
-                f.write("\nProj matrix:\n")
-                for row in cam_proj.cpu().tolist():
-                    f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
-
     # Preview initial state
     jpg_view = dataset.get_view(0)
     preview_proj = build_projection(jpg_view.intrinsics, args.train_height, args.train_width, device)
@@ -175,22 +184,6 @@ def train(args: argparse.Namespace) -> Path:
         max_blocks=args.max_blocks,
     )
     save_image(preview_rgba[0, :3], images_dir / "preview_init.png")
-
-    if args.fuckdump:
-        preview_txt_path = images_dir / "preview_init.txt"
-        with open(preview_txt_path, "w") as f:
-            f.write("Render parameters for preview_init.png\n")
-            f.write(f"Height: {args.train_height}\n")
-            f.write(f"Width: {args.train_width}\n")
-            f.write(f"Temperature: {args.temperature_start}\n")
-            f.write(f"Occupancy threshold: 0.0\n")
-            f.write(f"Max blocks: {args.max_blocks}\n")
-            f.write("\nView matrix:\n")
-            for row in jpg_view.view_matrix.cpu().tolist():
-                f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
-            f.write("\nProj matrix:\n")
-            for row in preview_proj.cpu().tolist():
-                f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
 
     for step in range(1, args.steps + 1):
         t = (step - 1) / max(args.steps - 1, 1)
@@ -295,21 +288,6 @@ def train(args: argparse.Namespace) -> Path:
 
             # Save rendered image at every step
             save_image(rgb_pred[0], fuckdump_dir / f"step_{step:04d}_render.png")
-
-            render_txt_path = fuckdump_dir / f"step_{step:04d}_render.txt"
-            with open(render_txt_path, "w") as f:
-                f.write(f"Render parameters for step_{step:04d}_render.png\n")
-                f.write(f"Height: {args.train_height}\n")
-                f.write(f"Width: {args.train_width}\n")
-                f.write(f"Temperature: {temperature:.6f}\n")
-                f.write(f"Occupancy threshold: {occ_thr:.6f}\n")
-                f.write(f"Max blocks: {max_blocks_cur}\n")
-                f.write("\nView matrix:\n")
-                for row in sample.view.cpu().tolist():
-                    f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
-                f.write("\nProj matrix:\n")
-                for row in sample.proj.cpu().tolist():
-                    f.write(" ".join(f"{x:.6f}" for x in row) + "\n")
 
             # Save ground truth comparison if available
             if sample.from_dataset and sample.rgb is not None:
@@ -445,9 +423,115 @@ def train(args: argparse.Namespace) -> Path:
                 maps_dir / f"step_{step:04d}.json",
                 metadata={"prompt": args.prompt, "step": step},
             )
+            
+            if args.fuckdump:
+                print(f"FUCKDUMP: Computing stats for step {step}")
+                curr_occ = scene.occupancy_probs().detach().cpu().numpy()
+                curr_mat = scene.material_probs().detach().cpu().numpy()
+                
+                diff_occ = curr_occ - initial_occ
+                diff_mat = curr_mat - initial_mat
+                
+                threshold = 0.1
+                changed_mask = (np.abs(diff_occ) > threshold) | (np.abs(diff_mat).max(axis=-1) > threshold)
+                num_changed = int(np.sum(changed_mask))
+                
+                mean_abs_occ = float(np.abs(diff_occ).mean())
+                mean_abs_mat = float(np.abs(diff_mat).mean())
+                
+                # Histogram for occ diffs (10 bins -1 to 1)
+                hist_occ, _ = np.histogram(diff_occ.flatten(), bins=10, range=(-1,1))
+                hist_occ = [int(x) for x in hist_occ]
+                
+                # Top 10 occ changes
+                flat_occ = diff_occ.flatten()
+                top_indices = np.argsort(np.abs(flat_occ))[-10:][::-1]
+                top_occ = [{'pos': tuple(int(x) for x in np.unravel_index(idx, diff_occ.shape)), 'diff': float(flat_occ[idx])} for idx in top_indices]
+                
+                # Slice means: mean |diff| per Z-slice
+                slice_means_occ = []
+                for z in range(diff_occ.shape[2]):
+                    slice_means_occ.append(float(np.abs(diff_occ[:,:,z].mean())))
+                
+                # Mat top: simple mean change per material
+                mat_mean_changes = []
+                for m in range(diff_mat.shape[-1]):
+                    mat_mean_changes.append(float(diff_mat[:,:,:,m].mean()))
+                
+                summary_entry = {
+                    "step": int(step),
+                    "num_changed_voxels": int(num_changed),
+                    "mean_abs_occ_diff": mean_abs_occ,
+                    "mean_abs_mat_diff": mean_abs_mat,
+                    "occ_diff_histogram": hist_occ,
+                    "top_occ_changes": top_occ,
+                    "slice_means_occ": slice_means_occ,
+                    "mat_mean_changes": mat_mean_changes,
+                    "threshold": threshold,
+                }
+                
+                with summary_path.open("r") as f:
+                    summaries = json.load(f)
+                summaries.append(summary_entry)
+                with summary_path.open("w") as f:
+                    json.dump(summaries, f, indent=2)
+                
+                print(f"  Stats: {num_changed} changed voxels, occ mean diff {mean_abs_occ:.4f}")
 
     final_map = run_dir / "final_map.json"
     scene.save_map(final_map, metadata={"prompt": args.prompt, "steps": args.steps})
+    
+    if args.fuckdump:
+        print(f"FUCKDUMP: Computing final stats")
+        final_step = int(args.steps)
+        curr_occ = scene.occupancy_probs().detach().cpu().numpy()
+        curr_mat = scene.material_probs().detach().cpu().numpy()
+        
+        diff_occ = curr_occ - initial_occ
+        diff_mat = curr_mat - initial_mat
+        
+        threshold = 0.1
+        changed_mask = (np.abs(diff_occ) > threshold) | (np.abs(diff_mat).max(axis=-1) > threshold)
+        num_changed = int(np.sum(changed_mask))
+        
+        mean_abs_occ = float(np.abs(diff_occ).mean())
+        mean_abs_mat = float(np.abs(diff_mat).mean())
+        
+        hist_occ, _ = np.histogram(diff_occ.flatten(), bins=10, range=(-1,1))
+        hist_occ = [int(x) for x in hist_occ]
+        
+        flat_occ = diff_occ.flatten()
+        top_indices = np.argsort(np.abs(flat_occ))[-10:][::-1]
+        top_occ = [{'pos': tuple(int(x) for x in np.unravel_index(idx, diff_occ.shape)), 'diff': float(flat_occ[idx])} for idx in top_indices]
+        
+        slice_means_occ = []
+        for z in range(diff_occ.shape[2]):
+            slice_means_occ.append(float(np.abs(diff_occ[:,:,z].mean())))
+        
+        mat_mean_changes = []
+        for m in range(diff_mat.shape[-1]):
+            mat_mean_changes.append(float(diff_mat[:,:,:,m].mean()))
+        
+        summary_entry = {
+            "step": final_step,
+            "num_changed_voxels": int(num_changed),
+            "mean_abs_occ_diff": mean_abs_occ,
+            "mean_abs_mat_diff": mean_abs_mat,
+            "occ_diff_histogram": hist_occ,
+            "top_occ_changes": top_occ,
+            "slice_means_occ": slice_means_occ,
+            "mat_mean_changes": mat_mean_changes,
+            "threshold": threshold,
+        }
+        
+        with summary_path.open("r") as f:
+            summaries = json.load(f)
+        summaries.append(summary_entry)
+        with summary_path.open("w") as f:
+            json.dump(summaries, f, indent=2)
+        
+        print(f"  Final stats: {num_changed} changed voxels, occ mean diff {mean_abs_occ:.4f}")
+
     save_image(rgb_pred[0], images_dir / "final.png")
 
     print(f"Training finished. Outputs saved in {run_dir}")
