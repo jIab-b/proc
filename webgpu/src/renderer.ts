@@ -469,18 +469,21 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         const centerChunk: Vec3 = [(minX + maxX + 1) / 2, (minY + maxY + 1) / 2, (minZ + maxZ + 1) / 2]
         const target = chunkToWorld(centerChunk)
 
-        // Position camera at fixed distance away from target, slightly elevated
-        const spawnDirection: Vec3 = [-1, 0.3, -1] // Inverted diagonal direction for better viewing
+        // Position camera away from blocks, looking towards them
+        const spawnDirection: Vec3 = [-1, 0.3, -1] // Away from blocks
         const normalizedDir = normalize(spawnDirection)
 
         cameraPos[0] = target[0] + normalizedDir[0] * fixedSpawnDistance
-        cameraPos[1] = target[1] + normalizedDir[1] * fixedSpawnDistance + worldScale * 2 // Extra height for better view
+        cameraPos[1] = target[1] + normalizedDir[1] * fixedSpawnDistance + worldScale * 2
         cameraPos[2] = target[2] + normalizedDir[2] * fixedSpawnDistance
 
-        // Point camera directly at the target
-        const dir = normalize([target[0] - cameraPos[0], target[1] - cameraPos[1], target[2] - cameraPos[2]])
-        yaw = Math.atan2(dir[0], dir[2])
-        pitch = Math.asin(Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, dir[1])))
+        // The camera looks along its forward direction (target = cameraPos + forward)
+        // We want it to look towards the block center
+        const desiredForward = normalize([target[0] - cameraPos[0], target[1] - cameraPos[1], target[2] - cameraPos[2]])
+
+        // Convert forward vector to yaw/pitch
+        yaw = -Math.atan2(desiredForward[0], desiredForward[2])
+        pitch = -Math.asin(Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, desiredForward[1])))
       }
 
       meshDirty = true

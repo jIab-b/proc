@@ -156,8 +156,18 @@
         }
       })
 
-      await mapManager.loadFirstAvailable(BlockType, worldConfig)
+      const loadedData = await mapManager.loadFirstAvailable(BlockType, worldConfig)
       renderer.markMeshDirty()
+      // Focus camera on loaded blocks, or reset to default if terrain was generated
+      if (loadedData && loadedData.blocks) {
+        renderer.focusCameraOnBlocks(loadedData.blocks)
+      } else {
+        // For generated terrain, focus on the center of the chunk
+        const centerX = Math.floor(chunk.size.x / 2)
+        const centerY = Math.floor(chunk.size.y / 2)
+        const centerZ = Math.floor(chunk.size.z / 2)
+        renderer.focusCameraOnBlocks([{ position: [centerX, centerY, centerZ] }])
+      }
 
       await fetchMaps()
 
