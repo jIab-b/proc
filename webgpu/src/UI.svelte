@@ -407,7 +407,7 @@
 
   /* Block Grid */
   .block-grid {
-    max-height: 800px; /* Extended vertical space for better block visibility */
+    max_height: 800px; /* Fixed vertical space for better block visibility */
     display: flex;
     flex-direction: column;
     border-bottom: 1px solid rgba(210, 223, 244, 0.15);
