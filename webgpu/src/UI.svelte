@@ -407,7 +407,7 @@
 
   /* Block Grid */
   .block-grid {
-    flex: 1;
+    max-height: 120px; /* Drastically reduced vertical space */
     display: flex;
     flex-direction: column;
     border-bottom: 1px solid rgba(210, 223, 244, 0.15);
@@ -440,10 +440,10 @@
   .grid-content {
     flex: 1;
     overflow-y: auto;
-    padding: 12px;
+    padding: 10px 12px 6px;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-    gap: 8px;
+    gap: 4px;
   }
 
   .block-item {
@@ -451,11 +451,11 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 6px;
-    padding: 10px;
+    gap: 1px;
+    padding: 6px 6px 1px;
     background: rgba(34, 50, 68, 0.5);
     border: 2px solid rgba(190, 210, 230, 0.2);
-    border-radius: 10px;
+    border-radius: 9px;
     cursor: pointer;
     transition: all 0.2s;
   }
@@ -471,14 +471,16 @@
   }
 
   .block-item canvas {
-    width: 64px;
-    height: 64px;
+    width: 52px;
+    height: 52px;
   }
 
   .block-item span {
     font-size: 11px;
     color: #c8d5e8;
     text-align: center;
+    line-height: 1.1;
+    margin: 0;
   }
 
   .delete-btn {

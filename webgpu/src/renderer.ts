@@ -449,13 +449,17 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     setHighlightSelection: (sel: HighlightSelection | null) => { highlightSelection = sel },
     setOverlayViews: (views: Array<{ position: Vec3; id: string }>) => { overlayViews = views },
     focusCameraOnBlocks: (blocks: Array<{ position: [number, number, number] }> | undefined) => {
-      let minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0
+      const fixedSpawnDistance = 12 // Fixed distance from block center
+
       if (!blocks || blocks.length === 0) {
         cameraPos[0] = 0
         cameraPos[1] = chunk.size.y * worldScale * 0.55
         cameraPos[2] = chunk.size.z * worldScale * 0.45
+        yaw = 0
+        pitch = 0
       } else {
-        minX = Infinity; maxX = -Infinity; minY = Infinity; maxY = -Infinity; minZ = Infinity; maxZ = -Infinity
+        // Find center of all blocks
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity
         for (const b of blocks) {
           const [x, y, z] = b.position
           if (x < minX) minX = x; if (x > maxX) maxX = x
@@ -464,16 +468,21 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         }
         const centerChunk: Vec3 = [(minX + maxX + 1) / 2, (minY + maxY + 1) / 2, (minZ + maxZ + 1) / 2]
         const target = chunkToWorld(centerChunk)
-        const span = Math.max(maxX - minX + 1, (maxY - minY + 1) * 1.5, maxZ - minZ + 1, 1)
-        const dist = Math.max(span * worldScale * 1.2, 15 * worldScale)
-        cameraPos[0] = target[0] + dist
-        cameraPos[1] = target[1] + Math.max((maxY - minY + 1) * worldScale * 1.5, 12 * worldScale)
-        cameraPos[2] = target[2] + dist
+
+        // Position camera at fixed distance away from target, slightly elevated
+        const spawnDirection: Vec3 = [-1, 0.3, -1] // Inverted diagonal direction for better viewing
+        const normalizedDir = normalize(spawnDirection)
+
+        cameraPos[0] = target[0] + normalizedDir[0] * fixedSpawnDistance
+        cameraPos[1] = target[1] + normalizedDir[1] * fixedSpawnDistance + worldScale * 2 // Extra height for better view
+        cameraPos[2] = target[2] + normalizedDir[2] * fixedSpawnDistance
+
+        // Point camera directly at the target
+        const dir = normalize([target[0] - cameraPos[0], target[1] - cameraPos[1], target[2] - cameraPos[2]])
+        yaw = Math.atan2(dir[0], dir[2])
+        pitch = Math.asin(Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, dir[1])))
       }
-      const lookTarget: Vec3 = blocks && blocks.length > 0 ? chunkToWorld([(minX + maxX + 1) / 2, (minY + maxY + 1) / 2, (minZ + maxZ + 1) / 2]) : [0, chunk.size.y * worldScale * 0.35, 0]
-      const dir = normalize([lookTarget[0] - cameraPos[0], lookTarget[1] - cameraPos[1], lookTarget[2] - cameraPos[2]])
-      yaw = Math.atan2(dir[0], dir[2])
-      pitch = Math.asin(dir[1])
+
       meshDirty = true
     },
     destroy: () => {
