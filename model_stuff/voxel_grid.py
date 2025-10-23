@@ -108,6 +108,10 @@ class DifferentiableVoxelGrid(nn.Module):
             world_scale=world_scale,
             device=device
         )
+        # Minimum occupancy probability used while training to decide which
+        # voxels participate in the mesh generation. Exposed via the scene so
+        # callers can tune exploration vs. stability.
+        self.training_occ_threshold = 0.05
 
     def forward(
         self,
@@ -133,13 +137,18 @@ class DifferentiableVoxelGrid(nn.Module):
         Returns:
             (1, 4, H, W) RGBA tensor
         """
-        # Compute occupancy probabilities
+        # Compute occupancy probabilities and retain a soft weighting for gradients
         occ_probs = torch.sigmoid(self.occupancy_logits)
+        soft_weights = occ_probs.clamp_min(1e-4)
 
-        # Find active voxels
-        active_mask = occ_probs > occupancy_threshold
+        # During training widen the mask slightly but keep a small floor so the
+        # renderer still builds surfaces only where probabilities are plausible.
+        train_threshold = min(self.training_occ_threshold, occupancy_threshold)
+        effective_threshold = train_threshold if self.training else occupancy_threshold
+
+        active_mask = soft_weights > effective_threshold
         active_indices = torch.nonzero(active_mask, as_tuple=False)
-        pruned_weights = torch.zeros_like(occ_probs)
+        pruned_weights = torch.zeros_like(soft_weights)
 
         # View frustum culling: only render visible voxels
         if len(active_indices) > 0:
@@ -171,11 +180,11 @@ class DifferentiableVoxelGrid(nn.Module):
             pruned_mask = torch.zeros_like(active_mask)
             pruned_mask[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]] = True
             pruned_weights[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]] = (
-                occ_probs[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]]
+                soft_weights[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]]
             )
         else:
             pruned_mask = active_mask & False
-            pruned_weights = torch.zeros_like(occ_probs)
+            pruned_weights = torch.zeros_like(soft_weights)
 
         # Handle empty scene
         if len(active_indices) == 0:

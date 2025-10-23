@@ -23,6 +23,7 @@ from .renderer_nvd import VoxelRenderer
 from .sds import SDSDebugArtifacts, score_distillation_loss
 from .sdxl_lightning import SDXLLightning
 from .nv_diff_render.utils import create_perspective_matrix
+from .nv_diff_render.materials import MATERIALS
 
 
 # ----------------------------------------------------------------------
@@ -72,6 +73,34 @@ def train(args: argparse.Namespace) -> Path:
         raise FileNotFoundError(f"Map not found: {map_path}")
 
     scene = VoxelScene.from_map(map_path, device=device)
+    scene.train()
+    scene.grid.training_occ_threshold = float(args.train_occupancy_threshold)
+
+    # Make logits mouldable: compress to user-defined magnitudes and add jitter
+    occ_logits = scene.grid.occupancy_logits.data
+    solid_mask = occ_logits >= 0
+
+    solid_value = torch.full_like(occ_logits, float(args.initial_solid_logit))
+    air_value = torch.full_like(occ_logits, float(args.initial_air_logit))
+    scene.grid.occupancy_logits.data = torch.where(solid_mask, solid_value, air_value)
+
+    if args.initial_logit_jitter > 0.0:
+        scene.grid.occupancy_logits.data.add_(
+            torch.randn_like(scene.grid.occupancy_logits) * float(args.initial_logit_jitter)
+        )
+
+    mat_logits = scene.grid.material_logits.data
+    dominant_idx = mat_logits.argmax(dim=-1)
+    mat_logits.zero_()
+    material_strength = float(args.initial_material_logit)
+    mat_logits.scatter_(-1, dominant_idx.unsqueeze(-1), material_strength)
+
+    air_idx = MATERIALS.index("Air")
+    air_one_hot = torch.zeros_like(mat_logits)
+    air_one_hot[..., air_idx] = material_strength
+
+    solid_mask_expanded = solid_mask.unsqueeze(-1)
+    mat_logits.copy_(torch.where(solid_mask_expanded, mat_logits, air_one_hot))
     renderer = VoxelRenderer(scene.grid)
 
     sampler = CameraSampler(
@@ -132,6 +161,8 @@ def train(args: argparse.Namespace) -> Path:
             json.dump(initial_dict, f, indent=2)
 
         print("FUCKDUMP: Saving initial summary")
+        change_threshold = max(float(args.fuckdump_change_threshold), 1e-4)
+
         initial_occ = scene.occupancy_probs().detach().cpu().numpy()
         initial_mat = scene.material_probs().detach().cpu().numpy()
         
@@ -146,7 +177,7 @@ def train(args: argparse.Namespace) -> Path:
             "top_occ_changes": [],
             "slice_means_occ": [0.0] * initial_occ.shape[2],
             "mat_mean_changes": [0.0] * initial_mat.shape[-1],
-            "threshold": 0.1,
+            "threshold": change_threshold,
         }
         summary_path = fuckdump_dir / "summaries.json"
         with summary_path.open("w") as f:
@@ -156,6 +187,8 @@ def train(args: argparse.Namespace) -> Path:
         if not debug_view_indices:
             return
         fuckdump_dir.mkdir(exist_ok=True)
+        prev_mode = scene.training
+        scene.eval()
         for cam_idx in debug_view_indices:
             cam_view = dataset.get_view(cam_idx)
             cam_proj = build_projection(cam_view.intrinsics, args.train_height, args.train_width, device)
@@ -170,10 +203,14 @@ def train(args: argparse.Namespace) -> Path:
             )
             cam_rgb = cam_rgba[:, :3]
             save_image(cam_rgb[0], fuckdump_dir / f"step_{step_idx:04d}_cam{cam_idx:02d}.png")
+        if prev_mode:
+            scene.train()
 
     # Preview initial state
     jpg_view = dataset.get_view(0)
     preview_proj = build_projection(jpg_view.intrinsics, args.train_height, args.train_width, device)
+    prev_training_mode = scene.training
+    scene.eval()
     preview_rgba = renderer.render(
         jpg_view.view_matrix,
         preview_proj,
@@ -182,6 +219,8 @@ def train(args: argparse.Namespace) -> Path:
         temperature=args.temperature_start,
         max_blocks=args.max_blocks,
     )
+    if prev_training_mode:
+        scene.train()
     save_image(preview_rgba[0, :3], images_dir / "preview_init.png")
 
     for step in range(1, args.steps + 1):
@@ -375,6 +414,7 @@ def train(args: argparse.Namespace) -> Path:
         if step % args.map_interval == 0 or step == args.steps:
             scene.save_map(
                 maps_dir / f"step_{step:04d}.json",
+                threshold=args.export_threshold,
                 metadata={"prompt": args.prompt, "step": step},
             )
             
@@ -386,8 +426,9 @@ def train(args: argparse.Namespace) -> Path:
                 diff_occ = curr_occ - initial_occ
                 diff_mat = curr_mat - initial_mat
                 
-                threshold = 0.1
-                changed_mask = (np.abs(diff_occ) > threshold) | (np.abs(diff_mat).max(axis=-1) > threshold)
+                changed_mask = (
+                    np.abs(diff_occ) > change_threshold
+                ) | (np.abs(diff_mat).max(axis=-1) > change_threshold)
                 num_changed = int(np.sum(changed_mask))
                 
                 mean_abs_occ = float(np.abs(diff_occ).mean())
@@ -421,7 +462,7 @@ def train(args: argparse.Namespace) -> Path:
                     "top_occ_changes": top_occ,
                     "slice_means_occ": slice_means_occ,
                     "mat_mean_changes": mat_mean_changes,
-                    "threshold": threshold,
+                    "threshold": change_threshold,
                 }
                 
                 with summary_path.open("r") as f:
@@ -433,7 +474,11 @@ def train(args: argparse.Namespace) -> Path:
                 print(f"  Stats: {num_changed} changed voxels, occ mean diff {mean_abs_occ:.4f}")
 
     final_map = run_dir / "final_map.json"
-    scene.save_map(final_map, metadata={"prompt": args.prompt, "steps": args.steps})
+    scene.save_map(
+        final_map,
+        threshold=args.export_threshold,
+        metadata={"prompt": args.prompt, "steps": args.steps},
+    )
     
     if args.fuckdump:
         print(f"FUCKDUMP: Computing final stats")
@@ -444,8 +489,9 @@ def train(args: argparse.Namespace) -> Path:
         diff_occ = curr_occ - initial_occ
         diff_mat = curr_mat - initial_mat
         
-        threshold = 0.1
-        changed_mask = (np.abs(diff_occ) > threshold) | (np.abs(diff_mat).max(axis=-1) > threshold)
+        changed_mask = (
+            np.abs(diff_occ) > change_threshold
+        ) | (np.abs(diff_mat).max(axis=-1) > change_threshold)
         num_changed = int(np.sum(changed_mask))
         
         mean_abs_occ = float(np.abs(diff_occ).mean())
@@ -475,7 +521,7 @@ def train(args: argparse.Namespace) -> Path:
             "top_occ_changes": top_occ,
             "slice_means_occ": slice_means_occ,
             "mat_mean_changes": mat_mean_changes,
-            "threshold": threshold,
+            "threshold": change_threshold,
         }
         
         with summary_path.open("r") as f:
@@ -524,6 +570,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_blocks_end", type=int, default=50000)
     parser.add_argument("--output_dir", type=str, default="out_local/voxel_sds")
     parser.add_argument("--fuckdump", action="store_true", help="Enable extensive debugging output")
+    parser.add_argument("--export_threshold", type=float, default=0.5)
+    parser.add_argument("--fuckdump_change_threshold", type=float, default=0.01)
+    parser.add_argument("--train_occupancy_threshold", type=float, default=0.05)
+    parser.add_argument("--initial_solid_logit", type=float, default=2.0)
+    parser.add_argument("--initial_air_logit", type=float, default=-4.0)
+    parser.add_argument("--initial_material_logit", type=float, default=3.0)
+    parser.add_argument("--initial_logit_jitter", type=float, default=0.25)
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--image_interval", type=int, default=50)
     parser.add_argument("--map_interval", type=int, default=100)
