@@ -474,9 +474,9 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         cameraPos[1] = 80 // High above
         cameraPos[2] = 0
 
-        // Look straight down
+        // Look straight down (negative pitch in this coordinate system)
         yaw = 0
-        pitch = Math.PI / 2 - 0.1 // Almost straight down
+        pitch = -(Math.PI / 2 - 0.1) // Almost straight down
       }
 
       meshDirty = true
