@@ -1,0 +1,405 @@
+<script lang="ts">
+  import { onMount } from 'svelte'
+  import { createRenderer } from './renderer'
+  import { MapManager, CaptureSystem, DSLEngine, createWorldConfig, generateTerrain, type CameraSnapshot } from './engine'
+  import {
+    ChunkManager, selectedBlockType, selectedCustomBlock, interactionMode, highlightShape,
+    highlightRadius, highlightSelection, gpuHooks, BlockType, setBlockTextureIndices,
+    blockFaceOrder, API_BASE_URL, customBlocks as customBlocksStore, type CustomBlock, type Vec3
+  } from './core'
+
+  let canvasEl: HTMLCanvasElement
+  let overlayCanvasEl: HTMLCanvasElement
+  let availableMaps: Array<any> = []
+
+  // Context menu
+  let showContextMenu = false
+  let contextMenuX = 0
+  let contextMenuY = 0
+  let showLoadSubmenu = false
+  let showNewMapSubmenu = false
+  let fileInputRef: HTMLInputElement | null = null
+
+  const worldConfig = createWorldConfig(Math.floor(Math.random() * 1000000))
+  const chunk = new ChunkManager(worldConfig.dimensions)
+  let worldScale = 2
+  const chunkOriginOffset: Vec3 = [-chunk.size.x * worldScale / 2, 0, -chunk.size.z * worldScale / 2]
+
+  let mapManager: MapManager
+  let captureSystem: CaptureSystem
+  let dslEngine: DSLEngine
+  let renderer: any = null
+  let isInGame = false
+
+  async function fetchMaps() {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/maps`)
+      if (res.ok) {
+        const data = await res.json()
+        availableMaps = data.maps || []
+      }
+    } catch {}
+  }
+
+  function handleContextMenu(event: MouseEvent) {
+    if (isInGame) return
+    event.preventDefault()
+    contextMenuX = event.clientX
+    contextMenuY = event.clientY
+    showContextMenu = true
+    showLoadSubmenu = false
+    showNewMapSubmenu = false
+  }
+
+  function closeContextMenu() {
+    showContextMenu = false
+    showLoadSubmenu = false
+    showNewMapSubmenu = false
+  }
+
+  async function handleSaveMap() {
+    closeContextMenu()
+    try {
+      await mapManager.save(worldConfig, $customBlocksStore, BlockType)
+      console.log('Map saved')
+    } catch (err) {
+      console.error('Save failed:', err)
+      alert(`Save failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    }
+  }
+
+  async function handleLoadMap(sequence: number) {
+    closeContextMenu()
+    try {
+      const { blocks } = await mapManager.load(sequence, BlockType)
+      renderer?.markMeshDirty()
+      renderer?.focusCameraOnBlocks(blocks)
+      console.log(`Loaded map ${sequence}`)
+    } catch (err) {
+      console.error('Load failed:', err)
+      alert(`Load failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    }
+  }
+
+  async function handleNewMap(copyFrom?: number) {
+    closeContextMenu()
+    try {
+      const blocks = await mapManager.createNew(copyFrom, BlockType)
+      renderer?.markMeshDirty()
+      renderer?.focusCameraOnBlocks(blocks)
+      console.log('Created new map')
+    } catch (err) {
+      console.error('Create failed:', err)
+      alert(`Create failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    }
+  }
+
+  async function handleLoadFromFile() {
+    closeContextMenu()
+    fileInputRef?.click()
+  }
+
+  async function handleFileChange(event: Event) {
+    const input = event.target as HTMLInputElement
+    const file = input.files?.[0]
+    if (!file) return
+    try {
+      const contents = await file.text()
+      const { blocks } = await mapManager.loadFromFile(contents, BlockType)
+      renderer?.markMeshDirty()
+      renderer?.focusCameraOnBlocks(blocks)
+      console.log('Loaded from file')
+      input.value = ''
+    } catch (err) {
+      console.error('Load from file failed:', err)
+      alert(`Load failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      input.value = ''
+    }
+  }
+
+  onMount(async () => {
+    mapManager = new MapManager(chunk, worldScale)
+    captureSystem = new CaptureSystem()
+    dslEngine = new DSLEngine()
+
+    try {
+      renderer = await createRenderer(
+        {
+          canvas: canvasEl,
+          overlayCanvas: overlayCanvasEl,
+          getSelectedBlock: () => ({ type: $selectedBlockType, custom: $selectedCustomBlock })
+        },
+        chunk,
+        worldScale,
+        chunkOriginOffset
+      )
+
+      gpuHooks.set({
+        requestFaceBitmaps: async (tiles) => {
+          const bitmaps: Record<any, ImageBitmap> = {} as any
+          for (const face of blockFaceOrder) {
+            const tile = tiles[face]
+            if (!tile) continue
+            try {
+              const res = await fetch(tile.url, { mode: 'cors', credentials: 'omit' })
+              if (!res.ok) throw new Error(`HTTP ${res.status}`)
+              const blob = await res.blob()
+              bitmaps[face] = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' })
+            } catch (err) {
+              console.error(`Failed to fetch ${face}:`, err)
+            }
+          }
+          return bitmaps
+        },
+        uploadFaceBitmapsToGPU: (bitmaps, customBlock) => {
+          renderer?.applyCustomBlockTextures(bitmaps, customBlock, $customBlocksStore)
+        }
+      })
+
+      await mapManager.loadFirstAvailable(BlockType, worldConfig)
+      renderer.markMeshDirty()
+
+      await fetchMaps()
+
+      document.addEventListener('click', closeContextMenu)
+      const handlePointerLock = () => {
+        isInGame = document.pointerLockElement === canvasEl
+      }
+      document.addEventListener('pointerlockchange', handlePointerLock)
+
+      highlightSelection.subscribe(sel => renderer?.setHighlightSelection(sel))
+
+      return () => {
+        renderer?.destroy()
+        document.removeEventListener('click', closeContextMenu)
+        document.removeEventListener('pointerlockchange', handlePointerLock)
+      }
+    } catch (err) {
+      console.error('Init failed:', err)
+      alert(`WebGPU init failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    }
+  })
+</script>
+
+<svelte:window on:contextmenu={handleContextMenu} />
+
+<div class="canvas-container">
+  <div class="canvas-shell">
+    <canvas bind:this={canvasEl}></canvas>
+    <canvas class="capture-overlay" bind:this={overlayCanvasEl}></canvas>
+  </div>
+</div>
+
+<input type="file" accept=".json" bind:this={fileInputRef} on:change={handleFileChange} style="display: none;" />
+
+{#if showContextMenu}
+  <div class="context-menu" style="left: {contextMenuX}px; top: {contextMenuY}px;" on:click|stopPropagation>
+    <button class="context-menu-item" on:click={handleSaveMap}>Save Map</button>
+    <button class="context-menu-item" on:click={() => { showLoadSubmenu = !showLoadSubmenu; showNewMapSubmenu = false; fetchMaps(); }}>
+      Load Map {showLoadSubmenu ? '▼' : '▶'}
+    </button>
+    {#if showLoadSubmenu}
+      <div class="submenu">
+        {#if availableMaps.length === 0}
+          <div class="submenu-item disabled">No maps available</div>
+        {:else}
+          {#each availableMaps as map}
+            <button class="submenu-item" on:click={() => handleLoadMap(map.sequence)}>
+              Map {map.sequence} ({map.blockCount} blocks)
+            </button>
+          {/each}
+        {/if}
+      </div>
+    {/if}
+    <button class="context-menu-item" on:click={() => { showNewMapSubmenu = !showNewMapSubmenu; showLoadSubmenu = false; fetchMaps(); }}>
+      New Map {showNewMapSubmenu ? '▼' : '▶'}
+    </button>
+    {#if showNewMapSubmenu}
+      <div class="submenu">
+        <button class="submenu-item" on:click={() => handleNewMap()}>Create Empty Map</button>
+        {#if availableMaps.length > 0}
+          <div class="submenu-divider"></div>
+          <div class="submenu-label">Copy From:</div>
+          {#each availableMaps as map}
+            <button class="submenu-item" on:click={() => handleNewMap(map.sequence)}>
+              Map {map.sequence} ({map.blockCount} blocks)
+            </button>
+          {/each}
+        {/if}
+      </div>
+    {/if}
+    <button class="context-menu-item" on:click={handleLoadFromFile}>Load From File</button>
+    <div class="context-divider"></div>
+    <div class="context-section">
+      <label>Interaction Mode</label>
+      <select bind:value={$interactionMode}>
+        <option value="block">Block Placement</option>
+        <option value="highlight">Highlight Select</option>
+      </select>
+    </div>
+    {#if $interactionMode === 'highlight'}
+      <div class="context-section">
+        <label>Highlight Shape</label>
+        <select bind:value={$highlightShape}>
+          <option value="cube">Cube</option>
+          <option value="sphere">Sphere</option>
+        </select>
+      </div>
+      <div class="context-section">
+        <label>Radius: {$highlightRadius}</label>
+        <input type="range" min="1" max="16" step="1" bind:value={$highlightRadius} />
+      </div>
+    {/if}
+  </div>
+{/if}
+
+<style>
+  .canvas-container {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  .canvas-shell {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    max-width: 1120px;
+    aspect-ratio: 16 / 9;
+    background: rgba(12, 22, 32, 0.6);
+    border: 1px solid rgba(210, 223, 244, 0.1);
+    border-radius: 18px;
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+  }
+
+  canvas {
+    width: 100%;
+    height: 100%;
+    border-radius: 10px;
+    background: #10161d;
+  }
+
+  .capture-overlay {
+    position: absolute;
+    inset: 12px;
+    width: calc(100% - 24px);
+    height: calc(100% - 24px);
+    pointer-events: none;
+    background: transparent;
+  }
+
+  .context-menu {
+    position: fixed;
+    background: rgba(20, 30, 45, 0.98);
+    border: 1px solid rgba(210, 223, 244, 0.3);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    padding: 4px;
+    min-width: 180px;
+    z-index: 1000;
+    backdrop-filter: blur(8px);
+  }
+
+  .context-menu-item {
+    display: block;
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: #e3ebf7;
+    padding: 8px 12px;
+    text-align: left;
+    cursor: pointer;
+    font-size: 13px;
+    border-radius: 4px;
+    transition: background 0.15s;
+  }
+
+  .context-menu-item:hover {
+    background: rgba(48, 66, 88, 0.6);
+  }
+
+  .submenu {
+    margin-left: 8px;
+    margin-top: 4px;
+    padding-left: 8px;
+    border-left: 2px solid rgba(210, 223, 244, 0.2);
+  }
+
+  .submenu-item {
+    display: block;
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: #c8d5e8;
+    padding: 6px 12px;
+    text-align: left;
+    cursor: pointer;
+    font-size: 12px;
+    border-radius: 4px;
+    transition: background 0.15s;
+  }
+
+  .submenu-item:hover:not(.disabled) {
+    background: rgba(48, 66, 88, 0.4);
+  }
+
+  .submenu-item.disabled {
+    color: #6b7785;
+    cursor: default;
+  }
+
+  .submenu-divider {
+    height: 1px;
+    background: rgba(210, 223, 244, 0.2);
+    margin: 4px 0;
+  }
+
+  .submenu-label {
+    color: #8a98ab;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+
+  .context-divider {
+    height: 1px;
+    background: rgba(210, 223, 244, 0.2);
+    margin: 8px 0;
+  }
+
+  .context-section {
+    padding: 4px 8px 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .context-section label {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: #8fa0b8;
+  }
+
+  .context-section select,
+  .context-section input[type='range'] {
+    width: 100%;
+    background: rgba(34, 50, 68, 0.6);
+    border: 1px solid rgba(190, 210, 230, 0.25);
+    border-radius: 4px;
+    padding: 6px;
+    color: #e3ebf7;
+    font-size: 12px;
+  }
+
+  .context-section input[type='range'] {
+    padding: 0;
+  }
+</style>
