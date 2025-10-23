@@ -543,7 +543,7 @@ def train(args: argparse.Namespace) -> Path:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Voxel SDS training")
-    parser.add_argument("--prompt", required=True, help="Text prompt for SDS guidance")
+    parser.add_argument("--prompt", default="Inside a vast, ancient fridge, discover a sprawling, ominous cityscape where Lovecraftian horrors lurk amid Gothic Eastern European spires. Shadows play on cobblestone streets, and the chilling mist of refrigerated air weaves through intricate stone arches, whispering untold eldritch secrets. Mysterious, glowing runes pulse on cold walls, illuminating the night with", help="Text prompt for SDS guidance")
     parser.add_argument("--dataset_id", type=int, default=1)
     parser.add_argument("--map_path", type=str, default=None)
     parser.add_argument("--steps", type=int, default=100)
