@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 
 from .map_io import load_map_to_grid, save_grid_to_map
-from .voxel_grid import DifferentiableVoxelGrid
+from .voxel_grid import DenoisingVoxelGrid
 
 
 class VoxelScene(nn.Module):
@@ -22,7 +22,7 @@ class VoxelScene(nn.Module):
     ) -> None:
         super().__init__()
         device = torch.device(device)
-        self.grid = DifferentiableVoxelGrid(
+        self.grid = DenoisingVoxelGrid(
             grid_size=grid_size,
             num_materials=num_materials,
             world_scale=world_scale,
@@ -33,9 +33,9 @@ class VoxelScene(nn.Module):
     # ------------------------------------------------------------------
     @classmethod
     def from_map(cls, map_path: str | Path, device: torch.device | str = "cuda") -> "VoxelScene":
-        occ_logits, mat_logits, grid_size, world_scale = load_map_to_grid(map_path, device=device)
+        mat_logits, grid_size, world_scale = load_map_to_grid(map_path, device=device)
         scene = cls(grid_size=grid_size, world_scale=world_scale, device=device)
-        scene.grid.load_state(occ_logits, mat_logits)
+        scene.grid.load_state(mat_logits)
         return scene
 
     # ------------------------------------------------------------------
@@ -66,6 +66,9 @@ class VoxelScene(nn.Module):
     def material_probs(self, temperature: float = 1.0) -> torch.Tensor:
         return self.grid.get_material_probs(temperature)
 
+    def mask_probs(self) -> torch.Tensor:
+        return self.grid.get_mask_probs()
+
     def stats(self) -> dict:
         return self.grid.get_stats()
 
@@ -76,8 +79,7 @@ class VoxelScene(nn.Module):
         metadata: dict | None = None,
     ) -> int:
         return save_grid_to_map(
-            occupancy_logits=self.grid.occupancy_logits.detach(),
-            material_logits=self.grid.material_logits.detach(),
+            material_logits=self.grid.final_logits().detach(),
             output_path=path,
             world_scale=self.world_scale,
             threshold=threshold,
@@ -90,4 +92,3 @@ class VoxelScene(nn.Module):
 
     def parameters(self) -> Iterable[torch.nn.Parameter]:  # type: ignore[override]
         return self.grid.parameters()
-

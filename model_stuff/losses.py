@@ -1,4 +1,4 @@
-"""Loss helpers for voxel SDS optimisation."""
+"""Loss helpers for residual voxel optimisation."""
 
 from __future__ import annotations
 
@@ -9,12 +9,10 @@ import torch.nn.functional as F
 
 
 def photometric_loss(pred_rgb: torch.Tensor, target_rgb: torch.Tensor) -> torch.Tensor:
-    """Simple L1 photometric loss between prediction and ground truth."""
     return F.l1_loss(pred_rgb, target_rgb)
 
 
 def total_variation_3d(x: torch.Tensor) -> torch.Tensor:
-    """3D total variation (anisotropic) for occupancy probability volume."""
     dx = x[1:, :, :] - x[:-1, :, :]
     dy = x[:, 1:, :] - x[:, :-1, :]
     dz = x[:, :, 1:] - x[:, :, :-1]
@@ -24,20 +22,37 @@ def total_variation_3d(x: torch.Tensor) -> torch.Tensor:
 def regularisation_losses(
     occ_probs: torch.Tensor,
     mat_probs: torch.Tensor,
-    lambda_sparsity: float = 1e-3,
+    mask_probs: torch.Tensor,
+    edit_logits: torch.Tensor,
+    palette_embed: torch.Tensor,
+    palette_target: torch.Tensor,
+    lambda_mask: float = 1e-3,
     lambda_entropy: float = 1e-4,
-    lambda_tv: float = 0.0,
+    lambda_edit_tv: float = 0.0,
+    lambda_edit_l2: float = 0.0,
+    lambda_palette: float = 0.0,
 ) -> Dict[str, torch.Tensor]:
-    """Compute sparsity/entropy/TV losses for the voxel grid."""
     losses: Dict[str, torch.Tensor] = {}
-    losses["sparsity"] = occ_probs.mean() * lambda_sparsity
+
+    losses["mask_sparsity"] = mask_probs.mean() * lambda_mask
 
     entropy = -(mat_probs * torch.log(mat_probs.clamp_min(1e-8))).sum(dim=-1)
-    losses["entropy"] = entropy.mean() * lambda_entropy
+    losses["material_entropy"] = entropy.mean() * lambda_entropy
 
-    if lambda_tv > 0.0:
-        losses["tv"] = total_variation_3d(occ_probs) * lambda_tv
+    if lambda_edit_tv > 0.0:
+        tv_volume = edit_logits.norm(dim=-1)
+        losses["edit_tv"] = total_variation_3d(tv_volume) * lambda_edit_tv
     else:
-        losses["tv"] = torch.zeros((), device=occ_probs.device, dtype=occ_probs.dtype)
+        losses["edit_tv"] = torch.zeros((), device=edit_logits.device, dtype=edit_logits.dtype)
+
+    if lambda_edit_l2 > 0.0:
+        losses["edit_l2"] = (edit_logits.pow(2).mean()) * lambda_edit_l2
+    else:
+        losses["edit_l2"] = torch.zeros((), device=edit_logits.device, dtype=edit_logits.dtype)
+
+    if lambda_palette > 0.0:
+        losses["palette_l2"] = F.mse_loss(palette_embed, palette_target) * lambda_palette
+    else:
+        losses["palette_l2"] = torch.zeros((), device=palette_embed.device, dtype=palette_embed.dtype)
 
     return losses

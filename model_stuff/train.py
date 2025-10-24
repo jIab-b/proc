@@ -23,7 +23,6 @@ from .renderer_nvd import VoxelRenderer
 from .sds import SDSDebugArtifacts, score_distillation_loss
 from .sdxl_lightning import SDXLLightning
 from .nv_diff_render.utils import create_perspective_matrix
-from .nv_diff_render.materials import MATERIALS
 
 
 # ----------------------------------------------------------------------
@@ -75,32 +74,6 @@ def train(args: argparse.Namespace) -> Path:
     scene = VoxelScene.from_map(map_path, device=device)
     scene.train()
     scene.grid.training_occ_threshold = float(args.train_occupancy_threshold)
-
-    # Make logits mouldable: compress to user-defined magnitudes and add jitter
-    occ_logits = scene.grid.occupancy_logits.data
-    solid_mask = occ_logits >= 0
-
-    solid_value = torch.full_like(occ_logits, float(args.initial_solid_logit))
-    air_value = torch.full_like(occ_logits, float(args.initial_air_logit))
-    scene.grid.occupancy_logits.data = torch.where(solid_mask, solid_value, air_value)
-
-    if args.initial_logit_jitter > 0.0:
-        scene.grid.occupancy_logits.data.add_(
-            torch.randn_like(scene.grid.occupancy_logits) * float(args.initial_logit_jitter)
-        )
-
-    mat_logits = scene.grid.material_logits.data
-    dominant_idx = mat_logits.argmax(dim=-1)
-    mat_logits.zero_()
-    material_strength = float(args.initial_material_logit)
-    mat_logits.scatter_(-1, dominant_idx.unsqueeze(-1), material_strength)
-
-    air_idx = MATERIALS.index("Air")
-    air_one_hot = torch.zeros_like(mat_logits)
-    air_one_hot[..., air_idx] = material_strength
-
-    solid_mask_expanded = solid_mask.unsqueeze(-1)
-    mat_logits.copy_(torch.where(solid_mask_expanded, mat_logits, air_one_hot))
     renderer = VoxelRenderer(scene.grid)
 
     sampler = CameraSampler(
@@ -149,11 +122,17 @@ def train(args: argparse.Namespace) -> Path:
         print("FUCKDUMP: Saving initial primitives")
         initial_occ_tensor = scene.occupancy_probs().detach().cpu()
         initial_mat_tensor = scene.material_probs().detach().cpu()
-        
+        initial_mask_tensor = scene.mask_probs().detach().cpu()
+        initial_edit_tensor = scene.grid.edit_logits.detach().cpu()
+        initial_palette_tensor = scene.grid.palette().detach().cpu()
+
         initial_dict = {
             "step": 0,
             "occupancy_probs": initial_occ_tensor.numpy().tolist(),
             "material_probs": initial_mat_tensor.numpy().tolist(),
+            "mask_probs": initial_mask_tensor.numpy().tolist(),
+            "edit_logits": initial_edit_tensor.numpy().tolist(),
+            "palette": initial_palette_tensor.numpy().tolist(),
             "grid_size": list(scene.grid.grid_size),
             "world_scale": scene.world_scale,
         }
@@ -165,6 +144,8 @@ def train(args: argparse.Namespace) -> Path:
 
         initial_occ = scene.occupancy_probs().detach().cpu().numpy()
         initial_mat = scene.material_probs().detach().cpu().numpy()
+        initial_mask = scene.mask_probs().detach().cpu().numpy()
+        initial_edit = scene.grid.edit_logits.detach().cpu().numpy()
         
         total_voxels = initial_occ.size
         init_summary = {
@@ -305,12 +286,19 @@ def train(args: argparse.Namespace) -> Path:
 
         occ = scene.occupancy_probs()
         mats = scene.material_probs(temperature=max(temperature, 1e-4))
+        mask_probs = scene.mask_probs()
         reg = regularisation_losses(
             occ_probs=occ,
             mat_probs=mats,
-            lambda_sparsity=args.lambda_sparsity,
+            mask_probs=mask_probs,
+            edit_logits=scene.grid.edit_logits,
+            palette_embed=scene.grid.palette_embed,
+            palette_target=scene.grid.palette_target,
+            lambda_mask=args.lambda_sparsity,
             lambda_entropy=args.lambda_entropy,
-            lambda_tv=args.lambda_tv,
+            lambda_edit_tv=args.lambda_tv,
+            lambda_edit_l2=args.lambda_edit_l2,
+            lambda_palette=args.lambda_palette_l2,
         )
 
         for key, value in reg.items():
@@ -422,9 +410,13 @@ def train(args: argparse.Namespace) -> Path:
                 print(f"FUCKDUMP: Computing stats for step {step}")
                 curr_occ = scene.occupancy_probs().detach().cpu().numpy()
                 curr_mat = scene.material_probs().detach().cpu().numpy()
-                
+                curr_mask = scene.mask_probs().detach().cpu().numpy()
+                curr_edit = scene.grid.edit_logits.detach().cpu().numpy()
+
                 diff_occ = curr_occ - initial_occ
                 diff_mat = curr_mat - initial_mat
+                diff_mask = curr_mask - initial_mask
+                diff_edit = curr_edit - initial_edit
                 
                 changed_mask = (
                     np.abs(diff_occ) > change_threshold
@@ -433,6 +425,8 @@ def train(args: argparse.Namespace) -> Path:
                 
                 mean_abs_occ = float(np.abs(diff_occ).mean())
                 mean_abs_mat = float(np.abs(diff_mat).mean())
+                mean_abs_mask = float(np.abs(diff_mask).mean())
+                mean_abs_edit = float(np.abs(diff_edit).mean())
                 
                 # Histogram for occ diffs (10 bins -1 to 1)
                 hist_occ, _ = np.histogram(diff_occ.flatten(), bins=10, range=(-1,1))
@@ -451,17 +445,24 @@ def train(args: argparse.Namespace) -> Path:
                 # Mat top: simple mean change per material
                 mat_mean_changes = []
                 for m in range(diff_mat.shape[-1]):
-                    mat_mean_changes.append(float(diff_mat[:,:,:,m].mean()))
-                
+                    mat_mean_changes.append(float(diff_mat[:, :, :, m].mean()))
+
+                mask_mean_change = float(diff_mask.mean())
+                edit_mean_change = float(diff_edit.mean())
+
                 summary_entry = {
                     "step": int(step),
                     "num_changed_voxels": int(num_changed),
                     "mean_abs_occ_diff": mean_abs_occ,
                     "mean_abs_mat_diff": mean_abs_mat,
+                    "mean_abs_mask_diff": mean_abs_mask,
+                    "mean_abs_edit_diff": mean_abs_edit,
                     "occ_diff_histogram": hist_occ,
                     "top_occ_changes": top_occ,
                     "slice_means_occ": slice_means_occ,
                     "mat_mean_changes": mat_mean_changes,
+                    "mask_mean_change": mask_mean_change,
+                    "edit_mean_change": edit_mean_change,
                     "threshold": change_threshold,
                 }
                 
@@ -485,9 +486,13 @@ def train(args: argparse.Namespace) -> Path:
         final_step = int(args.steps)
         curr_occ = scene.occupancy_probs().detach().cpu().numpy()
         curr_mat = scene.material_probs().detach().cpu().numpy()
-        
+        curr_mask = scene.mask_probs().detach().cpu().numpy()
+        curr_edit = scene.grid.edit_logits.detach().cpu().numpy()
+
         diff_occ = curr_occ - initial_occ
         diff_mat = curr_mat - initial_mat
+        diff_mask = curr_mask - initial_mask
+        diff_edit = curr_edit - initial_edit
         
         changed_mask = (
             np.abs(diff_occ) > change_threshold
@@ -496,6 +501,8 @@ def train(args: argparse.Namespace) -> Path:
         
         mean_abs_occ = float(np.abs(diff_occ).mean())
         mean_abs_mat = float(np.abs(diff_mat).mean())
+        mean_abs_mask = float(np.abs(diff_mask).mean())
+        mean_abs_edit = float(np.abs(diff_edit).mean())
         
         hist_occ, _ = np.histogram(diff_occ.flatten(), bins=10, range=(-1,1))
         hist_occ = [int(x) for x in hist_occ]
@@ -510,20 +517,27 @@ def train(args: argparse.Namespace) -> Path:
         
         mat_mean_changes = []
         for m in range(diff_mat.shape[-1]):
-            mat_mean_changes.append(float(diff_mat[:,:,:,m].mean()))
-        
+            mat_mean_changes.append(float(diff_mat[:, :, :, m].mean()))
+
+        mask_mean_change = float(diff_mask.mean())
+        edit_mean_change = float(diff_edit.mean())
+
         summary_entry = {
             "step": final_step,
             "num_changed_voxels": int(num_changed),
             "mean_abs_occ_diff": mean_abs_occ,
             "mean_abs_mat_diff": mean_abs_mat,
+            "mean_abs_mask_diff": mean_abs_mask,
+            "mean_abs_edit_diff": mean_abs_edit,
             "occ_diff_histogram": hist_occ,
             "top_occ_changes": top_occ,
             "slice_means_occ": slice_means_occ,
             "mat_mean_changes": mat_mean_changes,
+            "mask_mean_change": mask_mean_change,
+            "edit_mean_change": edit_mean_change,
             "threshold": change_threshold,
         }
-        
+
         with summary_path.open("r") as f:
             summaries = json.load(f)
         summaries.append(summary_entry)
@@ -556,6 +570,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambda_sparsity", type=float, default=1e-3)
     parser.add_argument("--lambda_entropy", type=float, default=1e-4)
     parser.add_argument("--lambda_tv", type=float, default=0.0)
+    parser.add_argument("--lambda_edit_l2", type=float, default=1e-4)
+    parser.add_argument("--lambda_palette_l2", type=float, default=1e-4)
     parser.add_argument("--novel_view_prob", type=float, default=0.2)
     parser.add_argument("--train_height", type=int, default=192)
     parser.add_argument("--train_width", type=int, default=192)
@@ -573,10 +589,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--export_threshold", type=float, default=0.5)
     parser.add_argument("--fuckdump_change_threshold", type=float, default=0.01)
     parser.add_argument("--train_occupancy_threshold", type=float, default=0.05)
-    parser.add_argument("--initial_solid_logit", type=float, default=2.0)
-    parser.add_argument("--initial_air_logit", type=float, default=-4.0)
-    parser.add_argument("--initial_material_logit", type=float, default=3.0)
-    parser.add_argument("--initial_logit_jitter", type=float, default=0.25)
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--image_interval", type=int, default=50)
     parser.add_argument("--map_interval", type=int, default=100)

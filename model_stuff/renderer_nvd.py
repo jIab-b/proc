@@ -6,13 +6,13 @@ from typing import Optional
 
 import torch
 
-from .voxel_grid import DifferentiableVoxelGrid
+from .voxel_grid import DenoisingVoxelGrid
 
 
 class VoxelRenderer:
-    """Helper that dispatches renders through `DifferentiableVoxelGrid`."""
+    """Helper that dispatches renders through the denoising voxel grid."""
 
-    def __init__(self, voxel_grid: DifferentiableVoxelGrid) -> None:
+    def __init__(self, voxel_grid: DenoisingVoxelGrid) -> None:
         self.grid = voxel_grid
 
     def render(
@@ -34,4 +34,3 @@ class VoxelRenderer:
             occupancy_threshold=occupancy_threshold,
             max_blocks=max_blocks,
         )
-

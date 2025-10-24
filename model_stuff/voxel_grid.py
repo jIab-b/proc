@@ -1,118 +1,89 @@
-"""
-Differentiable voxel grid for SDS optimization.
+"""Voxel grid with residual material edits and learnable palette."""
 
-This module provides the DifferentiableVoxelGrid class which maintains
-occupancy and material logits for all voxels, enabling gradient-based
-optimization via Score Distillation Sampling.
-"""
+from __future__ import annotations
+
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional
 
 from .nv_diff_render import DifferentiableBlockRenderer
-from .nv_diff_render.materials import MATERIALS
+from .nv_diff_render.materials import MATERIALS, get_material_palette
 from .nv_diff_render.utils import world_to_clip
 
 
-def voxel_index_to_world_position(index: torch.Tensor, grid_size: Tuple[int, int, int], world_scale: float) -> torch.Tensor:
-    """Convert voxel index to world-space center matching block_to_world."""
-    X, Y, Z = grid_size
-    device = index.device
-    offsets = torch.tensor([-(X / 2.0), 0.0, -(Z / 2.0)], device=device)
-    centers = index.float() + 0.5
-    pos = (centers + offsets) * world_scale
-    return pos
-
-
-def is_in_view_frustum(positions: torch.Tensor, camera_view: torch.Tensor,
-                      camera_proj: torch.Tensor, img_w: int, img_h: int,
-                      near_clip: float = 0.1, far_clip: Optional[float] = None) -> torch.Tensor:
-    """Check if 3D world positions are visible in camera frustum (NDC)."""
+def in_frustum(
+    positions: torch.Tensor,
+    camera_view: torch.Tensor,
+    camera_proj: torch.Tensor,
+    img_w: int,
+    img_h: int,
+    near_clip: float = 0.1,
+    far_clip: Optional[float] = None,
+) -> torch.Tensor:
     device = positions.device
-
-    # Ensure camera matrices are on the same device as positions
     camera_view = camera_view.to(device)
     camera_proj = camera_proj.to(device)
 
-    # Convert world positions to NDC by perspective divide
-    clip_pos = world_to_clip(positions, camera_view, camera_proj)
-    w = clip_pos[:, 3].clamp(min=1e-6)
-    ndc_x = clip_pos[:, 0] / w
-    ndc_y = clip_pos[:, 1] / w
-    ndc_z = clip_pos[:, 2] / w
+    clip = world_to_clip(positions, camera_view, camera_proj)
+    w = clip[:, 3].clamp(min=1e-6)
+    ndc = clip[:, :3] / w.unsqueeze(1)
 
-    # OpenGL NDC ranges: x,y,z in [-1, 1]
-    x_in_bounds = (ndc_x >= -1.0) & (ndc_x <= 1.0)
-    y_in_bounds = (ndc_y >= -1.0) & (ndc_y <= 1.0)
-    z_in_bounds = (ndc_z >= -1.0) & (ndc_z <= 1.0)
-
-    # Also check near/far clip planes in world space for better culling
-    depth_in_bounds = torch.ones_like(x_in_bounds, dtype=torch.bool)
+    mask = (ndc[:, 0].abs() <= 1.0) & (ndc[:, 1].abs() <= 1.0) & (ndc[:, 2].abs() <= 1.0)
     if far_clip is not None:
-        view_pos = torch.matmul(positions, camera_view[:3, :3].T) + camera_view[:3, 3]
-        depth_in_bounds = (view_pos[:, 2] >= -far_clip) & (view_pos[:, 2] <= -near_clip)
+        view_pos = positions @ camera_view[:3, :3].T + camera_view[:3, 3]
+        depth_ok = (view_pos[:, 2] >= -far_clip) & (view_pos[:, 2] <= -near_clip)
+        mask = mask & depth_ok
+    return mask
 
-    return x_in_bounds & y_in_bounds & z_in_bounds & depth_in_bounds
 
-
-class DifferentiableVoxelGrid(nn.Module):
-    """
-    Dense voxel grid for SDS optimization.
-
-    Learnable Parameters:
-    - occupancy_logits: (X, Y, Z) - sigmoid → [0, 1] occupancy probabilities
-    - material_logits: (X, Y, Z, M) - softmax → material probabilities
-
-    Forward pass renders the grid from a camera view, maintaining gradients
-    through both occupancy and material parameters.
-    """
+class DenoisingVoxelGrid(nn.Module):
+    """Frozen baseline map plus sparse residual edits."""
 
     def __init__(
         self,
         grid_size: Tuple[int, int, int],
-        num_materials: int = 8,
+        num_materials: int = len(MATERIALS),
         world_scale: float = 2.0,
-        device: torch.device = torch.device('cuda')
-    ):
-        """
-        Initialize differentiable voxel grid.
-
-        Args:
-            grid_size: (X, Y, Z) dimensions
-            num_materials: Number of material types (default 8)
-            world_scale: World scale parameter (default 2.0)
-            device: Torch device
-        """
+        device: torch.device | str = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+    ) -> None:
         super().__init__()
+        device = torch.device(device)
 
         self.grid_size = grid_size
         self.num_materials = num_materials
         self.world_scale = world_scale
         self.device = device
+        self.sky_index = MATERIALS.index("Air")
 
-        X, Y, Z = grid_size
-
-        self.occupancy_logits = nn.Parameter(
-            torch.full((X, Y, Z), -5.0, dtype=torch.float32, device=device)
+        self.register_buffer(
+            "base_logits",
+            torch.zeros((*grid_size, num_materials), dtype=torch.float32, device=device),
         )
+        self.edit_logits = nn.Parameter(torch.zeros_like(self.base_logits))
+        self.mask_logits = nn.Parameter(torch.full(grid_size, -4.0, dtype=torch.float32, device=device))
 
-        self.material_logits = nn.Parameter(
-            torch.zeros((X, Y, Z, num_materials), dtype=torch.float32, device=device)
-        )
+        palette = get_material_palette().to(torch.float32)
+        self.register_buffer("palette_target", palette.clone())
+        self.palette_embed = nn.Parameter(palette.clone())
 
-        # Initialize renderer
         self.renderer = DifferentiableBlockRenderer(
             grid_size=grid_size,
             world_scale=world_scale,
-            device=device
+            device=device,
         )
-        # Minimum occupancy probability used while training to decide which
-        # voxels participate in the mesh generation. Exposed via the scene so
-        # callers can tune exploration vs. stability.
         self.training_occ_threshold = 0.05
 
+    # ------------------------------------------------------------------
+    def final_logits(self) -> torch.Tensor:
+        mask = torch.sigmoid(self.mask_logits)[..., None]
+        return self.base_logits + mask * self.edit_logits
+
+    def palette(self) -> torch.Tensor:
+        return self.palette_embed.clamp(0.0, 1.0)
+
+    # ------------------------------------------------------------------
     def forward(
         self,
         camera_view: torch.Tensor,
@@ -121,140 +92,115 @@ class DifferentiableVoxelGrid(nn.Module):
         img_w: int,
         temperature: float = 1.0,
         occupancy_threshold: float = 0.01,
-        max_blocks: int | None = None
+        max_blocks: Optional[int] = None,
     ) -> torch.Tensor:
-        """
-        Render grid from camera view.
+        logits = self.final_logits()
+        temp = max(float(temperature), 1e-4)
+        probs = F.softmax(logits / temp, dim=-1)
+        occ = 1.0 - probs[..., self.sky_index]
 
-        Args:
-            camera_view: (4, 4) view matrix
-            camera_proj: (4, 4) projection matrix
-            img_h: Image height
-            img_w: Image width
-            temperature: Softmax temperature for materials
-            occupancy_threshold: Minimum occupancy to render
+        train_thr = min(self.training_occ_threshold, occupancy_threshold)
+        thr = train_thr if self.training else occupancy_threshold
 
-        Returns:
-            (1, 4, H, W) RGBA tensor
-        """
-        # Compute occupancy probabilities and retain a soft weighting for gradients
-        occ_probs = torch.sigmoid(self.occupancy_logits)
-        soft_weights = occ_probs.clamp_min(1e-4)
-
-        # During training widen the mask slightly but keep a small floor so the
-        # renderer still builds surfaces only where probabilities are plausible.
-        train_threshold = min(self.training_occ_threshold, occupancy_threshold)
-        effective_threshold = train_threshold if self.training else occupancy_threshold
-
-        active_mask = soft_weights > effective_threshold
+        active_mask = occ > thr
         active_indices = torch.nonzero(active_mask, as_tuple=False)
-        pruned_weights = torch.zeros_like(soft_weights)
-
-        # View frustum culling: only render visible voxels
-        if len(active_indices) > 0:
-            X, Y, Z = self.grid_size
-            offsets = torch.tensor([-(X / 2.0), 0.0, -(Z / 2.0)], device=self.device)
-
-            centers = active_indices.float() + 0.5
-            centers = centers + offsets
-            world_centers = centers * self.world_scale
-
-            visible_mask = is_in_view_frustum(
-                world_centers, camera_view, camera_proj, img_w, img_h
-            )
-
-            if visible_mask.any():
-                active_indices = active_indices[visible_mask]
-                world_centers = world_centers[visible_mask]
-            else:
-                active_indices = active_indices[:0]
-
-            if max_blocks is not None and active_indices.shape[0] > max_blocks:
-                view_pos = world_centers @ camera_view[:3, :3].T + camera_view[:3, 3]
-                depth = (-view_pos[:, 2]).clamp(min=0.0)
-                keep = torch.argsort(depth, descending=False)[:max_blocks]
-                active_indices = active_indices[keep]
-
-        # Build pruned occupancy mask grid
-        if active_indices.shape[0] > 0:
-            pruned_mask = torch.zeros_like(active_mask)
-            pruned_mask[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]] = True
-            pruned_weights[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]] = (
-                soft_weights[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]]
-            )
-        else:
-            pruned_mask = active_mask & False
-            pruned_weights = torch.zeros_like(soft_weights)
-
-        # Handle empty scene
-        if len(active_indices) == 0:
-            sky_color = self.renderer.shader.sky_color
-            rgb = sky_color.view(1, 3, 1, 1).expand(1, 3, img_h, img_w)
+        if active_indices.shape[0] == 0:
+            sky = self.renderer.shader.sky_color.to(self.device)
+            rgb = sky.view(1, 3, 1, 1).expand(1, 3, img_h, img_w)
             alpha = torch.zeros(1, 1, img_h, img_w, device=self.device)
             return torch.cat([rgb, alpha], dim=1)
 
-        rgba = self.renderer.render_from_grid(
+        X, Y, Z = self.grid_size
+        offsets = torch.tensor([-(X / 2.0), 0.0, -(Z / 2.0)], device=self.device)
+        centers = active_indices.float() + 0.5
+        world_centers = (centers + offsets) * self.world_scale
+
+        visible = in_frustum(world_centers, camera_view, camera_proj, img_w, img_h)
+        if visible.any():
+            active_indices = active_indices[visible]
+            world_centers = world_centers[visible]
+        else:
+            sky = self.renderer.shader.sky_color.to(self.device)
+            rgb = sky.view(1, 3, 1, 1).expand(1, 3, img_h, img_w)
+            alpha = torch.zeros(1, 1, img_h, img_w, device=self.device)
+            return torch.cat([rgb, alpha], dim=1)
+
+        if max_blocks is not None and active_indices.shape[0] > max_blocks:
+            view_pos = world_centers @ camera_view[:3, :3].T + camera_view[:3, 3]
+            depth = (-view_pos[:, 2]).clamp(min=0.0)
+            keep = torch.argsort(depth, descending=False)[:max_blocks]
+            active_indices = active_indices[keep]
+
+        pruned_mask = torch.zeros_like(active_mask)
+        pruned_mask[active_indices[:, 0], active_indices[:, 1], active_indices[:, 2]] = True
+
+        pruned_weights = torch.zeros_like(occ)
+        pruned_weights[pruned_mask] = occ[pruned_mask]
+
+        return self.renderer.render_from_grid(
             pruned_mask,
-            self.material_logits,
+            logits,
             camera_view,
             camera_proj,
             img_h,
             img_w,
             occupancy_probs=pruned_weights,
-            temperature=temperature,
-            hard_materials=False
+            temperature=temp,
+            palette=self.palette(),
+            hard_materials=False,
         )
 
-        return rgba
+    # ------------------------------------------------------------------
+    def get_material_probs(self, temperature: float = 1.0) -> torch.Tensor:
+        temp = max(float(temperature), 1e-4)
+        return F.softmax(self.final_logits() / temp, dim=-1)
 
     def get_occupancy_probs(self) -> torch.Tensor:
-        """Get current occupancy probabilities."""
-        return torch.sigmoid(self.occupancy_logits)
+        probs = self.get_material_probs()
+        return 1.0 - probs[..., self.sky_index]
 
-    def get_material_probs(self, temperature: float = 1.0) -> torch.Tensor:
-        """Get current material probabilities."""
-        return F.softmax(self.material_logits / temperature, dim=-1)
+    def get_mask_probs(self) -> torch.Tensor:
+        return torch.sigmoid(self.mask_logits)
 
     def get_stats(self) -> dict:
-        """Get grid statistics."""
-        occ_probs = self.get_occupancy_probs()
-        mat_probs = self.get_material_probs()
+        occ = self.get_occupancy_probs()
+        mask = self.get_mask_probs()
+        mat = self.get_material_probs()
 
-        active_mask = occ_probs > 0.5
-        num_active = active_mask.sum().item()
+        active = occ > 0.5
+        num_active = int(active.sum().item())
+        sx, sy, sz = self.grid_size
+        total_voxels = int(sx * sy * sz)
 
-        # Material distribution
         mat_dist = {}
-        if active_mask.any():
-            active_mats = mat_probs[active_mask].sum(dim=0)
+        if active.any():
+            active_mats = mat[active].sum(dim=0)
             total = active_mats.sum().item()
-
-            for i, mat_name in enumerate(MATERIALS):
-                count = active_mats[i].item()
-                mat_dist[mat_name] = float(count / total * 100) if total > 0 else 0.0
+            for idx, name in enumerate(MATERIALS):
+                value = active_mats[idx].item()
+                mat_dist[name] = float(value / total * 100.0) if total > 0 else 0.0
 
         return {
             "num_active_voxels": num_active,
-            "total_voxels": self.occupancy_logits.numel(),
-            "density": num_active / self.occupancy_logits.numel(),
-            "occupancy_mean": float(occ_probs.mean().item()),
-            "occupancy_std": float(occ_probs.std().item()),
-            "material_distribution": mat_dist
+            "total_voxels": total_voxels,
+            "density": num_active / max(total_voxels, 1),
+            "occupancy_mean": float(occ.mean().item()),
+            "mask_mean": float(mask.mean().item()),
+            "material_distribution": mat_dist,
         }
 
-    def load_state(self, occupancy_logits: torch.Tensor, material_logits: torch.Tensor):
-        """
-        Load occupancy and material logits.
+    # ------------------------------------------------------------------
+    def load_state(self, base_logits: torch.Tensor) -> None:
+        self.base_logits.copy_(base_logits.detach().to(self.base_logits.device))
 
-        Args:
-            occupancy_logits: (X, Y, Z) tensor
-            material_logits: (X, Y, Z, M) tensor
-        """
-        self.occupancy_logits.data.copy_(occupancy_logits)
-        self.material_logits.data.copy_(material_logits)
+        probs = F.softmax(self.base_logits, dim=-1)
+        solid_mask = probs[..., self.sky_index] < 0.5
+        self.edit_logits.data.zero_()
+        on = torch.full_like(self.mask_logits, 2.0)
+        off = torch.full_like(self.mask_logits, -4.0)
+        self.mask_logits.data.copy_(torch.where(solid_mask, on, off))
 
-    def to(self, device: torch.device) -> 'DifferentiableVoxelGrid':
-        """Move grid to device."""
+    def to(self, device: torch.device) -> "DenoisingVoxelGrid":
         super().to(device)
         self.device = device
         self.renderer = self.renderer.to(device)
@@ -262,6 +208,7 @@ class DifferentiableVoxelGrid(nn.Module):
 
     def __repr__(self) -> str:
         stats = self.get_stats()
-        return (f"DifferentiableVoxelGrid(grid_size={self.grid_size}, "
-                f"active_voxels={stats['num_active_voxels']}, "
-                f"density={stats['density']:.3f})")
+        return (
+            f"DenoisingVoxelGrid(grid_size={self.grid_size}, "
+            f"active_voxels={stats['num_active_voxels']}, density={stats['density']:.3f})"
+        )

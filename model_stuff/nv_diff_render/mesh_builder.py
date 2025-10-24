@@ -19,7 +19,8 @@ def build_block_mesh(
     world_scale: float = 2.0,
     neighbor_check: Optional[Callable[[Tuple[int, int, int]], bool]] = None,
     temperature: float = 1.0,
-    hard_assignment: bool = False
+    hard_assignment: bool = False,
+    palette: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Build triangle mesh from block placements with differentiable materials.
@@ -55,8 +56,10 @@ def build_block_mesh(
     else:
         material_probs = F.softmax(material_logits / temperature, dim=-1)
 
-    # Get material palette (M, 3, 3) -> [material, face_type, RGB]
-    palette = get_material_palette().to(device)
+    if palette is None:
+        palette = get_material_palette().to(device)
+    else:
+        palette = palette.to(device)
 
     if neighbor_check is None:
         pos_set = set(positions)
@@ -148,7 +151,8 @@ def build_mesh_from_grid(
     world_scale: float = 2.0,
     temperature: float = 1.0,
     hard_assignment: bool = False,
-    occupancy_probs: Optional[torch.Tensor] = None
+    occupancy_probs: Optional[torch.Tensor] = None,
+    palette: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Build mesh from dense voxel grid.
@@ -190,7 +194,10 @@ def build_mesh_from_grid(
         mat_probs_full = F.gumbel_softmax(material_logits, tau=temperature, hard=True, dim=-1)
     else:
         mat_probs_full = F.softmax(material_logits / temperature, dim=-1)
-    palette = get_material_palette().to(device)
+    if palette is None:
+        palette = get_material_palette().to(device)
+    else:
+        palette = palette.to(device)
 
     if occupancy_probs is not None:
         occupancy_probs = occupancy_probs.to(device=device, dtype=torch.float32)
