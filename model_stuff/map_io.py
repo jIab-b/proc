@@ -32,16 +32,29 @@ def load_map_to_grid(
     material_logits = torch.zeros((*grid_size, num_materials), dtype=torch.float32, device=device)
     material_logits[..., air_idx] = 5.0  # favour sky for empty voxels
 
-    blocks_loaded = 0
-    for block in data.get("blocks", []):
-        x, y, z = (int(v) for v in block["position"])
-        try:
-            mat_idx = material_name_to_index(block["blockType"])
-        except ValueError:
-            continue
-        material_logits[x, y, z, :] = 0.0
-        material_logits[x, y, z, mat_idx] = 5.0
-        blocks_loaded += 1
+    blocks = [block for block in data.get("blocks", []) if block.get("blockType") is not None]
+    if blocks:
+        positions = torch.tensor([block["position"] for block in blocks], device=device, dtype=torch.long)
+        mat_names = [block["blockType"] for block in blocks]
+        mat_indices = []
+        for name in mat_names:
+            try:
+                mat_indices.append(material_name_to_index(name))
+            except ValueError:
+                mat_indices.append(air_idx)
+        mat_idx_tensor = torch.tensor(mat_indices, device=device, dtype=torch.long)
+
+        valid_mask = mat_idx_tensor != air_idx
+        if valid_mask.any():
+            pos_valid = positions[valid_mask]
+            mat_valid = mat_idx_tensor[valid_mask]
+            material_logits[pos_valid[:, 0], pos_valid[:, 1], pos_valid[:, 2]] = 0.0
+            material_logits[pos_valid[:, 0], pos_valid[:, 1], pos_valid[:, 2]] = (
+                F.one_hot(mat_valid, num_materials).to(material_logits.dtype) * 5.0
+            )
+        blocks_loaded = int(valid_mask.sum().item())
+    else:
+        blocks_loaded = 0
 
     print(f"Loading map from {map_path}")
     print(f"  Grid size: {grid_size[0]}×{grid_size[1]}×{grid_size[2]}")
@@ -71,33 +84,33 @@ def save_grid_to_map(
     print(f"  Grid size: {grid_size[0]}×{grid_size[1]}×{grid_size[2]}")
     print(f"  Occupancy threshold: {threshold}")
 
-    count = 0
-    with output_path.open("w") as f:
-        f.write("{")
-        f.write(
-            '"sequence": 1,'
-            '"worldConfig": {"dimensions": {"x": %d, "y": %d, "z": %d}, "worldScale": %s},'
-            % (*grid_size, json.dumps(world_scale))
-        )
-        if metadata:
-            f.write('"metadata": %s,' % json.dumps(metadata))
-        f.write('"blocks": [')
-        first = True
-        for x in range(grid_size[0]):
-            for y in range(grid_size[1]):
-                for z in range(grid_size[2]):
-                    if occ[x, y, z].item() <= threshold:
-                        continue
-                    mat_idx = int(torch.argmax(probs[x, y, z]).item())
-                    mat_name = MATERIALS[mat_idx]
-                    if mat_name == "Air":
-                        continue
-                    if not first:
-                        f.write(',')
-                    json.dump({"position": [x, y, z], "blockType": mat_name}, f)
-                    first = False
-                    count += 1
-        f.write(']}')
+    mat_idx = torch.argmax(probs, dim=-1)
+    solid_mask = (occ > threshold) & (mat_idx != air_idx)
+    positions = torch.nonzero(solid_mask, as_tuple=False)
+    if positions.numel() > 0:
+        positions = positions.cpu()
+        mat_indices = mat_idx[solid_mask].cpu().tolist()
+        block_entries = [
+            {"position": [int(px), int(py), int(pz)], "blockType": MATERIALS[int(mi)]}
+            for (px, py, pz), mi in zip(positions.tolist(), mat_indices)
+        ]
+    else:
+        block_entries = []
 
+    payload = {
+        "sequence": 1,
+        "worldConfig": {
+            "dimensions": {"x": grid_size[0], "y": grid_size[1], "z": grid_size[2]},
+            "worldScale": world_scale,
+        },
+        "blocks": block_entries,
+    }
+    if metadata:
+        payload["metadata"] = metadata
+
+    with output_path.open("w") as f:
+        json.dump(payload, f)
+
+    count = len(block_entries)
     print(f"  Exported {count} blocks")
     return count
