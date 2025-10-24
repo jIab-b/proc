@@ -46,6 +46,8 @@ class CameraSampler:
 
         self._height, self._width = dataset.image_size
         self._default_intrinsics = dataset.metadata["views"][0]["intrinsics"]
+        self._focus_center = None
+        self._focus_radius = None
 
     # ------------------------------------------------------------------
     def sample(self) -> CameraSample:
@@ -76,7 +78,10 @@ class CameraSampler:
 
     def _sample_random_orbit(self) -> CameraSample:
         gx, gy, gz = self.grid_size
-        radius = self.world_scale * max(gx, gz) * 1.4
+        if self._focus_radius is not None:
+            radius = max(self._focus_radius, self.world_scale * max(gx, gz) * 0.5)
+        else:
+            radius = self.world_scale * max(gx, gz) * 1.4
         min_elev = math.radians(15.0)
         max_elev = math.radians(50.0)
 
@@ -87,8 +92,12 @@ class CameraSampler:
         z = radius * math.cos(elevation) * math.sin(azimuth)
         y = radius * math.sin(elevation) + self.world_scale * gy * 0.25
 
-        eye = (x, y, z)
-        target = (0.0, self.world_scale * gy * 0.25, 0.0)
+        if self._focus_center is not None:
+            target = tuple(self._focus_center.tolist())
+            eye = (target[0] + x, target[1] + y, target[2] + z)
+        else:
+            eye = (x, y, z)
+            target = (0.0, self.world_scale * gy * 0.25, 0.0)
         up = (0.0, 1.0, 0.0)
 
         view = create_look_at_matrix(eye, target, up).to(self.device)
@@ -108,3 +117,28 @@ class CameraSampler:
             rgb=None,
             image_path=None,
         )
+
+    # ------------------------------------------------------------------
+    def update_focus(self, mask_probs: torch.Tensor, threshold: float = 0.6) -> None:
+        if mask_probs.numel() == 0:
+            self._focus_center = None
+            self._focus_radius = None
+            return
+        mask = mask_probs > threshold
+        if not mask.any():
+            self._focus_center = None
+            self._focus_radius = None
+            return
+        idx = torch.nonzero(mask, as_tuple=False).float()
+        center = idx.mean(dim=0)
+        X, Y, Z = self.grid_size
+        offsets = torch.tensor([-(X / 2.0), 0.0, -(Z / 2.0)], device=idx.device)
+        world_center = (center + 0.5 + offsets) * self.world_scale
+        extent = idx.max(dim=0).values - idx.min(dim=0).values + 1.0
+        radius = extent.norm().item() * self.world_scale
+        radius = max(radius, self.world_scale * max(self.grid_size) * 0.2)
+        self._focus_center = world_center.detach().cpu()
+        self._focus_radius = radius
+
+    def sample_dataset_view(self) -> CameraSample:
+        return self._sample_dataset()

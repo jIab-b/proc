@@ -104,7 +104,17 @@ def train(args: argparse.Namespace) -> Path:
     )
     embeddings = sdxl.encode_prompt(args.prompt)
 
-    optimizer = torch.optim.Adam(scene.parameters(), lr=args.learning_rate)
+    param_groups = [
+        {
+            "params": [scene.grid.edit_logits, scene.grid.mask_logits],
+            "lr": float(args.learning_rate) * float(args.edit_lr_scale),
+        },
+        {
+            "params": [scene.grid.palette_embed],
+            "lr": float(args.learning_rate) * float(args.palette_lr_scale),
+        },
+    ]
+    optimizer = torch.optim.Adam(param_groups, betas=(0.9, 0.999))
 
     run_dir = ensure_dir(Path(args.output_dir) / datetime.now().strftime("%Y%m%d_%H%M%S"))
     images_dir = ensure_dir(run_dir / "images")
@@ -115,6 +125,34 @@ def train(args: argparse.Namespace) -> Path:
         json.dump(vars(args), f, indent=2)
 
     fuckdump_dir = images_dir / "fuckdump"
+
+    def schedule_factor(step: int) -> float:
+        warmup = max(int(args.warmup_steps), 0)
+        if warmup <= 0:
+            return 1.0
+        if step <= warmup:
+            return float(args.warmup_reg_factor)
+        if args.steps <= warmup:
+            return 1.0
+        alpha = (step - warmup) / max(args.steps - warmup, 1)
+        return float(args.warmup_reg_factor) + (1.0 - float(args.warmup_reg_factor)) * min(max(alpha, 0.0), 1.0)
+
+    def reg_weights(step: int) -> Dict[str, float]:
+        factor = schedule_factor(step)
+        return {
+            "mask": float(args.lambda_sparsity) * factor,
+            "entropy": float(args.lambda_entropy) * factor,
+            "tv": float(args.lambda_tv) * factor,
+            "edit_l2": float(args.lambda_edit_l2) * factor,
+            "palette": float(args.lambda_palette_l2) * factor,
+        }
+
+    def compute_noise(step: int) -> tuple[float, float]:
+        if args.warmup_steps <= 0:
+            return float(args.explore_mask_noise), float(args.explore_edit_noise)
+        phase = max(0.0, 1.0 - (step - 1) / max(args.warmup_steps, 1))
+        phase = phase ** max(float(args.explore_noise_decay), 1.0)
+        return float(args.explore_mask_noise) * phase, float(args.explore_edit_noise) * phase
 
     if args.fuckdump:
         fuckdump_dir.mkdir(exist_ok=True)
@@ -133,6 +171,7 @@ def train(args: argparse.Namespace) -> Path:
             "mask_probs": initial_mask_tensor.numpy().tolist(),
             "edit_logits": initial_edit_tensor.numpy().tolist(),
             "palette": initial_palette_tensor.numpy().tolist(),
+            "base_reference": scene.grid.base_reference.detach().cpu().numpy().tolist(),
             "grid_size": list(scene.grid.grid_size),
             "world_scale": scene.world_scale,
         }
@@ -207,6 +246,12 @@ def train(args: argparse.Namespace) -> Path:
     for step in range(1, args.steps + 1):
         t = (step - 1) / max(args.steps - 1, 1)
         temperature = lerp(args.temperature_start, args.temperature_end, t)
+
+        mask_noise, edit_noise = compute_noise(step)
+        scene.grid.apply_noise(mask_noise, edit_noise)
+
+        with torch.no_grad():
+            sampler.update_focus(scene.mask_probs().detach(), threshold=args.focus_threshold)
 
         sample = sampler.sample()
         # Schedules
@@ -287,6 +332,7 @@ def train(args: argparse.Namespace) -> Path:
         occ = scene.occupancy_probs()
         mats = scene.material_probs(temperature=max(temperature, 1e-4))
         mask_probs = scene.mask_probs()
+        lambdas = reg_weights(step)
         reg = regularisation_losses(
             occ_probs=occ,
             mat_probs=mats,
@@ -294,11 +340,11 @@ def train(args: argparse.Namespace) -> Path:
             edit_logits=scene.grid.edit_logits,
             palette_embed=scene.grid.palette_embed,
             palette_target=scene.grid.palette_target,
-            lambda_mask=args.lambda_sparsity,
-            lambda_entropy=args.lambda_entropy,
-            lambda_edit_tv=args.lambda_tv,
-            lambda_edit_l2=args.lambda_edit_l2,
-            lambda_palette=args.lambda_palette_l2,
+            lambda_mask=lambdas["mask"],
+            lambda_entropy=lambdas["entropy"],
+            lambda_edit_tv=lambdas["tv"],
+            lambda_edit_l2=lambdas["edit_l2"],
+            lambda_palette=lambdas["palette"],
         )
 
         for key, value in reg.items():
@@ -309,6 +355,9 @@ def train(args: argparse.Namespace) -> Path:
         if torch.isfinite(total_loss):
             total_loss.backward()
         optimizer.step()
+
+        if args.harden_interval > 0 and step % args.harden_interval == 0:
+            scene.grid.harden(args.harden_strength, args.harden_reset_prob)
 
         # FUCKDUMP MODE: Extensive debugging output
         if args.fuckdump:
@@ -474,6 +523,69 @@ def train(args: argparse.Namespace) -> Path:
                 
                 print(f"  Stats: {num_changed} changed voxels, occ mean diff {mean_abs_occ:.4f}")
 
+    if args.final_photo_steps > 0 and args.photo_weight > 0:
+        scene.train()
+        photo_lr = float(args.learning_rate) * float(args.final_photo_lr_scale)
+        photo_optimizer = torch.optim.Adam(
+            [
+                {
+                    "params": [scene.grid.edit_logits, scene.grid.mask_logits],
+                    "lr": photo_lr * float(args.edit_lr_scale),
+                },
+                {
+                    "params": [scene.grid.palette_embed],
+                    "lr": photo_lr * float(args.palette_lr_scale),
+                },
+            ],
+            betas=(0.9, 0.999),
+        )
+
+        for ft_step in range(1, int(args.final_photo_steps) + 1):
+            sample = sampler.sample_dataset_view()
+            photo_optimizer.zero_grad()
+            rgba = renderer.render(
+                sample.view,
+                sample.proj,
+                args.train_height,
+                args.train_width,
+                temperature=args.temperature_end,
+                occupancy_threshold=max(args.photo_refine_occ_threshold, 1e-3),
+                max_blocks=args.max_blocks,
+            )
+            rgb_pred = rgba[:, :3]
+            gt = sample.rgb.unsqueeze(0).to(device)
+            gt_resized = F.interpolate(
+                gt,
+                size=(args.train_height, args.train_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+            loss_photo = photometric_loss(rgb_pred, gt_resized) * float(args.photo_weight)
+            occ = scene.occupancy_probs()
+            mats = scene.material_probs(temperature=max(args.temperature_end, 1e-4))
+            mask_probs = scene.mask_probs()
+            lambdas = reg_weights(args.steps + ft_step)
+            reg = regularisation_losses(
+                occ_probs=occ,
+                mat_probs=mats,
+                mask_probs=mask_probs,
+                edit_logits=scene.grid.edit_logits,
+                palette_embed=scene.grid.palette_embed,
+                palette_target=scene.grid.palette_target,
+                lambda_mask=lambdas["mask"],
+                lambda_entropy=lambdas["entropy"],
+                lambda_edit_tv=lambdas["tv"],
+                lambda_edit_l2=lambdas["edit_l2"],
+                lambda_palette=lambdas["palette"],
+            )
+            total_ft = loss_photo
+            for value in reg.values():
+                total_ft = total_ft + value
+            total_ft.backward()
+            photo_optimizer.step()
+
+        scene.grid.harden(args.harden_strength, args.harden_reset_prob)
+
     final_map = run_dir / "final_map.json"
     scene.save_map(
         final_map,
@@ -580,7 +692,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sds_mask_sky", action="store_true")
     parser.add_argument("--sds_use_lightning_ts", action="store_true")
     parser.add_argument("--sds_lightning_steps", type=int, default=4)
-    parser.add_argument("--occupancy_threshold_start", type=float, default=0.1)
+    parser.add_argument("--occupancy_threshold_start", type=float, default=0.3)
     parser.add_argument("--occupancy_threshold_end", type=float, default=0.1)
     parser.add_argument("--max_blocks_start", type=int, default=None)
     parser.add_argument("--max_blocks_end", type=int, default=50000)
@@ -594,6 +706,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--map_interval", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sdxl_dtype", type=str, default="auto", choices=["auto", "fp16", "fp32"])
+    parser.add_argument("--warmup_steps", type=int, default=500)
+    parser.add_argument("--warmup_reg_factor", type=float, default=0.0)
+    parser.add_argument("--explore_mask_noise", type=float, default=0.3)
+    parser.add_argument("--explore_edit_noise", type=float, default=0.1)
+    parser.add_argument("--explore_noise_decay", type=float, default=1.0)
+    parser.add_argument("--focus_threshold", type=float, default=0.65)
+    parser.add_argument("--edit_lr_scale", type=float, default=3.0)
+    parser.add_argument("--palette_lr_scale", type=float, default=0.5)
+    parser.add_argument("--harden_interval", type=int, default=200)
+    parser.add_argument("--harden_strength", type=float, default=5.0)
+    parser.add_argument("--harden_reset_prob", type=float, default=0.5)
+    parser.add_argument("--final_photo_steps", type=int, default=30)
+    parser.add_argument("--final_photo_lr_scale", type=float, default=0.25)
+    parser.add_argument("--photo_refine_occ_threshold", type=float, default=0.1)
     args = parser.parse_args()
 
     if args.max_blocks <= 0:

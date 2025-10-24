@@ -61,8 +61,12 @@ class DenoisingVoxelGrid(nn.Module):
             "base_logits",
             torch.zeros((*grid_size, num_materials), dtype=torch.float32, device=device),
         )
+        self.register_buffer(
+            "base_reference",
+            torch.zeros((*grid_size, num_materials), dtype=torch.float32, device=device),
+        )
         self.edit_logits = nn.Parameter(torch.zeros_like(self.base_logits))
-        self.mask_logits = nn.Parameter(torch.full(grid_size, -4.0, dtype=torch.float32, device=device))
+        self.mask_logits = nn.Parameter(torch.zeros(grid_size, dtype=torch.float32, device=device))
 
         palette = get_material_palette().to(torch.float32)
         self.register_buffer("palette_target", palette.clone())
@@ -191,20 +195,43 @@ class DenoisingVoxelGrid(nn.Module):
 
     # ------------------------------------------------------------------
     def load_state(self, base_logits: torch.Tensor) -> None:
-        self.base_logits.copy_(base_logits.detach().to(self.base_logits.device))
-
-        probs = F.softmax(self.base_logits, dim=-1)
-        solid_mask = probs[..., self.sky_index] < 0.5
+        logits = base_logits.detach().to(self.base_logits.device)
+        self.base_reference.copy_(logits)
+        self.base_logits.zero_()
         self.edit_logits.data.zero_()
-        on = torch.full_like(self.mask_logits, 2.0)
-        off = torch.full_like(self.mask_logits, -4.0)
-        self.mask_logits.data.copy_(torch.where(solid_mask, on, off))
+        self.mask_logits.data.zero_()
 
     def to(self, device: torch.device) -> "DenoisingVoxelGrid":
         super().to(device)
         self.device = device
         self.renderer = self.renderer.to(device)
         return self
+
+    # ------------------------------------------------------------------
+    @torch.no_grad()
+    def apply_noise(self, mask_std: float, edit_std: float) -> None:
+        if mask_std > 0.0:
+            self.mask_logits.add_(torch.randn_like(self.mask_logits) * mask_std)
+        if edit_std > 0.0:
+            self.edit_logits.add_(torch.randn_like(self.edit_logits) * edit_std)
+
+    @torch.no_grad()
+    def harden(self, strength: float = 5.0, reset_prob: float = 0.5) -> None:
+        strength = float(strength)
+        reset_prob = float(reset_prob)
+        reset_prob = min(max(reset_prob, 1e-4), 1 - 1e-4)
+        probs = self.get_material_probs()
+        hard_idx = probs.argmax(dim=-1)
+        one_hot = F.one_hot(hard_idx, self.num_materials).to(self.base_logits.dtype) * strength
+        self.base_logits.copy_(one_hot)
+        self.base_reference.copy_(one_hot)
+        self.edit_logits.zero_()
+        reset_value = torch.logit(torch.tensor(reset_prob, device=self.device, dtype=self.mask_logits.dtype))
+        self.mask_logits.fill_(reset_value)
+
+    @torch.no_grad()
+    def reset_palette(self) -> None:
+        self.palette_embed.data.copy_(self.palette_target)
 
     def __repr__(self) -> str:
         stats = self.get_stats()
