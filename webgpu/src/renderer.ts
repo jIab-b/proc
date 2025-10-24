@@ -384,22 +384,16 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     const mode = get(interactionMode)
 
     if (mode === 'block') {
-      if (ev.button === 0) { // Left click - place block
-        const selected = getSelectedBlock()
-        const placePos: Vec3 = [
-          hit.block[0] + hit.normal[0],
-          hit.block[1] + hit.normal[1],
-          hit.block[2] + hit.normal[2]
-        ]
-        if (placePos[0] >= 0 && placePos[0] < chunk.size.x &&
-            placePos[1] >= 0 && placePos[1] < chunk.size.y &&
-            placePos[2] >= 0 && placePos[2] < chunk.size.z) {
+      if (ev.button === 0) { // Left click - remove block
+        chunk.setBlock(hit.block[0], hit.block[1], hit.block[2], BlockType.Air)
+        meshDirty = true
+      } else if (ev.button === 2) { // Right click - place block
+        const placePos = hit.previous
+        if (isInsideChunk(placePos) && chunk.getBlock(placePos[0], placePos[1], placePos[2]) === BlockType.Air) {
+          const selected = getSelectedBlock()
           chunk.setBlock(placePos[0], placePos[1], placePos[2], selected.type)
           meshDirty = true
         }
-      } else if (ev.button === 2) { // Right click - remove block
-        chunk.setBlock(hit.block[0], hit.block[1], hit.block[2], BlockType.Air)
-        meshDirty = true
       }
     } else if (mode === 'highlight') {
       const shape = get(highlightShape)
@@ -424,46 +418,106 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   interface RaycastHit {
     block: Vec3
     normal: Vec3
-    distance: number
+    previous: Vec3
   }
 
+  function worldToChunk(worldPos: Vec3): Vec3 {
+    return [
+      (worldPos[0] - chunkOriginOffset[0]) / worldScale,
+      (worldPos[1] - chunkOriginOffset[1]) / worldScale,
+      (worldPos[2] - chunkOriginOffset[2]) / worldScale
+    ]
+  }
+
+  function isInsideChunk([x, y, z]: Vec3): boolean {
+    return x >= 0 && y >= 0 && z >= 0 && x < chunk.size.x && y < chunk.size.y && z < chunk.size.z
+  }
+
+  // DDA (Digital Differential Analyzer) voxel traversal algorithm
   function raycast(origin: Vec3, direction: Vec3, maxDistance = 100): RaycastHit | null {
-    const step = 0.1
-    let t = 0
-    let lastBlock: Vec3 | null = null
+    const dir = normalize(direction)
+    if (Math.abs(dir[0]) < 1e-5 && Math.abs(dir[1]) < 1e-5 && Math.abs(dir[2]) < 1e-5) return null
 
-    while (t < maxDistance) {
-      const x = origin[0] + direction[0] * t
-      const y = origin[1] + direction[1] * t
-      const z = origin[2] + direction[2] * t
+    const pos = worldToChunk(origin)
+    let voxel: Vec3 = [Math.floor(pos[0]), Math.floor(pos[1]), Math.floor(pos[2])]
+    let prevVoxel: Vec3 = [...voxel] as Vec3
 
-      // Convert world coordinates to chunk coordinates
-      const chunkX = Math.floor((x - chunkOriginOffset[0]) / worldScale)
-      const chunkY = Math.floor((y - chunkOriginOffset[1]) / worldScale)
-      const chunkZ = Math.floor((z - chunkOriginOffset[2]) / worldScale)
+    const step: Vec3 = [
+      dir[0] > 0 ? 1 : dir[0] < 0 ? -1 : 0,
+      dir[1] > 0 ? 1 : dir[1] < 0 ? -1 : 0,
+      dir[2] > 0 ? 1 : dir[2] < 0 ? -1 : 0
+    ]
 
-      if (chunkX >= 0 && chunkX < chunk.size.x && chunkY >= 0 && chunkY < chunk.size.y && chunkZ >= 0 && chunkZ < chunk.size.z) {
-        const block = chunk.getBlock(chunkX, chunkY, chunkZ)
+    const chunkDir: Vec3 = [
+      dir[0] / worldScale,
+      dir[1] / worldScale,
+      dir[2] / worldScale
+    ]
+
+    const tDelta: Vec3 = [
+      step[0] !== 0 ? Math.abs(1 / chunkDir[0]) : Number.POSITIVE_INFINITY,
+      step[1] !== 0 ? Math.abs(1 / chunkDir[1]) : Number.POSITIVE_INFINITY,
+      step[2] !== 0 ? Math.abs(1 / chunkDir[2]) : Number.POSITIVE_INFINITY
+    ]
+
+    let tMaxX = step[0] > 0 ? (voxel[0] + 1 - pos[0]) * tDelta[0] : step[0] < 0 ? (pos[0] - voxel[0]) * tDelta[0] : Number.POSITIVE_INFINITY
+    let tMaxY = step[1] > 0 ? (voxel[1] + 1 - pos[1]) * tDelta[1] : step[1] < 0 ? (pos[1] - voxel[1]) * tDelta[1] : Number.POSITIVE_INFINITY
+    let tMaxZ = step[2] > 0 ? (voxel[2] + 1 - pos[2]) * tDelta[2] : step[2] < 0 ? (pos[2] - voxel[2]) * tDelta[2] : Number.POSITIVE_INFINITY
+
+    if (!Number.isFinite(tMaxX)) tMaxX = Number.POSITIVE_INFINITY
+    if (!Number.isFinite(tMaxY)) tMaxY = Number.POSITIVE_INFINITY
+    if (!Number.isFinite(tMaxZ)) tMaxZ = Number.POSITIVE_INFINITY
+
+    let normal: Vec3 = [0, 0, 0]
+    let distance = 0
+
+    for (let i = 0; i < 256; i++) {
+      if (distance > maxDistance / worldScale) break
+
+      if (isInsideChunk(voxel)) {
+        const block = chunk.getBlock(voxel[0], voxel[1], voxel[2])
         if (block !== BlockType.Air) {
-          // Calculate normal based on previous position
-          let normal: Vec3 = [0, 1, 0]
-          if (lastBlock) {
-            normal = [
-              chunkX - lastBlock[0],
-              chunkY - lastBlock[1],
-              chunkZ - lastBlock[2]
-            ] as Vec3
-          }
+          const hitNormal = (Math.abs(normal[0]) + Math.abs(normal[1]) + Math.abs(normal[2]) > 0)
+            ? normal
+            : [-Math.sign(dir[0]), -Math.sign(dir[1]), -Math.sign(dir[2])] as Vec3
           return {
-            block: [chunkX, chunkY, chunkZ],
-            normal,
-            distance: t
+            block: [...voxel] as Vec3,
+            previous: [...prevVoxel] as Vec3,
+            normal: hitNormal
           }
         }
       }
 
-      lastBlock = [chunkX, chunkY, chunkZ]
-      t += step
+      let axis: 0 | 1 | 2
+      if (tMaxX <= tMaxY && tMaxX <= tMaxZ) {
+        axis = 0
+      } else if (tMaxY <= tMaxZ) {
+        axis = 1
+      } else {
+        axis = 2
+      }
+
+      if (axis === 0 && step[0] === 0) return null
+      if (axis === 1 && step[1] === 0) return null
+      if (axis === 2 && step[2] === 0) return null
+
+      prevVoxel = [...voxel] as Vec3
+      if (axis === 0) {
+        voxel = [voxel[0] + step[0], voxel[1], voxel[2]]
+        distance = tMaxX
+        tMaxX += tDelta[0]
+        normal = [-step[0], 0, 0] as Vec3
+      } else if (axis === 1) {
+        voxel = [voxel[0], voxel[1] + step[1], voxel[2]]
+        distance = tMaxY
+        tMaxY += tDelta[1]
+        normal = [0, -step[1], 0] as Vec3
+      } else {
+        voxel = [voxel[0], voxel[1], voxel[2] + step[2]]
+        distance = tMaxZ
+        tMaxZ += tDelta[2]
+        normal = [0, 0, -step[2]] as Vec3
+      }
     }
     return null
   }
