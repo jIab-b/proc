@@ -1,6 +1,7 @@
 // Streamlined WebGPU Renderer
 // Core rendering engine without map/capture/dsl concerns
 
+import { get } from 'svelte/store'
 import terrainWGSL from './pipelines/render/terrain.wgsl?raw'
 import {
   createPerspective,
@@ -14,7 +15,7 @@ import {
   interactionMode,
   highlightShape,
   highlightRadius,
-  highlightSelection,
+  highlightSelection as highlightSelectionStore,
   type CustomBlock,
   type Vec3,
   type Mat4,
@@ -356,13 +357,17 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   let rafHandle: number | null = null
   let lastFrameTime = performance.now()
 
-  canvas.addEventListener('click', () => canvas.requestPointerLock())
+  canvas.addEventListener('click', () => {
+    if (!pointerActive) canvas.requestPointerLock()
+  })
+
   document.addEventListener('pointerlockchange', () => {
     pointerActive = document.pointerLockElement === canvas
     paused = !pointerActive
     pressedKeys.clear()
     lastFrameTime = performance.now()
   })
+
   window.addEventListener('mousemove', (ev) => {
     if (!pointerActive) return
     yaw -= ev.movementX * 0.0025
@@ -370,8 +375,97 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, pitch))
   })
 
+  window.addEventListener('mousedown', (ev) => {
+    if (!pointerActive) return
+
+    const hit = raycast(cameraPos, getForwardVector())
+    if (!hit) return
+
+    const mode = get(interactionMode)
+
+    if (mode === 'block') {
+      if (ev.button === 0) { // Left click - place block
+        const selected = getSelectedBlock()
+        const placePos: Vec3 = [
+          hit.block[0] + hit.normal[0],
+          hit.block[1] + hit.normal[1],
+          hit.block[2] + hit.normal[2]
+        ]
+        if (placePos[0] >= 0 && placePos[0] < chunk.size.x &&
+            placePos[1] >= 0 && placePos[1] < chunk.size.y &&
+            placePos[2] >= 0 && placePos[2] < chunk.size.z) {
+          chunk.setBlock(placePos[0], placePos[1], placePos[2], selected.type)
+          meshDirty = true
+        }
+      } else if (ev.button === 2) { // Right click - remove block
+        chunk.setBlock(hit.block[0], hit.block[1], hit.block[2], BlockType.Air)
+        meshDirty = true
+      }
+    } else if (mode === 'highlight') {
+      const shape = get(highlightShape)
+      const radius = get(highlightRadius)
+      highlightSelectionStore.set({
+        center: hit.block,
+        shape,
+        radius
+      })
+    }
+  })
+
+  // Prevent context menu on right click
+  canvas.addEventListener('contextmenu', (ev) => {
+    if (pointerActive) ev.preventDefault()
+  })
+
   function getForwardVector(): Vec3 {
     return normalize([Math.cos(pitch) * Math.sin(yaw), Math.sin(pitch), Math.cos(pitch) * Math.cos(yaw)])
+  }
+
+  interface RaycastHit {
+    block: Vec3
+    normal: Vec3
+    distance: number
+  }
+
+  function raycast(origin: Vec3, direction: Vec3, maxDistance = 100): RaycastHit | null {
+    const step = 0.1
+    let t = 0
+    let lastBlock: Vec3 | null = null
+
+    while (t < maxDistance) {
+      const x = origin[0] + direction[0] * t
+      const y = origin[1] + direction[1] * t
+      const z = origin[2] + direction[2] * t
+
+      // Convert world coordinates to chunk coordinates
+      const chunkX = Math.floor((x - chunkOriginOffset[0]) / worldScale)
+      const chunkY = Math.floor((y - chunkOriginOffset[1]) / worldScale)
+      const chunkZ = Math.floor((z - chunkOriginOffset[2]) / worldScale)
+
+      if (chunkX >= 0 && chunkX < chunk.size.x && chunkY >= 0 && chunkY < chunk.size.y && chunkZ >= 0 && chunkZ < chunk.size.z) {
+        const block = chunk.getBlock(chunkX, chunkY, chunkZ)
+        if (block !== BlockType.Air) {
+          // Calculate normal based on previous position
+          let normal: Vec3 = [0, 1, 0]
+          if (lastBlock) {
+            normal = [
+              chunkX - lastBlock[0],
+              chunkY - lastBlock[1],
+              chunkZ - lastBlock[2]
+            ] as Vec3
+          }
+          return {
+            block: [chunkX, chunkY, chunkZ],
+            normal,
+            distance: t
+          }
+        }
+      }
+
+      lastBlock = [chunkX, chunkY, chunkZ]
+      t += step
+    }
+    return null
   }
 
   function updateCamera(dt: number) {
