@@ -39,3 +39,11 @@ declare var GPUBufferUsage: any
 declare var GPUTextureUsage: any
 declare var GPUShaderStage: any
 
+declare const $customBlocks: import('./stores').CustomBlock[]
+declare const $gpuHooks: import('./stores').GPUHooks
+declare const $terrainProfile: 'rolling_hills' | 'mountain' | 'hybrid'
+declare const $terrainSeed: number
+declare const $terrainAmplitude: number
+declare const $terrainRoughness: number
+declare const $terrainElevation: number
+

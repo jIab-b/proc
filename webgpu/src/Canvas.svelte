@@ -1,11 +1,23 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
-  import { createRenderer } from './renderer'
-  import { MapManager, CaptureSystem, DSLEngine, createWorldConfig, generateTerrain, type CameraSnapshot } from './engine'
+import { onMount } from 'svelte'
+import { createRenderer } from './renderer'
+import { MapManager, CaptureSystem, DSLEngine, createWorldConfig, generateTerrain, type CameraSnapshot } from './engine'
   import {
-    ChunkManager, selectedBlockType, selectedCustomBlock, interactionMode, highlightShape,
-    highlightRadius, highlightSelection, gpuHooks, BlockType, setBlockTextureIndices,
-    blockFaceOrder, API_BASE_URL, customBlocks as customBlocksStore, type CustomBlock, type Vec3
+    ChunkManager,
+    selectedBlockType,
+    selectedCustomBlock,
+    interactionMode,
+    highlightShape,
+    highlightRadius,
+    highlightSelection,
+    gpuHooks,
+    BlockType,
+    setBlockTextureIndices,
+    blockFaceOrder,
+    API_BASE_URL,
+    customBlocks as customBlocksStore,
+    type CustomBlock,
+    type Vec3
   } from './core'
 
   let canvasEl: HTMLCanvasElement
@@ -30,6 +42,7 @@
   let dslEngine: DSLEngine
   let renderer: any = null
   let isInGame = false
+  let pointerActive = false
 
   async function fetchMaps() {
     try {
@@ -174,6 +187,7 @@
       document.addEventListener('click', closeContextMenu)
       const handlePointerLock = () => {
         isInGame = document.pointerLockElement === canvasEl
+        pointerActive = isInGame
       }
       document.addEventListener('pointerlockchange', handlePointerLock)
 

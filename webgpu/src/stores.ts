@@ -29,6 +29,11 @@ export const selectedFace = writable<BlockFaceKey | null>(null)
 
 // Texture generation state
 export const texturePrompt = writable<string>('')
+export const terrainProfile = writable<'rolling_hills' | 'mountain' | 'hybrid'>('rolling_hills')
+export const terrainSeed = writable<number>(1337)
+export const terrainAmplitude = writable<number>(10)
+export const terrainRoughness = writable<number>(2.4)
+export const terrainElevation = writable<number>(0.35)
 
 // GPU hooks (set by WebGPU engine)
 export interface GPUHooks {

@@ -18,7 +18,8 @@ export const TILE_BASE_URL = `${API_BASE_URL}/textures`
 // ============================================================================
 
 export enum BlockType {
-  Air = 0, Grass = 1, Dirt = 2, Stone = 3, Plank = 4, Snow = 5, Sand = 6, Water = 7
+  Air = 0, Grass = 1, Dirt = 2, Stone = 3, Plank = 4, Snow = 5, Sand = 6, Water = 7,
+  AlpineRock = 8, AlpineGrass = 9, GlacierIce = 10, Gravel = 11
 }
 
 export type BlockFaceKey = 'top' | 'bottom' | 'north' | 'south' | 'east' | 'west'
@@ -35,7 +36,11 @@ export const blockPalette: Record<BlockType, Palette | undefined> = {
   [BlockType.Plank]: { top: [0.78, 0.68, 0.50], bottom: [0.72, 0.60, 0.42], side: [0.74, 0.63, 0.45] },
   [BlockType.Snow]: { top: [0.92, 0.94, 0.96], bottom: [0.90, 0.92, 0.94], side: [0.88, 0.90, 0.93] },
   [BlockType.Sand]: { top: [0.88, 0.82, 0.60], bottom: [0.86, 0.78, 0.56], side: [0.87, 0.80, 0.58] },
-  [BlockType.Water]: { top: [0.22, 0.40, 0.66], bottom: [0.20, 0.34, 0.60], side: [0.20, 0.38, 0.64] }
+  [BlockType.Water]: { top: [0.22, 0.40, 0.66], bottom: [0.20, 0.34, 0.60], side: [0.20, 0.38, 0.64] },
+  [BlockType.AlpineRock]: { top: [0.45, 0.48, 0.52], bottom: [0.43, 0.46, 0.5], side: [0.44, 0.47, 0.51] },
+  [BlockType.AlpineGrass]: { top: [0.26, 0.58, 0.32], bottom: [0.22, 0.44, 0.28], side: [0.24, 0.50, 0.30] },
+  [BlockType.GlacierIce]: { top: [0.78, 0.88, 0.96], bottom: [0.72, 0.82, 0.90], side: [0.74, 0.84, 0.92] },
+  [BlockType.Gravel]: { top: [0.52, 0.52, 0.5], bottom: [0.48, 0.48, 0.46], side: [0.5, 0.5, 0.48] }
 }
 
 export const availableBlocks = [
@@ -45,7 +50,11 @@ export const availableBlocks = [
   { type: BlockType.Plank, name: 'Plank' },
   { type: BlockType.Snow, name: 'Snow' },
   { type: BlockType.Sand, name: 'Sand' },
-  { type: BlockType.Water, name: 'Water' }
+  { type: BlockType.Water, name: 'Water' },
+  { type: BlockType.AlpineRock, name: 'Alpine Rock' },
+  { type: BlockType.AlpineGrass, name: 'Alpine Grass' },
+  { type: BlockType.Gravel, name: 'Gravel' },
+  { type: BlockType.GlacierIce, name: 'Glacier Ice' }
 ]
 
 // ============================================================================
@@ -89,6 +98,11 @@ export const selectedCustomBlock: Writable<CustomBlock | null> = writable(null)
 export const customBlocks: Writable<CustomBlock[]> = writable([])
 export const selectedFace: Writable<BlockFaceKey | null> = writable(null)
 export const texturePrompt: Writable<string> = writable('')
+export const terrainProfile: Writable<'rolling_hills' | 'mountain' | 'hybrid'> = writable('rolling_hills')
+export const terrainSeed: Writable<number> = writable(1337)
+export const terrainAmplitude: Writable<number> = writable(10)
+export const terrainRoughness: Writable<number> = writable(2.4)
+export const terrainElevation: Writable<number> = writable(0.35)
 export const gpuHooks: Writable<GPUHooks> = writable({ requestFaceBitmaps: null, uploadFaceBitmapsToGPU: null })
 export const interactionMode: Writable<InteractionMode> = writable('block')
 export const highlightShape: Writable<HighlightShape> = writable('cube')

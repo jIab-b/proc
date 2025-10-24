@@ -6,6 +6,7 @@
     TEXTURES_ENDPOINT, GENERATE_TILE_ENDPOINT, BLOCKS_ENDPOINT, blockFaceOrder, TILE_BASE_URL, gpuHooks,
     BlockType, type CustomBlock, type FaceTileInfo, type BlockFaceKey
   } from './core'
+  import ProceduralTerrainPanel from './lib/ProceduralTerrainPanel.svelte'
 
   // Block Grid State
   let blockGridEl: HTMLDivElement
@@ -352,36 +353,7 @@
     </div>
   </div>
 
-  <!-- Face Viewer -->
-  <div class="face-viewer">
-    <h3>Block Faces</h3>
-    <div class="face-grid">
-      {#each faceLabels as label, index}
-        <div
-          class="face-box"
-          class:selected={$selectedFace === blockFaceOrder[index]}
-          on:click={() => { const face = blockFaceOrder[index]; if (face) handleFaceClick(face); }}
-          on:mousedown={(e) => e.stopPropagation()}
-        >
-          <label>{label}</label>
-          <canvas class="face-preview" width="48" height="48" bind:this={faceCanvases[index]}></canvas>
-        </div>
-      {/each}
-    </div>
-  </div>
-
-  <!-- Texture Generator -->
-  <div class="texture-generator">
-    <h3>Generate Texture</h3>
-    <textarea
-      placeholder="Describe the texture (e.g., weathered stone, mossy brick)..."
-      bind:value={$texturePrompt}
-      rows="3"
-    ></textarea>
-    <button class="generate-btn" disabled={!canGenerate} on:click={handleGenerate}>
-      {buttonText}
-    </button>
-  </div>
+  <ProceduralTerrainPanel />
 </div>
 
 <style>

@@ -27,7 +27,11 @@ export const availableBlocks = [
   { type: BlockType.Plank, name: 'Plank' },
   { type: BlockType.Snow, name: 'Snow' },
   { type: BlockType.Sand, name: 'Sand' },
-  { type: BlockType.Water, name: 'Water' }
+  { type: BlockType.Water, name: 'Water' },
+  { type: BlockType.AlpineRock, name: 'Alpine Rock' },
+  { type: BlockType.AlpineGrass, name: 'Alpine Grass' },
+  { type: BlockType.Gravel, name: 'Gravel' },
+  { type: BlockType.GlacierIce, name: 'Glacier Ice' }
 ]
 
 // Utility functions for drawing isometric blocks

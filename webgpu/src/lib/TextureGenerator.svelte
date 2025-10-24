@@ -1,5 +1,98 @@
 <script lang="ts">
   import { texturePrompt, selectedFace, selectedCustomBlock, customBlocks, gpuHooks } from '../stores'
+  import { generateFaceTexture } from '../textureActions'
+  import type { BlockFaceKey } from '../chunks'
+
+  let isGenerating = false
+  $: canGenerate = $texturePrompt.trim().length > 0 && $selectedFace !== null && !isGenerating
+
+  async function handleGenerate() {
+    if (!canGenerate || !$selectedFace) return
+    isGenerating = true
+    try {
+      await generateFaceTexture({
+        prompt: $texturePrompt,
+        face: $selectedFace as BlockFaceKey,
+        selectedBlock: $selectedCustomBlock,
+        customBlocks,
+        gpuHooks
+      })
+    } catch (err) {
+      alert(`Failed to generate texture: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      isGenerating = false
+    }
+  }
+</script>
+
+<div class="texture-generator">
+  <h4>Texture Prompt</h4>
+  <textarea
+    placeholder="Describe the texture (e.g., weathered stone, mossy brick)..."
+    bind:value={$texturePrompt}
+    rows="3"
+  ></textarea>
+  <button class="generate" disabled={!canGenerate} on:click={handleGenerate}>
+    {isGenerating ? 'Generating...' : 'Generate Face Tile'}
+  </button>
+</div>
+
+<style>
+  .texture-generator {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 16px;
+  }
+
+  h4 {
+    margin: 0;
+    font-size: 12px;
+    color: #a0b5d0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  textarea {
+    width: 100%;
+    padding: 10px;
+    background: rgba(34, 50, 68, 0.6);
+    border: 1px solid rgba(190, 210, 230, 0.25);
+    border-radius: 8px;
+    color: #e3ebf7;
+    font-size: 13px;
+    font-family: inherit;
+    resize: vertical;
+  }
+
+  button {
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(120, 150, 190, 0.4);
+    background: rgba(60, 80, 108, 0.6);
+    color: #d6e3ff;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.15s ease;
+  }
+
+  button:hover:not(:disabled) {
+    background: rgba(80, 110, 148, 0.7);
+    transform: translateY(-1px);
+  }
+
+  button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .generate {
+    background: linear-gradient(135deg, rgba(99, 153, 235, 0.9), rgba(66, 120, 210, 0.9));
+    border: none;
+  }
+</style>
+<script lang="ts">
+  import { texturePrompt, selectedFace, selectedCustomBlock, customBlocks, gpuHooks } from '../stores'
   import { GENERATE_TILE_ENDPOINT, blockFaceOrder } from '../blockUtils'
   import type { CustomBlock, FaceTileInfo } from '../stores'
   import type { BlockFaceKey } from '../chunks'

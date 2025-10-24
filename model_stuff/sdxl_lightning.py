@@ -117,18 +117,26 @@ class SDXLLightning:
         return self.scheduler.add_noise(z0, noise, timesteps)
 
     def eps_pred_cfg(self, x_t: torch.Tensor, t: torch.Tensor, pe: torch.Tensor, pe_pooled: torch.Tensor, ue: torch.Tensor, ue_pooled: torch.Tensor, add_time_ids: torch.Tensor, cfg_scale: float) -> torch.Tensor:
+        dtype = self.dtype
+        model_in = self.scheduler.scale_model_input(x_t, t).to(dtype)
         c = {
-            "encoder_hidden_states": pe,
-            "added_cond_kwargs": {"text_embeds": pe_pooled, "time_ids": add_time_ids},
+            "encoder_hidden_states": pe.to(dtype),
+            "added_cond_kwargs": {
+                "text_embeds": pe_pooled.to(dtype),
+                "time_ids": add_time_ids.to(dtype),
+            },
         }
         u = {
-            "encoder_hidden_states": ue,
-            "added_cond_kwargs": {"text_embeds": ue_pooled, "time_ids": add_time_ids},
+            "encoder_hidden_states": ue.to(dtype),
+            "added_cond_kwargs": {
+                "text_embeds": ue_pooled.to(dtype),
+                "time_ids": add_time_ids.to(dtype),
+            },
         }
-        model_in = self.scheduler.scale_model_input(x_t, t)
         eps = self.unet(model_in, t, **c).sample
         eps_u = self.unet(model_in, t, **u).sample
-        return eps_u + cfg_scale * (eps - eps_u)
+        result = eps_u + cfg_scale * (eps - eps_u)
+        return result.to(torch.float32)
 
     def sample_timesteps(self, batch_size: int) -> torch.Tensor:
         num_train = self.scheduler.config.num_train_timesteps
@@ -146,5 +154,4 @@ class SDXLLightning:
         timesteps = self.scheduler.timesteps
         idx = torch.randint(0, timesteps.shape[0], (batch_size,), device=timesteps.device)
         return timesteps[idx]
-
 

@@ -3,8 +3,23 @@
 
 import terrainWGSL from './pipelines/render/terrain.wgsl?raw'
 import {
-  createPerspective, lookAt, multiplyMat4, ChunkManager, BlockType, buildChunkMesh, setBlockTextureIndices,
-  blockFaceOrder, type CustomBlock, type Vec3, type Mat4, type BlockFaceKey, type HighlightSelection
+  createPerspective,
+  lookAt,
+  multiplyMat4,
+  ChunkManager,
+  BlockType,
+  buildChunkMesh,
+  setBlockTextureIndices,
+  blockFaceOrder,
+  interactionMode,
+  highlightShape,
+  highlightRadius,
+  highlightSelection,
+  type CustomBlock,
+  type Vec3,
+  type Mat4,
+  type BlockFaceKey,
+  type HighlightSelection
 } from './core'
 import type { CameraSnapshot } from './engine'
 
@@ -162,6 +177,14 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   let highlightSelection: HighlightSelection | null = null
   let overlayViews: Array<{ position: Vec3; id: string }> = []
 
+  function chunkToWorld(pos: Vec3): Vec3 {
+    return [
+      chunkOriginOffset[0] + pos[0] * worldScale,
+      pos[1] * worldScale,
+      chunkOriginOffset[2] + pos[2] * worldScale
+    ]
+  }
+
   function rebuildMesh() {
     const mesh = buildChunkMesh(chunk, worldScale)
     vertexCount = mesh.vertexCount
@@ -250,10 +273,6 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
     updateCustomTextures(customBlocks)
     meshDirty = true
-  }
-
-  function chunkToWorld(pos: Vec3): Vec3 {
-    return [chunkOriginOffset[0] + pos[0] * worldScale, pos[1] * worldScale, chunkOriginOffset[2] + pos[2] * worldScale]
   }
 
   function renderOverlay() {
