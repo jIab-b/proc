@@ -8,7 +8,11 @@ export enum BlockType {
   Plank = 4,
   Snow = 5,
   Sand = 6,
-  Water = 7
+  Water = 7,
+  AlpineRock = 8,
+  AlpineGrass = 9,
+  GlacierIce = 10,
+  Gravel = 11
 }
 
 export type ChunkMesh = { vertexData: Float32Array; vertexCount: number }
@@ -196,6 +200,26 @@ export const blockPalette: Record<BlockType, BlockPaletteEntry | undefined> = {
     top: [0.22, 0.40, 0.66],
     bottom: [0.20, 0.34, 0.60],
     side: [0.20, 0.38, 0.64]
+  },
+  [BlockType.AlpineRock]: {
+    top: [0.45, 0.48, 0.52],
+    bottom: [0.43, 0.46, 0.50],
+    side: [0.44, 0.47, 0.51]
+  },
+  [BlockType.AlpineGrass]: {
+    top: [0.26, 0.58, 0.32],
+    bottom: [0.22, 0.44, 0.28],
+    side: [0.24, 0.50, 0.30]
+  },
+  [BlockType.GlacierIce]: {
+    top: [0.78, 0.88, 0.96],
+    bottom: [0.72, 0.82, 0.90],
+    side: [0.74, 0.84, 0.92]
+  },
+  [BlockType.Gravel]: {
+    top: [0.52, 0.52, 0.50],
+    bottom: [0.48, 0.48, 0.46],
+    side: [0.50, 0.50, 0.48]
   }
 }
 

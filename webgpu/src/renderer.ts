@@ -1083,6 +1083,23 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     }
 
     menu.appendChild(moveOption)
+
+    // Generate Terrain (LLM) option
+    const llmOption = document.createElement('div')
+    llmOption.textContent = 'Generate Terrain (LLM)'
+    llmOption.style.padding = '8px 16px'
+    llmOption.style.cursor = 'pointer'
+    llmOption.style.color = '#fff'
+    llmOption.style.fontSize = '14px'
+    llmOption.style.transition = 'background 0.1s'
+    llmOption.onmouseenter = () => llmOption.style.background = 'rgba(255, 255, 255, 0.1)'
+    llmOption.onmouseleave = () => llmOption.style.background = 'transparent'
+    llmOption.onclick = () => {
+      menu.remove()
+      showTerrainGenerationDialog()
+    }
+
+    menu.appendChild(llmOption)
     document.body.appendChild(menu)
 
     // Close menu when clicking elsewhere
@@ -1093,6 +1110,292 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
       }
     }
     setTimeout(() => document.addEventListener('mousedown', closeMenu), 0)
+  }
+
+  // Helper: show terrain generation dialog
+  function showTerrainGenerationDialog() {
+    // Remove any existing dialog
+    const existingDialog = document.querySelector('.terrain-generation-dialog')
+    if (existingDialog) existingDialog.remove()
+
+    // Create modal overlay
+    const overlay = document.createElement('div')
+    overlay.className = 'terrain-generation-dialog'
+    overlay.style.position = 'fixed'
+    overlay.style.top = '0'
+    overlay.style.left = '0'
+    overlay.style.width = '100%'
+    overlay.style.height = '100%'
+    overlay.style.background = 'rgba(0, 0, 0, 0.7)'
+    overlay.style.display = 'flex'
+    overlay.style.alignItems = 'center'
+    overlay.style.justifyContent = 'center'
+    overlay.style.zIndex = '20000'
+
+    // Create dialog box
+    const dialog = document.createElement('div')
+    dialog.style.background = 'rgba(30, 30, 40, 0.98)'
+    dialog.style.border = '1px solid rgba(255, 255, 255, 0.2)'
+    dialog.style.borderRadius = '8px'
+    dialog.style.padding = '24px'
+    dialog.style.minWidth = '400px'
+    dialog.style.maxWidth = '600px'
+    dialog.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.5)'
+
+    // Title
+    const title = document.createElement('h3')
+    title.textContent = 'Generate Terrain with LLM'
+    title.style.margin = '0 0 16px 0'
+    title.style.color = '#fff'
+    title.style.fontSize = '18px'
+    title.style.fontWeight = '600'
+
+    // Description
+    const desc = document.createElement('p')
+    desc.textContent = 'Describe the terrain you want to generate:'
+    desc.style.margin = '0 0 12px 0'
+    desc.style.color = 'rgba(255, 255, 255, 0.8)'
+    desc.style.fontSize = '14px'
+
+    // Text input
+    const input = document.createElement('textarea')
+    input.placeholder = 'e.g., "rolling hills with mountains in the distance"'
+    input.style.width = '100%'
+    input.style.height = '100px'
+    input.style.padding = '12px'
+    input.style.background = 'rgba(0, 0, 0, 0.3)'
+    input.style.border = '1px solid rgba(255, 255, 255, 0.2)'
+    input.style.borderRadius = '4px'
+    input.style.color = '#fff'
+    input.style.fontSize = '14px'
+    input.style.fontFamily = 'inherit'
+    input.style.resize = 'vertical'
+    input.style.marginBottom = '16px'
+    input.style.boxSizing = 'border-box'
+
+    // Buttons container
+    const buttons = document.createElement('div')
+    buttons.style.display = 'flex'
+    buttons.style.gap = '12px'
+    buttons.style.justifyContent = 'flex-end'
+
+    // Cancel button
+    const cancelBtn = document.createElement('button')
+    cancelBtn.textContent = 'Cancel'
+    cancelBtn.style.padding = '8px 16px'
+    cancelBtn.style.background = 'rgba(255, 255, 255, 0.1)'
+    cancelBtn.style.border = '1px solid rgba(255, 255, 255, 0.2)'
+    cancelBtn.style.borderRadius = '4px'
+    cancelBtn.style.color = '#fff'
+    cancelBtn.style.fontSize = '14px'
+    cancelBtn.style.cursor = 'pointer'
+    cancelBtn.style.transition = 'background 0.1s'
+    cancelBtn.onmouseenter = () => cancelBtn.style.background = 'rgba(255, 255, 255, 0.15)'
+    cancelBtn.onmouseleave = () => cancelBtn.style.background = 'rgba(255, 255, 255, 0.1)'
+    cancelBtn.onclick = () => overlay.remove()
+
+    // Generate button
+    const generateBtn = document.createElement('button')
+    generateBtn.textContent = 'Generate'
+    generateBtn.style.padding = '8px 16px'
+    generateBtn.style.background = 'rgba(80, 140, 255, 0.9)'
+    generateBtn.style.border = '1px solid rgba(100, 160, 255, 0.9)'
+    generateBtn.style.borderRadius = '4px'
+    generateBtn.style.color = '#fff'
+    generateBtn.style.fontSize = '14px'
+    generateBtn.style.fontWeight = '600'
+    generateBtn.style.cursor = 'pointer'
+    generateBtn.style.transition = 'background 0.1s'
+    generateBtn.onmouseenter = () => generateBtn.style.background = 'rgba(100, 160, 255, 0.9)'
+    generateBtn.onmouseleave = () => generateBtn.style.background = 'rgba(80, 140, 255, 0.9)'
+    generateBtn.onclick = async () => {
+      const description = input.value.trim()
+      if (!description) {
+        alert('Please enter a terrain description')
+        return
+      }
+
+      generateBtn.disabled = true
+      generateBtn.textContent = 'Generating...'
+      generateBtn.style.opacity = '0.6'
+
+      try {
+        await generateTerrainWithLLM(description)
+        overlay.remove()
+      } catch (error) {
+        alert('Error generating terrain: ' + (error as Error).message)
+        generateBtn.disabled = false
+        generateBtn.textContent = 'Generate'
+        generateBtn.style.opacity = '1'
+      }
+    }
+
+    buttons.appendChild(cancelBtn)
+    buttons.appendChild(generateBtn)
+
+    dialog.appendChild(title)
+    dialog.appendChild(desc)
+    dialog.appendChild(input)
+    dialog.appendChild(buttons)
+    overlay.appendChild(dialog)
+    document.body.appendChild(overlay)
+
+    // Auto-focus input
+    setTimeout(() => input.focus(), 0)
+
+    // Close on overlay click
+    overlay.addEventListener('mousedown', (e) => {
+      if (e.target === overlay) overlay.remove()
+    })
+
+    // Close on Escape key
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        overlay.remove()
+        document.removeEventListener('keydown', handleEscape)
+      }
+    }
+    document.addEventListener('keydown', handleEscape)
+  }
+
+  // Helper: generate terrain using OpenAI LLM
+  async function generateTerrainWithLLM(description: string) {
+    const apiKey = import.meta.env.VITE_OPENAI_API_KEY
+    if (!apiKey) {
+      throw new Error('VITE_OPENAI_API_KEY not found in environment variables. Please set it in your .env file.')
+    }
+
+    console.log('[LLM] Generating terrain for description:', description)
+
+    // Prepare the prompt for the LLM
+    const systemPrompt = `You are a terrain generation assistant. You help users generate terrain using a DSL (Domain Specific Language) command.
+
+The terrain-dsl command syntax is:
+generate <cx1> <cz1> <cx2> <cz2> <profile> [seed] [amplitude] [roughness] [elevation]
+
+Arguments:
+- cx1, cz1: Starting chunk coordinates (integers, can be negative)
+- cx2, cz2: Ending chunk coordinates (integers, can be negative)
+- profile: Terrain profile, must be one of: rolling_hills, mountain, hybrid
+- seed: Optional random seed (integer)
+- amplitude: Optional height amplitude (float, typically 8-18)
+- roughness: Optional terrain roughness (float, typically 2.2-2.8)
+- elevation: Optional base elevation (float, typically 0.35-0.5)
+
+Examples:
+- "generate 0 0 9 9 rolling_hills" - Generate a 10x10 chunk region with rolling hills
+- "generate -5 -5 5 5 mountain 7331 18 2.8 0.5" - Generate an 11x11 chunk mountain region with custom parameters
+- "generate 0 0 4 4 hybrid 42" - Generate a 5x5 chunk hybrid region with seed 42
+
+Based on the user's description, generate ONLY the terrain-dsl command (just the command, no explanation).
+For region size, use reasonable defaults:
+- Small descriptions: 5x5 to 10x10 chunks (cx1=0, cz1=0, cx2=4-9, cz2=4-9)
+- Medium descriptions: 10x10 to 20x20 chunks
+- Large descriptions: 20x20 to 50x50 chunks`
+
+    const userPrompt = `Generate terrain: ${description}`
+
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-4',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.7,
+          max_tokens: 150
+        })
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(`OpenAI API error: ${errorData.error?.message || response.statusText}`)
+      }
+
+      const data = await response.json()
+      const llmResponse = data.choices[0]?.message?.content?.trim()
+
+      if (!llmResponse) {
+        throw new Error('Empty response from LLM')
+      }
+
+      console.log('[LLM] Generated command:', llmResponse)
+
+      // Parse and execute the terrain command
+      await executeTerrainCommand(llmResponse, chunk)
+    } catch (error) {
+      console.error('[LLM] Error:', error)
+      throw error
+    }
+  }
+
+  // Helper: execute terrain-dsl command
+  async function executeTerrainCommand(command: string, chunkManager: ChunkManager) {
+    // Remove "generate " prefix if present
+    const cleanCommand = command.replace(/^generate\s+/, '').trim()
+    const args = cleanCommand.split(/\s+/)
+
+    if (args.length < 5) {
+      throw new Error('Invalid terrain command format')
+    }
+
+    const cx1 = parseInt(args[0]!)
+    const cz1 = parseInt(args[1]!)
+    const cx2 = parseInt(args[2]!)
+    const cz2 = parseInt(args[3]!)
+    const profile = args[4] as 'rolling_hills' | 'mountain' | 'hybrid'
+
+    if (!['rolling_hills', 'mountain', 'hybrid'].includes(profile)) {
+      throw new Error(`Invalid profile: ${profile}`)
+    }
+
+    const seed = args[5] ? parseInt(args[5]) : undefined
+    const amplitude = args[6] ? parseFloat(args[6]) : undefined
+    const roughness = args[7] ? parseFloat(args[7]) : undefined
+    const elevation = args[8] ? parseFloat(args[8]) : undefined
+
+    console.log('[Terrain] Executing command:', {
+      region: { cx1, cz1, cx2, cz2 },
+      profile,
+      params: { seed, amplitude, roughness, elevation }
+    })
+
+    // Import and execute terrain generation
+    try {
+      const { generateRegion, createTerrainGeneratorState } = await import('./procedural/terrainGenerator')
+
+      // Convert chunk coordinates to block coordinates
+      const chunkSize = 32 // Standard chunk size
+      const minX = cx1 * chunkSize
+      const minZ = cz1 * chunkSize
+      const maxX = (cx2 + 1) * chunkSize - 1
+      const maxZ = (cz2 + 1) * chunkSize - 1
+
+      const region = {
+        min: [minX, 0, minZ] as Vec3,
+        max: [maxX, chunkSize - 1, maxZ] as Vec3
+      }
+
+      const state = createTerrainGeneratorState(profile, {
+        seed,
+        amplitude,
+        roughness,
+        elevation
+      })
+
+      generateRegion(chunkManager, region, state)
+      console.log('[Terrain] Generation complete!')
+      alert(`Terrain generated successfully!\nRegion: [${cx1},${cz1}] to [${cx2},${cz2}]\nProfile: ${profile}`)
+    } catch (error) {
+      console.error('[Terrain] Execution error:', error)
+      throw error
+    }
   }
 
   // Helper: check if a click is near an ellipsoid node
