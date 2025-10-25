@@ -451,19 +451,41 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           if (!screen) return
 
           const isCenter = node.id === 'center'
+          const isActivelyAdjusting = ellipsoidNodeAdjustActive && selectedNode === node.id
+          const wasActivated = activatedNodes.has(node.id)
           const isSelected = selectedNode === node.id || (isCenter && centerNodeSelected)
-          const nodeFillColor = isCenter
-            ? (isSelected ? 'rgba(120, 220, 255, 0.95)' : 'rgba(120, 200, 255, 0.85)')
-            : (isSelected ? 'rgba(255, 80, 40, 0.95)' : 'rgba(255, 120, 100, 0.85)')
-          const nodeStrokeColor = isCenter
-            ? (isSelected ? 'rgba(255, 255, 255, 0.95)' : 'rgba(80, 180, 255, 0.9)')
-            : (isSelected ? 'rgba(255, 255, 255, 0.9)' : 'rgba(255, 60, 40, 0.95)')
-          const nodeSize = isSelected ? nodeRadius + (isCenter ? 3 : 2) : nodeRadius + (isCenter ? 1 : 0)
+
+          // Color logic:
+          // - Center node: cyan/blue (unchanged)
+          // - Active node (being adjusted): blue
+          // - Previously activated node: red
+          // - Default node: orange
+          let nodeFillColor: string
+          let nodeStrokeColor: string
+
+          if (isCenter) {
+            nodeFillColor = isSelected ? 'rgba(120, 220, 255, 0.95)' : 'rgba(120, 200, 255, 0.85)'
+            nodeStrokeColor = isSelected ? 'rgba(255, 255, 255, 0.95)' : 'rgba(80, 180, 255, 0.9)'
+          } else if (isActivelyAdjusting) {
+            // Active node: bright blue
+            nodeFillColor = 'rgba(80, 140, 255, 0.95)'
+            nodeStrokeColor = 'rgba(255, 255, 255, 0.95)'
+          } else if (wasActivated) {
+            // Previously activated node: red
+            nodeFillColor = 'rgba(255, 60, 60, 0.95)'
+            nodeStrokeColor = 'rgba(200, 30, 30, 0.95)'
+          } else {
+            // Default node: orange
+            nodeFillColor = 'rgba(255, 120, 100, 0.85)'
+            nodeStrokeColor = 'rgba(255, 60, 40, 0.95)'
+          }
+
+          const nodeSize = (isActivelyAdjusting || isSelected) ? nodeRadius + 2 : (wasActivated ? nodeRadius + 1 : nodeRadius)
 
           // Draw node
           overlayCtx.fillStyle = nodeFillColor
           overlayCtx.strokeStyle = nodeStrokeColor
-          overlayCtx.lineWidth = isSelected ? 2.5 : 2
+          overlayCtx.lineWidth = (isActivelyAdjusting || isSelected) ? 2.5 : 2
           overlayCtx.beginPath()
           overlayCtx.arc(screen[0], screen[1], nodeSize, 0, Math.PI * 2)
           overlayCtx.fill()
@@ -563,6 +585,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   // Overview mode: mouse drag controls and block placement
   canvas.addEventListener('mousedown', (ev) => {
     if (cameraMode === 'overview' && !pointerActive) {
+      console.log('Overview mode click:', { button: ev.button, mode: get(interactionMode), shape: get(highlightShape) })
       const mode = get(interactionMode)
       const shape = get(highlightShape)
       const overviewPos = getCameraWorldPosition()
@@ -586,38 +609,47 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         if (ev.button === 2) {
           ev.preventDefault()
 
-          if (currentSelection && currentSelection.shape === 'ellipsoid' && clickedNode && clickedNode !== 'center') {
-            ellipsoidNodeAdjustActive = true
-            ellipsoidSelectedNode.set(clickedNode)
-            ellipsoidEditAxis.set(null)
-            ellipsoidMovementActive = false
-            ellipsoidCenterDragActive = false
-            centerNodeSelected = false
-            lastCameraPos = [...overviewPos] as Vec3
+          // Right-click: create/position ellipsoid at raycast location or default position
+          const hit = raycast(overviewPos, overviewForward)
+          console.log('Ellipsoid mode right-click raycast:', hit)
+
+          let centerPos: Vec3
+          if (hit) {
+            centerPos = hit.block
           } else {
-            const hit = raycast(overviewPos, overviewForward)
-            if (hit) {
-              const radius = get(highlightRadius)
-              const selection: HighlightSelection = {
-                center: hit.block,
-                shape,
-                radius
-              }
-              selection.radiusX = get(ellipsoidRadiusX)
-              selection.radiusY = get(ellipsoidRadiusY)
-              selection.radiusZ = get(ellipsoidRadiusZ)
-              ellipsoidSelectedNode.set(null)
-              ellipsoidEditAxis.set(null)
-              centerNodeSelected = false
-              highlightSelectionStore.set(selection)
-              ellipsoidMovementActive = true
-              ellipsoidNodeAdjustActive = false
-              ellipsoidCenterDragActive = false
-              lastCameraPos = [...overviewPos] as Vec3
-            } else {
-              ellipsoidMovementActive = false
-            }
+            // No hit - create ellipsoid at fixed distance from camera
+            const distance = 20 / worldScale
+            const worldPos: Vec3 = [
+              overviewPos[0] + overviewForward[0] * distance,
+              overviewPos[1] + overviewForward[1] * distance,
+              overviewPos[2] + overviewForward[2] * distance
+            ]
+            centerPos = [
+              Math.floor(worldPos[0] / worldScale),
+              Math.floor(worldPos[1] / worldScale),
+              Math.floor(worldPos[2] / worldScale)
+            ]
+            console.log('No raycast hit - creating ellipsoid at default distance:', centerPos)
           }
+
+          const radius = get(highlightRadius)
+          const selection: HighlightSelection = {
+            center: centerPos,
+            shape,
+            radius
+          }
+          selection.radiusX = get(ellipsoidRadiusX)
+          selection.radiusY = get(ellipsoidRadiusY)
+          selection.radiusZ = get(ellipsoidRadiusZ)
+          ellipsoidSelectedNode.set(null)
+          ellipsoidEditAxis.set(null)
+          centerNodeSelected = false
+          highlightSelectionStore.set(selection)
+          ellipsoidMovementActive = true
+          ellipsoidNodeAdjustActive = false
+          ellipsoidCenterDragActive = false
+          lastCameraPos = [...overviewPos] as Vec3
+          console.log('Ellipsoid created at:', centerPos, 'with radii:', selection.radiusX, selection.radiusY, selection.radiusZ)
 
           ev.stopPropagation()
           return
@@ -637,11 +669,16 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             return
           }
 
+          // Left-click on axis node: activate camera-controlled scaling
           if (clickedNode) {
+            ev.preventDefault()
+            ellipsoidNodeAdjustActive = true
             ellipsoidSelectedNode.set(clickedNode)
-            ellipsoidNodeAdjustActive = false
-            centerNodeSelected = false
+            ellipsoidEditAxis.set(null)
             ellipsoidMovementActive = false
+            ellipsoidCenterDragActive = false
+            centerNodeSelected = false
+            activatedNodes.add(clickedNode) // Mark as activated
             lastCameraPos = [...overviewPos] as Vec3
             ev.stopPropagation()
             return
@@ -745,14 +782,16 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         ellipsoidMovementActive = false
         console.log('Ellipsoid movement mode deactivated')
       }
+    }
+
+    if (ev.button === 0) {
+      // Left-click release: deactivate node adjustment but keep node marked as activated (red)
       if (ellipsoidNodeAdjustActive) {
         ellipsoidNodeAdjustActive = false
         ellipsoidSelectedNode.set(null)
         lastCameraPos = null
+        console.log('Node adjustment deactivated - node will remain red')
       }
-    }
-
-    if (ev.button === 0) {
       if (ellipsoidCenterDragActive) {
         ellipsoidCenterDragActive = false
         centerNodeSelected = false
@@ -774,6 +813,9 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   let ellipsoidNodeAdjustActive = false // resizing along axis via node drag
   let ellipsoidCenterDragActive = false // center reposition via left-click drag on center node
   let centerNodeSelected = false
+
+  // Track previously activated nodes (to show as red)
+  const activatedNodes = new Set<EllipsoidNode>()
 
   window.addEventListener('mousemove', (ev) => {
     if (cameraMode === 'player' && pointerActive) {
@@ -932,40 +974,30 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
       if (ev.button === 2) {
         ev.preventDefault()
-        if (currentSelection && currentSelection.shape === 'ellipsoid' && clickedNode && clickedNode !== 'center') {
-          ellipsoidNodeAdjustActive = true
-          ellipsoidSelectedNode.set(clickedNode)
+        // Right-click in player mode: create/position ellipsoid at raycast location
+        const hit = raycast(cameraPos, getForwardVector())
+        if (hit) {
+          const selection: HighlightSelection = {
+            center: hit.block,
+            shape,
+            radius: radiusDefault
+          }
+          if (shape === 'ellipsoid') {
+            selection.radiusX = get(ellipsoidRadiusX)
+            selection.radiusY = get(ellipsoidRadiusY)
+            selection.radiusZ = get(ellipsoidRadiusZ)
+          }
+          ellipsoidSelectedNode.set(null)
           ellipsoidEditAxis.set(null)
-          ellipsoidMovementActive = false
-          ellipsoidCenterDragActive = false
           centerNodeSelected = false
+          highlightSelectionStore.set(selection)
+          ellipsoidMovementActive = true
+          ellipsoidNodeAdjustActive = false
+          ellipsoidCenterDragActive = false
           lastCameraPos = getCameraWorldPosition()
           handledEllipsoidInteraction = true
         } else {
-          const hit = raycast(cameraPos, getForwardVector())
-          if (hit) {
-            const selection: HighlightSelection = {
-              center: hit.block,
-              shape,
-              radius: radiusDefault
-            }
-            if (shape === 'ellipsoid') {
-              selection.radiusX = get(ellipsoidRadiusX)
-              selection.radiusY = get(ellipsoidRadiusY)
-              selection.radiusZ = get(ellipsoidRadiusZ)
-            }
-            ellipsoidSelectedNode.set(null)
-            ellipsoidEditAxis.set(null)
-            centerNodeSelected = false
-            highlightSelectionStore.set(selection)
-            ellipsoidMovementActive = true
-            ellipsoidNodeAdjustActive = false
-            ellipsoidCenterDragActive = false
-            lastCameraPos = getCameraWorldPosition()
-            handledEllipsoidInteraction = true
-          } else {
-            ellipsoidMovementActive = false
-          }
+          ellipsoidMovementActive = false
         }
       } else if (ev.button === 0 && currentSelection && currentSelection.shape === 'ellipsoid') {
         if (clickedNode === 'center') {
@@ -979,10 +1011,15 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           lastCameraPos = getCameraWorldPosition()
           handledEllipsoidInteraction = true
         } else if (clickedNode) {
+          // Left-click on axis node: activate camera-controlled scaling
+          ev.preventDefault()
+          ellipsoidNodeAdjustActive = true
           ellipsoidSelectedNode.set(clickedNode)
-          ellipsoidNodeAdjustActive = false
-          centerNodeSelected = false
+          ellipsoidEditAxis.set(null)
           ellipsoidMovementActive = false
+          ellipsoidCenterDragActive = false
+          centerNodeSelected = false
+          activatedNodes.add(clickedNode) // Mark as activated
           lastCameraPos = getCameraWorldPosition()
           handledEllipsoidInteraction = true
         } else {
