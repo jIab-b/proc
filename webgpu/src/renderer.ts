@@ -16,6 +16,7 @@ import {
   highlightShape,
   highlightRadius,
   highlightSelection as highlightSelectionStore,
+  cameraMode as cameraModeStore,
   type CustomBlock,
   type Vec3,
   type Mat4,
@@ -348,32 +349,122 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     }
   }
 
+  // Camera modes: 'player' (FPS) or 'overview' (orbital)
+  let cameraMode: 'player' | 'overview' = get(cameraModeStore)
+
+  // Subscribe to camera mode changes from the store
+  cameraModeStore.subscribe(mode => {
+    if (mode === cameraMode) return
+    cameraMode = mode
+
+    if (cameraMode === 'overview') {
+      if (pointerActive) document.exitPointerLock()
+      paused = false
+      orbitTarget = [...cameraPos] as Vec3
+      orbitDistance = 50
+      orbitYaw = yaw
+      orbitPitch = pitch
+    } else {
+      paused = true
+    }
+  })
+
+  // Player camera (FPS)
   const cameraPos: Vec3 = [0, chunk.size.y * worldScale * 0.55, chunk.size.z * worldScale * 0.45]
   const worldUp: Vec3 = [0, 1, 0]
   let yaw = 0, pitch = 0
+
+  // Overview camera (orbital)
+  let orbitTarget: Vec3 = [0, chunk.size.y * worldScale * 0.3, 0]
+  let orbitDistance = 50
+  let orbitYaw = 0
+  let orbitPitch = -0.5
+
   const pressedKeys = new Set<string>()
   let pointerActive = false
   let paused = true
   let rafHandle: number | null = null
   let lastFrameTime = performance.now()
 
+  // Mouse state for overview mode
+  let isDragging = false
+  let dragButton = -1
+  let lastMouseX = 0
+  let lastMouseY = 0
+
   canvas.addEventListener('click', () => {
-    if (!pointerActive) canvas.requestPointerLock()
+    if (cameraMode === 'player' && !pointerActive) {
+      canvas.requestPointerLock()
+    }
   })
 
   document.addEventListener('pointerlockchange', () => {
     pointerActive = document.pointerLockElement === canvas
-    paused = !pointerActive
+    if (cameraMode === 'player') {
+      paused = !pointerActive
+    }
     pressedKeys.clear()
     lastFrameTime = performance.now()
   })
 
-  window.addEventListener('mousemove', (ev) => {
-    if (!pointerActive) return
-    yaw -= ev.movementX * 0.0025
-    pitch -= ev.movementY * 0.0025
-    pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, pitch))
+  // Overview mode: mouse drag controls
+  canvas.addEventListener('mousedown', (ev) => {
+    if (cameraMode === 'overview' && !pointerActive) {
+      isDragging = true
+      dragButton = ev.button
+      lastMouseX = ev.clientX
+      lastMouseY = ev.clientY
+      canvas.style.cursor = ev.button === 1 ? 'move' : 'grab'
+    }
   })
+
+  window.addEventListener('mouseup', () => {
+    if (cameraMode === 'overview') {
+      isDragging = false
+      dragButton = -1
+      canvas.style.cursor = 'default'
+    }
+  })
+
+  window.addEventListener('mousemove', (ev) => {
+    if (cameraMode === 'player' && pointerActive) {
+      // Player mode: pointer lock look
+      yaw -= ev.movementX * 0.0025
+      pitch -= ev.movementY * 0.0025
+      pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, pitch))
+    } else if (cameraMode === 'overview' && isDragging) {
+      // Overview mode: drag to orbit or pan
+      const dx = ev.clientX - lastMouseX
+      const dy = ev.clientY - lastMouseY
+      lastMouseX = ev.clientX
+      lastMouseY = ev.clientY
+
+      if (dragButton === 2 || dragButton === 0) {
+        // Right or left mouse: orbit
+        orbitYaw -= dx * 0.005
+        orbitPitch -= dy * 0.005
+        orbitPitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, orbitPitch))
+      } else if (dragButton === 1) {
+        // Middle mouse: pan
+        const right: Vec3 = [Math.cos(orbitYaw), 0, -Math.sin(orbitYaw)]
+        const up: Vec3 = [0, 1, 0]
+        const panSpeed = orbitDistance * 0.002
+        orbitTarget[0] -= right[0] * dx * panSpeed
+        orbitTarget[1] += up[1] * dy * panSpeed
+        orbitTarget[2] -= right[2] * dx * panSpeed
+      }
+    }
+  })
+
+  // Overview mode: scroll to zoom
+  canvas.addEventListener('wheel', (ev) => {
+    if (cameraMode === 'overview') {
+      ev.preventDefault()
+      const zoomSpeed = orbitDistance * 0.1
+      orbitDistance += ev.deltaY * 0.01 * zoomSpeed
+      orbitDistance = Math.max(5, Math.min(500, orbitDistance))
+    }
+  }, { passive: false })
 
   window.addEventListener('mousedown', (ev) => {
     if (!pointerActive) return
@@ -528,34 +619,104 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     const near = 0.1, far = 500.0
     const proj = createPerspective(fovYRad, aspect, near, far)
 
-    const forward = getForwardVector()
-    let right = cross(forward, worldUp)
-    if (Math.hypot(right[0], right[1], right[2]) < 1e-4) right = [1, 0, 0]
-    right = normalize(right)
-    const upVec = normalize(cross(right, forward))
+    let view: Mat4
+    let forward: Vec3
+    let right: Vec3
+    let upVec: Vec3
+    let position: Vec3
 
-    const speedBase = (pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight')) ? 20 : 10
-    const speed = paused ? 0 : speedBase * worldScale
-    const move = speed * dt
-    if (move !== 0) {
-      if (pressedKeys.has('KeyW')) addScaled(cameraPos, forward, move)
-      if (pressedKeys.has('KeyS')) addScaled(cameraPos, forward, -move)
-      if (pressedKeys.has('KeyA')) addScaled(cameraPos, right, -move)
-      if (pressedKeys.has('KeyD')) addScaled(cameraPos, right, move)
-      if (pressedKeys.has('KeyE') || pressedKeys.has('Space')) addScaled(cameraPos, upVec, move)
-      if (pressedKeys.has('KeyQ') || pressedKeys.has('ControlLeft')) addScaled(cameraPos, upVec, -move)
+    if (cameraMode === 'player') {
+      // Player mode: first-person camera
+      forward = getForwardVector()
+      right = cross(forward, worldUp)
+      if (Math.hypot(right[0], right[1], right[2]) < 1e-4) right = [1, 0, 0]
+      right = normalize(right)
+      upVec = normalize(cross(right, forward))
+
+      const speedBase = (pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight')) ? 20 : 10
+      const speed = paused ? 0 : speedBase * worldScale
+      const move = speed * dt
+      if (move !== 0) {
+        if (pressedKeys.has('KeyW')) addScaled(cameraPos, forward, move)
+        if (pressedKeys.has('KeyS')) addScaled(cameraPos, forward, -move)
+        if (pressedKeys.has('KeyA')) addScaled(cameraPos, right, -move)
+        if (pressedKeys.has('KeyD')) addScaled(cameraPos, right, move)
+        if (pressedKeys.has('KeyE') || pressedKeys.has('Space')) addScaled(cameraPos, upVec, move)
+        if (pressedKeys.has('KeyQ') || pressedKeys.has('ControlLeft')) addScaled(cameraPos, upVec, -move)
+      }
+
+      position = [...cameraPos] as Vec3
+      const target: Vec3 = [cameraPos[0] + forward[0], cameraPos[1] + forward[1], cameraPos[2] + forward[2]]
+      view = lookAt(cameraPos, target, upVec)
+    } else {
+      // Overview mode: orbital camera
+      const speedBase = (pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight')) ? 40 : 20
+      const speed = speedBase * worldScale
+      const move = speed * dt
+
+      // WASD moves the orbit target (fast panning)
+      if (move !== 0) {
+        const panRight: Vec3 = [Math.cos(orbitYaw), 0, -Math.sin(orbitYaw)]
+        const panForward: Vec3 = [-Math.sin(orbitYaw), 0, -Math.cos(orbitYaw)]
+
+        if (pressedKeys.has('KeyW')) {
+          orbitTarget[0] += panForward[0] * move
+          orbitTarget[2] += panForward[2] * move
+        }
+        if (pressedKeys.has('KeyS')) {
+          orbitTarget[0] -= panForward[0] * move
+          orbitTarget[2] -= panForward[2] * move
+        }
+        if (pressedKeys.has('KeyA')) {
+          orbitTarget[0] -= panRight[0] * move
+          orbitTarget[2] -= panRight[2] * move
+        }
+        if (pressedKeys.has('KeyD')) {
+          orbitTarget[0] += panRight[0] * move
+          orbitTarget[2] += panRight[2] * move
+        }
+        if (pressedKeys.has('KeyE') || pressedKeys.has('Space')) {
+          orbitTarget[1] += move
+        }
+        if (pressedKeys.has('KeyQ') || pressedKeys.has('ControlLeft')) {
+          orbitTarget[1] -= move
+        }
+      }
+
+      // Calculate camera position from orbit parameters
+      const cosPitch = Math.cos(orbitPitch)
+      const sinPitch = Math.sin(orbitPitch)
+      const cosYaw = Math.cos(orbitYaw)
+      const sinYaw = Math.sin(orbitYaw)
+
+      position = [
+        orbitTarget[0] + orbitDistance * cosPitch * sinYaw,
+        orbitTarget[1] + orbitDistance * sinPitch,
+        orbitTarget[2] + orbitDistance * cosPitch * cosYaw
+      ] as Vec3
+
+      view = lookAt(position, orbitTarget, worldUp)
+
+      // Calculate vectors for camera snapshot
+      forward = normalize([
+        orbitTarget[0] - position[0],
+        orbitTarget[1] - position[1],
+        orbitTarget[2] - position[2]
+      ])
+      right = cross(forward, worldUp)
+      if (Math.hypot(right[0], right[1], right[2]) < 1e-4) right = [1, 0, 0]
+      right = normalize(right)
+      upVec = normalize(cross(right, forward))
     }
 
-    const target: Vec3 = [cameraPos[0] + forward[0], cameraPos[1] + forward[1], cameraPos[2] + forward[2]]
-    const view = lookAt(cameraPos, target, upVec)
     const viewProj = multiplyMat4(proj, view)
     device.queue.writeBuffer(cameraBuffer, 0, viewProj)
 
     latestCamera = {
-      position: [...cameraPos] as Vec3,
-      forward: [...forward] as Vec3,
-      up: [...upVec] as Vec3,
-      right: [...right] as Vec3,
+      position,
+      forward,
+      up: upVec,
+      right,
       viewMatrix: new Float32Array(view),
       projectionMatrix: new Float32Array(proj),
       viewProjectionMatrix: new Float32Array(viewProj),
@@ -596,13 +757,24 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   }
 
   window.addEventListener('keydown', (ev) => {
+    // Tab key: toggle camera mode
+    if (ev.code === 'Tab') {
+      ev.preventDefault()
+      const newMode = cameraMode === 'player' ? 'overview' : 'player'
+      cameraModeStore.set(newMode)
+      console.log(`Camera mode: ${newMode}`)
+      return
+    }
+
     if (pointerActive && ev.code !== 'Escape') ev.preventDefault()
     pressedKeys.add(ev.code)
   })
+
   window.addEventListener('keyup', (ev) => {
     if (pointerActive && ev.code !== 'Escape') ev.preventDefault()
     pressedKeys.delete(ev.code)
   })
+
   window.addEventListener('blur', () => pressedKeys.clear())
 
   rafHandle = requestAnimationFrame(frame)
@@ -610,6 +782,23 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   return {
     device,
     getCamera: () => latestCamera,
+    getCameraMode: () => cameraMode,
+    setCameraMode: (mode: 'player' | 'overview') => {
+      if (mode === cameraMode) return
+
+      cameraMode = mode
+      if (cameraMode === 'overview') {
+        if (pointerActive) document.exitPointerLock()
+        paused = false
+        orbitTarget = [...cameraPos] as Vec3
+        orbitDistance = 50
+        orbitYaw = yaw
+        orbitPitch = pitch
+      } else {
+        paused = true
+      }
+      console.log(`Camera mode: ${cameraMode}`)
+    },
     markMeshDirty: () => { meshDirty = true },
     applyCustomBlockTextures,
     updateCustomTextures,

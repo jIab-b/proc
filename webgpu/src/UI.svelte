@@ -7,6 +7,7 @@
     BlockType, type CustomBlock, type FaceTileInfo, type BlockFaceKey
   } from './core'
   import ProceduralTerrainPanel from './lib/ProceduralTerrainPanel.svelte'
+  import CameraModeToggle from './lib/CameraModeToggle.svelte'
 
   // Block Grid State
   let blockGridEl: HTMLDivElement
@@ -326,6 +327,8 @@
 </script>
 
 <div class="sidebar">
+  <CameraModeToggle />
+
   <!-- Block Grid -->
   <div class="block-grid" bind:this={blockGridEl}>
     <div class="grid-header">

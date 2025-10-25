@@ -127,6 +127,7 @@ export const interactionMode: Writable<InteractionMode> = writable('block')
 export const highlightShape: Writable<HighlightShape> = writable('cube')
 export const highlightRadius: Writable<number> = writable(2)
 export const highlightSelection: Writable<HighlightSelection | null> = writable(null)
+export const cameraMode: Writable<'player' | 'overview'> = writable('player')
 
 // ============================================================================
 // CHUNK MANAGER

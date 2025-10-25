@@ -6,13 +6,18 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "terrain": "tsx terrain-dsl.ts",
+    "terrain:help": "tsx terrain-dsl.ts help",
+    "example:grid": "tsx examples/grid-terrain-example.ts"
   },
   "devDependencies": {
     "@tsconfig/svelte": "^5.0.5",
+    "@types/node": "^20.0.0",
     "@webgpu/types": "^0.1.38",
     "dotenv": "^16.4.5",
     "svelte-preprocess": "^6.0.3",
+    "tsx": "^4.7.0",
     "typescript": "^5.6.3",
     "vite": "^5.4.10"
   },

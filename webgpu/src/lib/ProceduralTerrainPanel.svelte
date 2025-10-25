@@ -36,8 +36,8 @@
       return
     }
 
-    // Define a large region around the player (32x32x32 blocks centered on player)
-    const regionSize = 16
+    // Define a large region around the player (48x48x32 blocks centered on player)
+    const regionSize = 24
     const region = {
       min: cameraPos.map(pos => Math.floor(pos - regionSize)) as [number, number, number],
       max: cameraPos.map(pos => Math.floor(pos + regionSize)) as [number, number, number]
@@ -97,6 +97,35 @@
   function randomizeSeed() {
     terrainSeed.set(Math.floor(Math.random() * 1_000_000))
   }
+
+  function randomizeAll() {
+    // Randomize profile
+    const profiles = ['rolling_hills', 'mountain', 'hybrid'] as const
+    terrainProfile.set(profiles[Math.floor(Math.random() * profiles.length)]!)
+
+    // Randomize seed
+    terrainSeed.set(Math.floor(Math.random() * 1_000_000))
+
+    // Randomize amplitude (4-32, favor middle range 8-20)
+    const amplitude = 8 + Math.random() * 12
+    terrainAmplitude.set(amplitude)
+
+    // Randomize roughness (1.2-3.4, favor middle range 2.0-2.8)
+    const roughness = 2.0 + Math.random() * 0.8
+    terrainRoughness.set(roughness)
+
+    // Randomize elevation (0.2-0.7, favor middle range 0.3-0.5)
+    const elevation = 0.3 + Math.random() * 0.2
+    terrainElevation.set(elevation)
+
+    console.log('Randomized terrain params:', {
+      profile: $terrainProfile,
+      seed: $terrainSeed,
+      amplitude: amplitude.toFixed(1),
+      roughness: roughness.toFixed(2),
+      elevation: elevation.toFixed(2)
+    })
+  }
 </script>
 
 <div class="panel">
@@ -135,7 +164,10 @@
   </section>
 
   <section class="actions">
-    <button type="button" class="primary" on:click={() => runGeneration('generate')} disabled={isGenerating}>
+    <button type="button" class="primary" on:click={() => { randomizeAll(); runGeneration('generate'); }} disabled={isGenerating}>
+      🎲 Generate Random Terrain
+    </button>
+    <button type="button" on:click={() => runGeneration('generate')} disabled={isGenerating}>
       Generate Around Player
     </button>
     <button type="button" on:click={() => runGeneration('preview')} disabled={isGenerating}>
