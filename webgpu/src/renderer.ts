@@ -585,7 +585,6 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   // Overview mode: mouse drag controls and block placement
   canvas.addEventListener('mousedown', (ev) => {
     if (cameraMode === 'overview' && !pointerActive) {
-      console.log('Overview mode click:', { button: ev.button, mode: get(interactionMode), shape: get(highlightShape) })
       const mode = get(interactionMode)
       const shape = get(highlightShape)
       const overviewPos = getCameraWorldPosition()
@@ -595,7 +594,29 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         orbitTarget[2] - overviewPos[2]
       ])
 
+      console.log('=== OVERVIEW CLICK ===')
+      console.log('Button:', ev.button === 0 ? 'LEFT' : ev.button === 1 ? 'MIDDLE' : 'RIGHT')
+      console.log('Click position:', { clientX: ev.clientX, clientY: ev.clientY })
+      console.log('Canvas size:', { width: canvas.width, height: canvas.height })
+      console.log('Mode:', mode, 'Shape:', shape)
+      console.log('Camera pos:', overviewPos)
+      console.log('Camera forward:', overviewForward)
+      console.log('Orbit target:', orbitTarget)
+
       if (mode === 'highlight' && shape === 'ellipsoid') {
+        // Convert client coordinates to canvas coordinates
+        // IMPORTANT: Use overlayCanvas rect if available, since nodes are drawn on overlay
+        const targetCanvas = overlayCanvas || canvas
+        const rect = targetCanvas.getBoundingClientRect()
+        const canvasX = ((ev.clientX - rect.left) / rect.width) * canvas.width
+        const canvasY = ((ev.clientY - rect.top) / rect.height) * canvas.height
+        console.log('Coordinate conversion (using overlay):', {
+          client: { x: ev.clientX, y: ev.clientY },
+          rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+          canvas: { x: canvasX, y: canvasY, width: canvas.width, height: canvas.height },
+          usingOverlay: !!overlayCanvas
+        })
+
         const currentSelection = get(highlightSelectionStore)
         let clickedNode: EllipsoidNode = null
 
@@ -603,33 +624,64 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           const rx = currentSelection.radiusX ?? currentSelection.radius
           const ry = currentSelection.radiusY ?? currentSelection.radius
           const rz = currentSelection.radiusZ ?? currentSelection.radius
-          clickedNode = getClickedNode(ev.clientX, ev.clientY, currentSelection.center, rx, ry, rz)
+
+          // Calculate if ellipsoid is visible
+          const centerWorld = chunkToWorld([
+            currentSelection.center[0] + 0.5,
+            currentSelection.center[1] + 0.5,
+            currentSelection.center[2] + 0.5
+          ])
+          const isVisible = latestCamera && projectToScreen(centerWorld, latestCamera.viewProjectionMatrix, canvas.width, canvas.height) !== null
+
+          console.log('Current ellipsoid:', currentSelection.center, 'radii:', { rx, ry, rz })
+          console.log('⚠️  Ellipsoid visible:', isVisible, '- Center world pos:', centerWorld)
+
+          clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, rx, ry, rz)
+          console.log('Clicked node:', clickedNode)
+          console.log('Activated nodes:', Array.from(activatedNodes))
+
+          if (!isVisible) {
+            console.warn('⚠️  ELLIPSOID IS OFF-SCREEN! Pan camera to position:', currentSelection.center)
+          }
         }
 
         if (ev.button === 2) {
           ev.preventDefault()
 
-          // Right-click: create/position ellipsoid at raycast location or default position
-          const hit = raycast(overviewPos, overviewForward)
+          // Compute ray direction for click position
+          let rayDir: Vec3 = overviewForward
+          if (latestCamera) {
+            const { forward, right, up, fovYRadians, aspect } = latestCamera
+            const tanHalfFov = Math.tan(fovYRadians / 2)
+            const ndcX = 2 * (canvasX / canvas.width) - 1
+            const ndcY = 1 - 2 * (canvasY / canvas.height)
+            const screenX = ndcX * aspect * tanHalfFov
+            const screenY = ndcY * tanHalfFov
+            const dx = right[0] * screenX + up[0] * screenY + forward[0]
+            const dy = right[1] * screenX + up[1] * screenY + forward[1]
+            const dz = right[2] * screenX + up[2] * screenY + forward[2]
+            const len = Math.hypot(dx, dy, dz)
+            if (len > 0) {
+              rayDir = [dx / len, dy / len, dz / len]
+            }
+          }
+
+          const hit = raycast(overviewPos, rayDir)
           console.log('Ellipsoid mode right-click raycast:', hit)
 
           let centerPos: Vec3
           if (hit) {
             centerPos = hit.block
           } else {
-            // No hit - create ellipsoid at fixed distance from camera
-            const distance = 20 / worldScale
+            const distance = orbitDistance
             const worldPos: Vec3 = [
-              overviewPos[0] + overviewForward[0] * distance,
-              overviewPos[1] + overviewForward[1] * distance,
-              overviewPos[2] + overviewForward[2] * distance
+              overviewPos[0] + rayDir[0] * distance,
+              overviewPos[1] + rayDir[1] * distance,
+              overviewPos[2] + rayDir[2] * distance
             ]
-            centerPos = [
-              Math.floor(worldPos[0] / worldScale),
-              Math.floor(worldPos[1] / worldScale),
-              Math.floor(worldPos[2] / worldScale)
-            ]
-            console.log('No raycast hit - creating ellipsoid at default distance:', centerPos)
+            const chunkPos = worldToChunk(worldPos)
+            centerPos = [Math.floor(chunkPos[0]), Math.floor(chunkPos[1]), Math.floor(chunkPos[2])]
+            console.log('No raycast hit - creating ellipsoid at click position:', centerPos)
           }
 
           const radius = get(highlightRadius)
@@ -656,7 +708,10 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         }
 
         if (ev.button === 0 && currentSelection && currentSelection.shape === 'ellipsoid') {
+          console.log('LEFT CLICK with existing ellipsoid, clickedNode:', clickedNode)
+
           if (clickedNode === 'center') {
+            console.log('>>> Activating CENTER DRAG mode')
             ev.preventDefault()
             ellipsoidCenterDragActive = true
             centerNodeSelected = true
@@ -671,6 +726,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
           // Left-click on axis node: activate camera-controlled scaling
           if (clickedNode) {
+            console.log(`>>> Activating NODE ${clickedNode} for camera-controlled scaling`)
             ev.preventDefault()
             ellipsoidNodeAdjustActive = true
             ellipsoidSelectedNode.set(clickedNode)
@@ -680,6 +736,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             centerNodeSelected = false
             activatedNodes.add(clickedNode) // Mark as activated
             lastCameraPos = [...overviewPos] as Vec3
+            console.log('Node activation state:', { ellipsoidNodeAdjustActive, selectedNode: clickedNode, lastCameraPos })
             ev.stopPropagation()
             return
           }
@@ -689,7 +746,10 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           const ry = currentSelection.radiusY ?? currentSelection.radius
           const rz = currentSelection.radiusZ ?? currentSelection.radius
 
-          if (isNearEllipseRing(ev.clientX, ev.clientY, center, rx, ry, 'xy')) {
+          console.log('Checking ellipse rings with canvas coords:', canvasX, canvasY)
+
+          if (isNearEllipseRing(canvasX, canvasY, center, rx, ry, 'xy')) {
+            console.log('>>> Clicked on XY ring (Z axis)')
             ellipsoidEditAxis.set('z')
             ellipsoidSelectedNode.set(null)
             centerNodeSelected = false
@@ -697,7 +757,8 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             ev.stopPropagation()
             return
           }
-          if (isNearEllipseRing(ev.clientX, ev.clientY, center, rx, rz, 'xz')) {
+          if (isNearEllipseRing(canvasX, canvasY, center, rx, rz, 'xz')) {
+            console.log('>>> Clicked on XZ ring (Y axis)')
             ellipsoidEditAxis.set('y')
             ellipsoidSelectedNode.set(null)
             centerNodeSelected = false
@@ -705,7 +766,8 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             ev.stopPropagation()
             return
           }
-          if (isNearEllipseRing(ev.clientX, ev.clientY, center, ry, rz, 'yz')) {
+          if (isNearEllipseRing(canvasX, canvasY, center, ry, rz, 'yz')) {
+            console.log('>>> Clicked on YZ ring (X axis)')
             ellipsoidEditAxis.set('x')
             ellipsoidSelectedNode.set(null)
             centerNodeSelected = false
@@ -762,6 +824,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
       }
 
       // Left and middle mouse for dragging
+      console.log('>>> Entering drag mode, button:', ev.button)
       isDragging = true
       dragButton = ev.button
       lastMouseX = ev.clientX
@@ -920,13 +983,22 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   function getClickedNode(clickX: number, clickY: number, center: Vec3, rx: number, ry: number, rz: number): EllipsoidNode {
     const halfStep = 0.5
     const baseCenter: Vec3 = [center[0] + halfStep, center[1] + halfStep, center[2] + halfStep]
-    const threshold = 12 // pixels
+    const threshold = 20 // pixels - increased for easier clicking
+
+    console.log('getClickedNode called:', { clickX, clickY, center, rx, ry, rz })
+    console.log('Canvas dimensions:', { width: canvas.width, height: canvas.height })
+    console.log('Canvas client rect:', canvas.getBoundingClientRect())
 
     // Check center node first for easier selection
     const centerScreen = projectToScreen(chunkToWorld(baseCenter), latestCamera!.viewProjectionMatrix, canvas.width, canvas.height)
+    console.log('Center node screen pos:', centerScreen)
     if (centerScreen) {
       const centerDist = Math.hypot(centerScreen[0] - clickX, centerScreen[1] - clickY)
-      if (centerDist < threshold) return 'center'
+      console.log('Center node distance:', centerDist, 'threshold:', threshold)
+      if (centerDist < threshold) {
+        console.log('>>> CENTER NODE CLICKED')
+        return 'center'
+      }
     }
 
     const nodes: Array<{ pos: Vec3; id: EllipsoidNode }> = [
@@ -938,14 +1010,22 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
       { pos: [baseCenter[0], baseCenter[1], baseCenter[2] - rz], id: '-z' }
     ]
 
+    console.log('Checking axis nodes:')
     for (const node of nodes) {
       const screen = projectToScreen(chunkToWorld(node.pos), latestCamera!.viewProjectionMatrix, canvas.width, canvas.height)
       if (screen) {
         const dist = Math.hypot(screen[0] - clickX, screen[1] - clickY)
-        if (dist < threshold) return node.id
+        console.log(`  ${node.id}: screen=${screen[0].toFixed(1)},${screen[1].toFixed(1)} dist=${dist.toFixed(1)} threshold=${threshold}`)
+        if (dist < threshold) {
+          console.log(`>>> NODE ${node.id} CLICKED`)
+          return node.id
+        }
+      } else {
+        console.log(`  ${node.id}: not visible (off screen)`)
       }
     }
 
+    console.log('>>> NO NODE CLICKED')
     return null
   }
 
@@ -960,6 +1040,13 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
     let handledEllipsoidInteraction = false
     if ((isCanvasEvent || isOverlayEvent) && mode === 'highlight' && get(highlightShape) === 'ellipsoid') {
+      // Convert client coordinates to canvas coordinates
+      // IMPORTANT: Use overlayCanvas rect if available, since nodes are drawn on overlay
+      const targetCanvas = overlayCanvas || canvas
+      const rect = targetCanvas.getBoundingClientRect()
+      const canvasX = ((ev.clientX - rect.left) / rect.width) * canvas.width
+      const canvasY = ((ev.clientY - rect.top) / rect.height) * canvas.height
+
       const currentSelection = get(highlightSelectionStore)
       const shape = get(highlightShape)
       const radiusDefault = get(highlightRadius)
@@ -969,7 +1056,8 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         const rx = currentSelection.radiusX ?? currentSelection.radius
         const ry = currentSelection.radiusY ?? currentSelection.radius
         const rz = currentSelection.radiusZ ?? currentSelection.radius
-        clickedNode = getClickedNode(ev.clientX, ev.clientY, currentSelection.center, rx, ry, rz)
+
+        clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, rx, ry, rz)
       }
 
       if (ev.button === 2) {
@@ -1028,19 +1116,19 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           const ry = currentSelection.radiusY ?? currentSelection.radius
           const rz = currentSelection.radiusZ ?? currentSelection.radius
 
-          if (isNearEllipseRing(ev.clientX, ev.clientY, center, rx, ry, 'xy')) {
+          if (isNearEllipseRing(canvasX, canvasY, center, rx, ry, 'xy')) {
             ellipsoidEditAxis.set('z')
             ellipsoidSelectedNode.set(null)
             centerNodeSelected = false
             lastCameraPos = getCameraWorldPosition()
             handledEllipsoidInteraction = true
-          } else if (isNearEllipseRing(ev.clientX, ev.clientY, center, rx, rz, 'xz')) {
+          } else if (isNearEllipseRing(canvasX, canvasY, center, rx, rz, 'xz')) {
             ellipsoidEditAxis.set('y')
             ellipsoidSelectedNode.set(null)
             centerNodeSelected = false
             lastCameraPos = getCameraWorldPosition()
             handledEllipsoidInteraction = true
-          } else if (isNearEllipseRing(ev.clientX, ev.clientY, center, ry, rz, 'yz')) {
+          } else if (isNearEllipseRing(canvasX, canvasY, center, ry, rz, 'yz')) {
             ellipsoidEditAxis.set('x')
             ellipsoidSelectedNode.set(null)
             centerNodeSelected = false
