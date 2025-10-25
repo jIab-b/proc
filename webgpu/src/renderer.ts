@@ -567,6 +567,11 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   let lastMouseX = 0
   let lastMouseY = 0
 
+  // Mouse state for ellipsoid node dragging
+  let nodeEditStartX = 0
+  let nodeEditStartY = 0
+  let nodeEditStartRadius = 0
+
   canvas.addEventListener('click', () => {
     if (cameraMode === 'player' && !pointerActive) {
       canvas.requestPointerLock()
@@ -724,9 +729,9 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             return
           }
 
-          // Left-click on axis node: activate camera-controlled scaling
+          // Left-click on axis node: activate mouse-controlled scaling
           if (clickedNode) {
-            console.log(`>>> Activating NODE ${clickedNode} for camera-controlled scaling`)
+            console.log(`>>> Activating NODE ${clickedNode} for mouse-controlled scaling`)
             ev.preventDefault()
             ellipsoidNodeAdjustActive = true
             ellipsoidSelectedNode.set(clickedNode)
@@ -735,8 +740,20 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             ellipsoidCenterDragActive = false
             centerNodeSelected = false
             activatedNodes.add(clickedNode) // Mark as activated
-            lastCameraPos = [...overviewPos] as Vec3
-            console.log('Node activation state:', { ellipsoidNodeAdjustActive, selectedNode: clickedNode, lastCameraPos })
+
+            // Store initial mouse position and current radius
+            nodeEditStartX = ev.clientX
+            nodeEditStartY = ev.clientY
+            const axis = clickedNode[1] as 'x' | 'y' | 'z'
+            if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
+            else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
+            else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
+
+            console.log('Node activation state:', {
+              selectedNode: clickedNode,
+              startPos: { x: nodeEditStartX, y: nodeEditStartY },
+              startRadius: nodeEditStartRadius
+            })
             ev.stopPropagation()
             return
           }
@@ -881,6 +898,60 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   const activatedNodes = new Set<EllipsoidNode>()
 
   window.addEventListener('mousemove', (ev) => {
+    // Handle ellipsoid node adjustment via mouse drag
+    if (cameraMode === 'overview' && ellipsoidNodeAdjustActive) {
+      const selectedNode = get(ellipsoidSelectedNode)
+      if (selectedNode && selectedNode !== 'center') {
+        ev.preventDefault()
+
+        // Calculate mouse delta from start position
+        const deltaX = ev.clientX - nodeEditStartX
+        const deltaY = ev.clientY - nodeEditStartY
+
+        // Use the primary movement direction (the larger delta)
+        const delta = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : -deltaY
+
+        // Sensitivity: pixels to radius units
+        const sensitivity = 0.05
+        const newRadius = Math.max(0.5, nodeEditStartRadius + delta * sensitivity)
+
+        // Update the appropriate radius based on which node is selected
+        const axis = selectedNode[1] as 'x' | 'y' | 'z'
+        const currentSelection = get(highlightSelectionStore)
+
+        if (currentSelection && currentSelection.shape === 'ellipsoid') {
+          if (axis === 'x') {
+            ellipsoidRadiusX.set(newRadius)
+            highlightSelectionStore.update(sel => {
+              if (sel && sel.shape === 'ellipsoid') {
+                return { ...sel, radiusX: newRadius }
+              }
+              return sel
+            })
+          } else if (axis === 'y') {
+            ellipsoidRadiusY.set(newRadius)
+            highlightSelectionStore.update(sel => {
+              if (sel && sel.shape === 'ellipsoid') {
+                return { ...sel, radiusY: newRadius }
+              }
+              return sel
+            })
+          } else if (axis === 'z') {
+            ellipsoidRadiusZ.set(newRadius)
+            highlightSelectionStore.update(sel => {
+              if (sel && sel.shape === 'ellipsoid') {
+                return { ...sel, radiusZ: newRadius }
+              }
+              return sel
+            })
+          }
+        }
+
+        // Don't orbit camera while adjusting nodes
+        return
+      }
+    }
+
     if (cameraMode === 'player' && pointerActive) {
       // Player mode: pointer lock look
       yaw -= ev.movementX * 0.0025
@@ -1099,7 +1170,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           lastCameraPos = getCameraWorldPosition()
           handledEllipsoidInteraction = true
         } else if (clickedNode) {
-          // Left-click on axis node: activate camera-controlled scaling
+          // Left-click on axis node: activate mouse-controlled scaling
           ev.preventDefault()
           ellipsoidNodeAdjustActive = true
           ellipsoidSelectedNode.set(clickedNode)
@@ -1108,7 +1179,15 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           ellipsoidCenterDragActive = false
           centerNodeSelected = false
           activatedNodes.add(clickedNode) // Mark as activated
-          lastCameraPos = getCameraWorldPosition()
+
+          // Store initial mouse position and current radius
+          nodeEditStartX = ev.clientX
+          nodeEditStartY = ev.clientY
+          const axis = clickedNode[1] as 'x' | 'y' | 'z'
+          if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
+          else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
+          else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
+
           handledEllipsoidInteraction = true
         } else {
           const center = currentSelection.center
@@ -1407,64 +1486,10 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
       upVec = normalize(cross(right, forward))
     }
 
-    // Handle ellipsoid editing via camera drag or node drag
-    const selectedNode = get(ellipsoidSelectedNode)
+    // Handle ellipsoid center drag (moved by camera translation)
     const editAxis = get(ellipsoidEditAxis)
 
-    if (ellipsoidNodeAdjustActive && selectedNode && selectedNode !== 'center' && lastCameraPos) {
-      // Node-based editing: drag to expand/contract specific end of axis
-      const currentSelection = get(highlightSelectionStore)
-
-      if (currentSelection && currentSelection.shape === 'ellipsoid') {
-        // Calculate camera position delta
-        const deltaX = position[0] - lastCameraPos[0]
-        const deltaY = position[1] - lastCameraPos[1]
-        const deltaZ = position[2] - lastCameraPos[2]
-
-        const sensitivity = 0.5
-
-        // Map node to axis and direction
-        const axis = selectedNode[1] as 'x' | 'y' | 'z'
-        const direction = selectedNode[0] === '+' ? 1 : -1
-
-        if (axis === 'x') {
-          const currentRadius = get(ellipsoidRadiusX)
-          const newRadius = Math.max(0.5, currentRadius + (deltaX * direction) * sensitivity / worldScale)
-          ellipsoidRadiusX.set(newRadius)
-
-          highlightSelectionStore.update(sel => {
-            if (sel && sel.shape === 'ellipsoid') {
-              return { ...sel, radiusX: newRadius }
-            }
-            return sel
-          })
-        } else if (axis === 'y') {
-          const currentRadius = get(ellipsoidRadiusY)
-          const newRadius = Math.max(0.5, currentRadius + (deltaY * direction) * sensitivity / worldScale)
-          ellipsoidRadiusY.set(newRadius)
-
-          highlightSelectionStore.update(sel => {
-            if (sel && sel.shape === 'ellipsoid') {
-              return { ...sel, radiusY: newRadius }
-            }
-            return sel
-          })
-        } else if (axis === 'z') {
-          const currentRadius = get(ellipsoidRadiusZ)
-          const newRadius = Math.max(0.5, currentRadius + (deltaZ * direction) * sensitivity / worldScale)
-          ellipsoidRadiusZ.set(newRadius)
-
-          highlightSelectionStore.update(sel => {
-            if (sel && sel.shape === 'ellipsoid') {
-              return { ...sel, radiusZ: newRadius }
-            }
-            return sel
-          })
-        }
-
-        lastCameraPos = [...position] as Vec3
-      }
-    } else if (ellipsoidCenterDragActive && lastCameraPos) {
+    if (ellipsoidCenterDragActive && lastCameraPos) {
       // Center drag: move ellipsoid center based on camera translation
       const currentSelection = get(highlightSelectionStore)
 
