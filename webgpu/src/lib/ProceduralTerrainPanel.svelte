@@ -7,7 +7,7 @@
     terrainRoughness,
     terrainElevation
   } from '../stores'
-  import { gpuHooks, API_BASE_URL } from '../core'
+  import { gpuHooks, API_BASE_URL, highlightSelection } from '../core'
 
   import { writable } from 'svelte/store'
 
@@ -29,21 +29,44 @@
   async function runGeneration(action: 'generate' | 'preview' | 'clear') {
     if (isGenerating) return
 
-    // Get camera position
-    const cameraPos = $gpuHooks.getCameraPosition?.()
-    if (!cameraPos) {
-      alert('Camera position not available.')
-      return
+    let region: { min: [number, number, number]; max: [number, number, number] }
+
+    // Check if there's a highlight selection (ellipsoid)
+    if ($highlightSelection && $highlightSelection.shape === 'ellipsoid') {
+      // Use ellipsoid bounds for terrain generation
+      const center = $highlightSelection.center
+      const rx = $highlightSelection.radiusX ?? $highlightSelection.radius
+      const ry = $highlightSelection.radiusY ?? $highlightSelection.radius
+      const rz = $highlightSelection.radiusZ ?? $highlightSelection.radius
+
+      region = {
+        min: [
+          Math.floor(center[0] - rx),
+          Math.floor(center[1] - ry),
+          Math.floor(center[2] - rz)
+        ] as [number, number, number],
+        max: [
+          Math.floor(center[0] + rx),
+          Math.floor(center[1] + ry),
+          Math.floor(center[2] + rz)
+        ] as [number, number, number]
+      }
+    } else {
+      // Default: use camera position
+      const cameraPos = $gpuHooks.getCameraPosition?.()
+      if (!cameraPos) {
+        alert('Camera position not available.')
+        return
+      }
+
+      const regionSize = 24
+      region = {
+        min: cameraPos.map(pos => Math.floor(pos - regionSize)) as [number, number, number],
+        max: cameraPos.map(pos => Math.floor(pos + regionSize)) as [number, number, number]
+      }
     }
 
-    // Define a large region around the player (48x48x32 blocks centered on player)
-    const regionSize = 24
-    const region = {
-      min: cameraPos.map(pos => Math.floor(pos - regionSize)) as [number, number, number],
-      max: cameraPos.map(pos => Math.floor(pos + regionSize)) as [number, number, number]
-    }
-
-    const requestBody = {
+    const requestBody: any = {
       action,
       region,
       profile: $terrainProfile,
@@ -52,6 +75,16 @@
         amplitude: $terrainAmplitude,
         roughness: $terrainRoughness,
         elevation: $terrainElevation
+      }
+    }
+
+    // Add ellipsoid mask if using ellipsoid selection
+    if ($highlightSelection && $highlightSelection.shape === 'ellipsoid') {
+      requestBody.ellipsoidMask = {
+        center: $highlightSelection.center,
+        radiusX: $highlightSelection.radiusX ?? $highlightSelection.radius,
+        radiusY: $highlightSelection.radiusY ?? $highlightSelection.radius,
+        radiusZ: $highlightSelection.radiusZ ?? $highlightSelection.radius
       }
     }
 

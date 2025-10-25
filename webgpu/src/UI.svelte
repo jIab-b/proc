@@ -370,7 +370,7 @@
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow-y: auto;
   }
 
   h3 {
@@ -382,7 +382,7 @@
 
   /* Block Grid */
   .block-grid {
-    max_height: 800px; /* Fixed vertical space for better block visibility */
+    max-height: 400px; /* Fixed vertical space for better block visibility */
     display: flex;
     flex-direction: column;
     border-bottom: 1px solid rgba(210, 223, 244, 0.15);

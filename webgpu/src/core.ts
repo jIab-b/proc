@@ -88,6 +88,12 @@ export interface TerrainGenerateParams {
     roughness: number
     elevation: number
   }
+  ellipsoidMask?: {
+    center: [number, number, number]
+    radiusX: number
+    radiusY: number
+    radiusZ: number
+  }
 }
 
 export interface GPUHooks {
@@ -98,11 +104,14 @@ export interface GPUHooks {
 }
 
 export type InteractionMode = 'block' | 'highlight'
-export type HighlightShape = 'cube' | 'sphere'
+export type HighlightShape = 'cube' | 'sphere' | 'ellipsoid'
 
 export interface HighlightSelection {
   center: [number, number, number]
   radius: number
+  radiusX?: number  // For ellipsoid
+  radiusY?: number  // For ellipsoid
+  radiusZ?: number  // For ellipsoid
   shape: HighlightShape
 }
 
@@ -123,11 +132,17 @@ export const gpuHooks: Writable<GPUHooks> = writable({
   getCameraPosition: null,
   generateTerrain: null
 })
-export const interactionMode: Writable<InteractionMode> = writable('block')
-export const highlightShape: Writable<HighlightShape> = writable('cube')
+export const interactionMode: Writable<InteractionMode> = writable('highlight')
+export const highlightShape: Writable<HighlightShape> = writable('ellipsoid')
 export const highlightRadius: Writable<number> = writable(2)
+export const ellipsoidRadiusX: Writable<number> = writable(4)
+export const ellipsoidRadiusY: Writable<number> = writable(2)
+export const ellipsoidRadiusZ: Writable<number> = writable(4)
+export const ellipsoidEditAxis: Writable<'x' | 'y' | 'z' | null> = writable(null)
+export type EllipsoidNode = '+x' | '-x' | '+y' | '-y' | '+z' | '-z' | null
+export const ellipsoidSelectedNode: Writable<EllipsoidNode> = writable(null)
 export const highlightSelection: Writable<HighlightSelection | null> = writable(null)
-export const cameraMode: Writable<'player' | 'overview'> = writable('player')
+export const cameraMode: Writable<'player' | 'overview'> = writable('overview')
 
 // ============================================================================
 // CHUNK MANAGER

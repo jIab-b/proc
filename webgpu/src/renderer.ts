@@ -15,13 +15,19 @@ import {
   interactionMode,
   highlightShape,
   highlightRadius,
+  ellipsoidRadiusX,
+  ellipsoidRadiusY,
+  ellipsoidRadiusZ,
+  ellipsoidEditAxis,
+  ellipsoidSelectedNode,
   highlightSelection as highlightSelectionStore,
   cameraMode as cameraModeStore,
   type CustomBlock,
   type Vec3,
   type Mat4,
   type BlockFaceKey,
-  type HighlightSelection
+  type HighlightSelection,
+  type EllipsoidNode
 } from './core'
 import type { CameraSnapshot } from './engine'
 
@@ -320,6 +326,147 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         overlayCtx.arc(centerScreen[0], centerScreen[1], radiusPx, 0, Math.PI * 2)
         overlayCtx.stroke()
         overlayCtx.fill()
+      } else if (highlightSelection.shape === 'ellipsoid') {
+        // Draw ellipsoid wireframe with 3 adjustable radii
+        const rx = (highlightSelection.radiusX ?? highlightSelection.radius) + halfStep
+        const ry = (highlightSelection.radiusY ?? highlightSelection.radius) + halfStep
+        const rz = (highlightSelection.radiusZ ?? highlightSelection.radius) + halfStep
+
+        // Draw 3 elliptical cross-sections with shading
+        const segments = 64
+        const activeAxis = get(ellipsoidEditAxis)
+
+        // Helper to draw filled ellipse with gradient
+        const drawFilledEllipse = (points: Array<[number, number]>, isActive: boolean) => {
+          if (points.length < 3) return
+
+          // Calculate center for gradient
+          let centerX = 0, centerY = 0
+          points.forEach(p => { centerX += p[0]; centerY += p[1] })
+          centerX /= points.length
+          centerY /= points.length
+
+          // Create radial gradient for depth effect
+          const maxRadius = Math.max(...points.map(p => Math.hypot(p[0] - centerX, p[1] - centerY)))
+          const gradient = overlayCtx.createRadialGradient(centerX, centerY, 0, centerX, centerY, maxRadius)
+
+          if (isActive) {
+            gradient.addColorStop(0, 'rgba(255, 160, 140, 0.35)')
+            gradient.addColorStop(0.7, 'rgba(255, 120, 100, 0.22)')
+            gradient.addColorStop(1, 'rgba(255, 100, 80, 0.12)')
+          } else {
+            gradient.addColorStop(0, 'rgba(255, 140, 120, 0.28)')
+            gradient.addColorStop(0.7, 'rgba(255, 100, 80, 0.18)')
+            gradient.addColorStop(1, 'rgba(255, 80, 60, 0.08)')
+          }
+
+          overlayCtx.fillStyle = gradient
+          overlayCtx.beginPath()
+          overlayCtx.moveTo(points[0]![0], points[0]![1])
+          for (let i = 1; i < points.length; i++) {
+            overlayCtx.lineTo(points[i]![0], points[i]![1])
+          }
+          overlayCtx.closePath()
+          overlayCtx.fill()
+        }
+
+        // XY plane (around Z axis) - controls Z radius
+        const xyPoints: Array<[number, number]> = []
+        for (let i = 0; i <= segments; i++) {
+          const angle = (i / segments) * Math.PI * 2
+          const x = baseCenter[0] + rx * Math.cos(angle)
+          const y = baseCenter[1] + ry * Math.sin(angle)
+          const z = baseCenter[2]
+          const screen = projectChunk([x, y, z])
+          if (screen) xyPoints.push(screen)
+        }
+        drawFilledEllipse(xyPoints, activeAxis === 'z')
+
+        overlayCtx.lineWidth = activeAxis === 'z' ? 3 : 1.5
+        overlayCtx.strokeStyle = activeAxis === 'z' ? 'rgba(255, 140, 100, 0.95)' : 'rgba(255, 100, 80, 0.85)'
+        overlayCtx.beginPath()
+        xyPoints.forEach((p, i) => {
+          if (i === 0) overlayCtx.moveTo(p[0], p[1])
+          else overlayCtx.lineTo(p[0], p[1])
+        })
+        overlayCtx.stroke()
+
+        // XZ plane (around Y axis) - controls Y radius
+        const xzPoints: Array<[number, number]> = []
+        for (let i = 0; i <= segments; i++) {
+          const angle = (i / segments) * Math.PI * 2
+          const x = baseCenter[0] + rx * Math.cos(angle)
+          const y = baseCenter[1]
+          const z = baseCenter[2] + rz * Math.sin(angle)
+          const screen = projectChunk([x, y, z])
+          if (screen) xzPoints.push(screen)
+        }
+        drawFilledEllipse(xzPoints, activeAxis === 'y')
+
+        overlayCtx.lineWidth = activeAxis === 'y' ? 3 : 1.5
+        overlayCtx.strokeStyle = activeAxis === 'y' ? 'rgba(255, 140, 100, 0.95)' : 'rgba(255, 100, 80, 0.85)'
+        overlayCtx.beginPath()
+        xzPoints.forEach((p, i) => {
+          if (i === 0) overlayCtx.moveTo(p[0], p[1])
+          else overlayCtx.lineTo(p[0], p[1])
+        })
+        overlayCtx.stroke()
+
+        // YZ plane (around X axis) - controls X radius
+        const yzPoints: Array<[number, number]> = []
+        for (let i = 0; i <= segments; i++) {
+          const angle = (i / segments) * Math.PI * 2
+          const x = baseCenter[0]
+          const y = baseCenter[1] + ry * Math.cos(angle)
+          const z = baseCenter[2] + rz * Math.sin(angle)
+          const screen = projectChunk([x, y, z])
+          if (screen) yzPoints.push(screen)
+        }
+        drawFilledEllipse(yzPoints, activeAxis === 'x')
+
+        overlayCtx.lineWidth = activeAxis === 'x' ? 3 : 1.5
+        overlayCtx.strokeStyle = activeAxis === 'x' ? 'rgba(255, 140, 100, 0.95)' : 'rgba(255, 100, 80, 0.85)'
+        overlayCtx.beginPath()
+        yzPoints.forEach((p, i) => {
+          if (i === 0) overlayCtx.moveTo(p[0], p[1])
+          else overlayCtx.lineTo(p[0], p[1])
+        })
+        overlayCtx.stroke()
+
+        // Draw axis endpoint nodes (6 nodes total: +x, -x, +y, -y, +z, -z)
+        const nodeRadius = 6
+        const selectedNode = get(ellipsoidSelectedNode)
+        const nodes: Array<{ pos: Vec3; id: EllipsoidNode }> = [
+          { pos: [baseCenter[0] + rx, baseCenter[1], baseCenter[2]], id: '+x' },
+          { pos: [baseCenter[0] - rx, baseCenter[1], baseCenter[2]], id: '-x' },
+          { pos: [baseCenter[0], baseCenter[1] + ry, baseCenter[2]], id: '+y' },
+          { pos: [baseCenter[0], baseCenter[1] - ry, baseCenter[2]], id: '-y' },
+          { pos: [baseCenter[0], baseCenter[1], baseCenter[2] + rz], id: '+z' },
+          { pos: [baseCenter[0], baseCenter[1], baseCenter[2] - rz], id: '-z' }
+        ]
+
+        nodes.forEach(node => {
+          const screen = projectChunk(node.pos)
+          if (!screen) return
+
+          const isSelected = selectedNode === node.id
+          const nodeFillColor = isSelected ? 'rgba(255, 80, 40, 0.95)' : 'rgba(255, 120, 100, 0.85)'
+          const nodeStrokeColor = isSelected ? 'rgba(255, 255, 255, 0.9)' : 'rgba(255, 60, 40, 0.95)'
+          const nodeSize = isSelected ? nodeRadius + 2 : nodeRadius
+
+          // Draw node
+          overlayCtx.fillStyle = nodeFillColor
+          overlayCtx.strokeStyle = nodeStrokeColor
+          overlayCtx.lineWidth = isSelected ? 2.5 : 2
+          overlayCtx.beginPath()
+          overlayCtx.arc(screen[0], screen[1], nodeSize, 0, Math.PI * 2)
+          overlayCtx.fill()
+          overlayCtx.stroke()
+        })
+
+        // Reset style
+        overlayCtx.lineWidth = 1.5
+        overlayCtx.strokeStyle = 'rgba(255, 100, 80, 0.85)'
       } else {
         const r = highlightSelection.radius + halfStep
         const corners: Vec3[] = [
@@ -407,9 +554,71 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     lastFrameTime = performance.now()
   })
 
-  // Overview mode: mouse drag controls
+  // Overview mode: mouse drag controls and block placement
   canvas.addEventListener('mousedown', (ev) => {
     if (cameraMode === 'overview' && !pointerActive) {
+      const mode = get(interactionMode)
+
+      // Handle right-click for block placement/highlight selection
+      if (ev.button === 2) {
+        ev.preventDefault()
+        ev.stopPropagation()
+
+        console.log('Right-click detected in overview mode, mode:', mode)
+
+        // Calculate overview camera position and forward vector
+        const overviewPos: Vec3 = [
+          orbitTarget[0] + orbitDistance * Math.cos(orbitPitch) * Math.sin(orbitYaw),
+          orbitTarget[1] + orbitDistance * Math.sin(orbitPitch),
+          orbitTarget[2] + orbitDistance * Math.cos(orbitPitch) * Math.cos(orbitYaw)
+        ]
+        const overviewForward: Vec3 = normalize([
+          orbitTarget[0] - overviewPos[0],
+          orbitTarget[1] - overviewPos[1],
+          orbitTarget[2] - overviewPos[2]
+        ])
+
+        const hit = raycast(overviewPos, overviewForward)
+        console.log('Raycast hit:', hit)
+
+        if (hit) {
+          if (mode === 'block') {
+            // Right click in block mode - place block
+            const placePos = hit.previous
+            if (isInsideChunk(placePos) && chunk.getBlock(placePos[0], placePos[1], placePos[2]) === BlockType.Air) {
+              const selected = getSelectedBlock()
+              chunk.setBlock(placePos[0], placePos[1], placePos[2], selected.type)
+              meshDirty = true
+              console.log('Block placed at', placePos)
+            }
+          } else if (mode === 'highlight') {
+            // Right click in highlight mode - set highlight selection
+            const shape = get(highlightShape)
+            const radius = get(highlightRadius)
+            const selection: HighlightSelection = {
+              center: hit.block,
+              shape,
+              radius
+            }
+
+            if (shape === 'ellipsoid') {
+              selection.radiusX = get(ellipsoidRadiusX)
+              selection.radiusY = get(ellipsoidRadiusY)
+              selection.radiusZ = get(ellipsoidRadiusZ)
+              ellipsoidEditAxis.set(null)
+              ellipsoidSelectedNode.set(null)
+            }
+
+            highlightSelectionStore.set(selection)
+            console.log('Highlight selection set:', selection)
+          }
+        } else {
+          console.log('No raycast hit')
+        }
+        return
+      }
+
+      // Left and middle mouse for dragging
       isDragging = true
       dragButton = ev.button
       lastMouseX = ev.clientX
@@ -418,13 +627,25 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     }
   })
 
-  window.addEventListener('mouseup', () => {
+  window.addEventListener('mouseup', (ev) => {
     if (cameraMode === 'overview') {
       isDragging = false
       dragButton = -1
       canvas.style.cursor = 'default'
     }
+
+    // Deactivate ellipsoid movement mode on right-click release
+    if (ev.button === 2 && ellipsoidMovementActive) {
+      ellipsoidMovementActive = false
+      console.log('Ellipsoid movement mode deactivated')
+    }
   })
+
+  // Track last camera position for ellipsoid editing
+  let lastCameraPos: Vec3 | null = null
+
+  // Track ellipsoid movement mode (activated by right-click)
+  let ellipsoidMovementActive = false
 
   window.addEventListener('mousemove', (ev) => {
     if (cameraMode === 'player' && pointerActive) {
@@ -442,7 +663,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
       if (dragButton === 2 || dragButton === 0) {
         // Right or left mouse: orbit
         orbitYaw -= dx * 0.005
-        orbitPitch -= dy * 0.005
+        orbitPitch += dy * 0.005
         orbitPitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, orbitPitch))
       } else if (dragButton === 1) {
         // Middle mouse: pan
@@ -450,14 +671,46 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         const up: Vec3 = [0, 1, 0]
         const panSpeed = orbitDistance * 0.002
         orbitTarget[0] -= right[0] * dx * panSpeed
-        orbitTarget[1] += up[1] * dy * panSpeed
+        orbitTarget[1] -= up[1] * dy * panSpeed
         orbitTarget[2] -= right[2] * dx * panSpeed
       }
     }
   })
 
-  // Overview mode: scroll to zoom
+  // Mouse wheel handler
   canvas.addEventListener('wheel', (ev) => {
+    // Ellipsoid movement mode: move ellipsoid along view axis
+    if (ellipsoidMovementActive) {
+      ev.preventDefault()
+      const currentSelection = get(highlightSelectionStore)
+      if (currentSelection && currentSelection.shape === 'ellipsoid') {
+        // Get camera forward vector
+        const forward = cameraMode === 'player' ? getForwardVector() : normalize([
+          orbitTarget[0] - (orbitTarget[0] + orbitDistance * Math.cos(orbitPitch) * Math.sin(orbitYaw)),
+          orbitTarget[1] - (orbitTarget[1] + orbitDistance * Math.sin(orbitPitch)),
+          orbitTarget[2] - (orbitTarget[2] + orbitDistance * Math.cos(orbitPitch) * Math.cos(orbitYaw))
+        ])
+
+        // Move ellipsoid center along view axis
+        const moveSpeed = 0.5
+        const movement = -ev.deltaY * 0.01 * moveSpeed / worldScale
+        const newCenter: [number, number, number] = [
+          currentSelection.center[0] + forward[0] * movement,
+          currentSelection.center[1] + forward[1] * movement,
+          currentSelection.center[2] + forward[2] * movement
+        ]
+
+        highlightSelectionStore.update(sel => {
+          if (sel && sel.shape === 'ellipsoid') {
+            return { ...sel, center: newCenter }
+          }
+          return sel
+        })
+      }
+      return
+    }
+
+    // Overview mode: scroll to zoom
     if (cameraMode === 'overview') {
       ev.preventDefault()
       const zoomSpeed = orbitDistance * 0.1
@@ -466,13 +719,119 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     }
   }, { passive: false })
 
+  // Helper: check if a screen point is near an ellipse ring
+  function isNearEllipseRing(clickX: number, clickY: number, center: Vec3, r1: number, r2: number, axis: 'xy' | 'xz' | 'yz'): boolean {
+    const segments = 32
+    const threshold = 15 // pixels
+
+    for (let i = 0; i <= segments; i++) {
+      const angle = (i / segments) * Math.PI * 2
+      let point: Vec3
+
+      if (axis === 'xy') {
+        point = [center[0] + r1 * Math.cos(angle), center[1] + r2 * Math.sin(angle), center[2]]
+      } else if (axis === 'xz') {
+        point = [center[0] + r1 * Math.cos(angle), center[1], center[2] + r2 * Math.sin(angle)]
+      } else {
+        point = [center[0], center[1] + r1 * Math.cos(angle), center[2] + r2 * Math.sin(angle)]
+      }
+
+      const projected = projectToScreen(chunkToWorld(point), latestCamera!.viewProjectionMatrix, canvas.width, canvas.height)
+      if (projected) {
+        const dist = Math.hypot(projected[0] - clickX, projected[1] - clickY)
+        if (dist < threshold) return true
+      }
+    }
+
+    return false
+  }
+
+  // Helper: check if a click is near an ellipsoid node
+  function getClickedNode(clickX: number, clickY: number, center: Vec3, rx: number, ry: number, rz: number): EllipsoidNode {
+    const halfStep = 0.5
+    const baseCenter: Vec3 = [center[0] + halfStep, center[1] + halfStep, center[2] + halfStep]
+    const threshold = 12 // pixels
+
+    const nodes: Array<{ pos: Vec3; id: EllipsoidNode }> = [
+      { pos: [baseCenter[0] + rx, baseCenter[1], baseCenter[2]], id: '+x' },
+      { pos: [baseCenter[0] - rx, baseCenter[1], baseCenter[2]], id: '-x' },
+      { pos: [baseCenter[0], baseCenter[1] + ry, baseCenter[2]], id: '+y' },
+      { pos: [baseCenter[0], baseCenter[1] - ry, baseCenter[2]], id: '-y' },
+      { pos: [baseCenter[0], baseCenter[1], baseCenter[2] + rz], id: '+z' },
+      { pos: [baseCenter[0], baseCenter[1], baseCenter[2] - rz], id: '-z' }
+    ]
+
+    for (const node of nodes) {
+      const screen = projectToScreen(chunkToWorld(node.pos), latestCamera!.viewProjectionMatrix, canvas.width, canvas.height)
+      if (screen) {
+        const dist = Math.hypot(screen[0] - clickX, screen[1] - clickY)
+        if (dist < threshold) return node.id
+      }
+    }
+
+    return null
+  }
+
   window.addEventListener('mousedown', (ev) => {
     if (!pointerActive) return
 
+    const mode = get(interactionMode)
+
+    if (mode === 'highlight' && get(highlightShape) === 'ellipsoid') {
+      const currentSelection = get(highlightSelectionStore)
+
+      // Right-click: activate ellipsoid movement mode
+      if (ev.button === 2 && currentSelection && currentSelection.shape === 'ellipsoid') {
+        ellipsoidMovementActive = true
+        console.log('Ellipsoid movement mode activated')
+        return
+      }
+
+      // Left-click: check if clicking on nodes or axis rings
+      if (ev.button === 0 && currentSelection && currentSelection.shape === 'ellipsoid') {
+        const center = currentSelection.center
+        const rx = currentSelection.radiusX ?? currentSelection.radius
+        const ry = currentSelection.radiusY ?? currentSelection.radius
+        const rz = currentSelection.radiusZ ?? currentSelection.radius
+
+        // First check if clicking on a node
+        const clickedNode = getClickedNode(ev.clientX, ev.clientY, center, rx, ry, rz)
+        if (clickedNode) {
+          ellipsoidSelectedNode.set(clickedNode)
+          lastCameraPos = cameraMode === 'player' ? [...cameraPos] as Vec3 : [
+            orbitTarget[0] + orbitDistance * Math.cos(orbitPitch) * Math.sin(orbitYaw),
+            orbitTarget[1] + orbitDistance * Math.sin(orbitPitch),
+            orbitTarget[2] + orbitDistance * Math.cos(orbitPitch) * Math.cos(orbitYaw)
+          ] as Vec3
+          console.log('Selected node:', clickedNode)
+          return
+        }
+
+        // Otherwise check which ring was clicked
+        if (isNearEllipseRing(ev.clientX, ev.clientY, center, rx, ry, 'xy')) {
+          ellipsoidEditAxis.set('z')
+          ellipsoidSelectedNode.set(null)
+          lastCameraPos = [...cameraPos] as Vec3
+          console.log('Editing Z axis')
+          return
+        } else if (isNearEllipseRing(ev.clientX, ev.clientY, center, rx, rz, 'xz')) {
+          ellipsoidEditAxis.set('y')
+          ellipsoidSelectedNode.set(null)
+          lastCameraPos = [...cameraPos] as Vec3
+          console.log('Editing Y axis')
+          return
+        } else if (isNearEllipseRing(ev.clientX, ev.clientY, center, ry, rz, 'yz')) {
+          ellipsoidEditAxis.set('x')
+          ellipsoidSelectedNode.set(null)
+          lastCameraPos = [...cameraPos] as Vec3
+          console.log('Editing X axis')
+          return
+        }
+      }
+    }
+
     const hit = raycast(cameraPos, getForwardVector())
     if (!hit) return
-
-    const mode = get(interactionMode)
 
     if (mode === 'block') {
       if (ev.button === 0) { // Left click - remove block
@@ -489,17 +848,27 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     } else if (mode === 'highlight') {
       const shape = get(highlightShape)
       const radius = get(highlightRadius)
-      highlightSelectionStore.set({
+      const selection: HighlightSelection = {
         center: hit.block,
         shape,
         radius
-      })
+      }
+
+      if (shape === 'ellipsoid') {
+        selection.radiusX = get(ellipsoidRadiusX)
+        selection.radiusY = get(ellipsoidRadiusY)
+        selection.radiusZ = get(ellipsoidRadiusZ)
+        ellipsoidEditAxis.set(null) // Reset editing mode
+        ellipsoidSelectedNode.set(null) // Reset node selection
+      }
+
+      highlightSelectionStore.set(selection)
     }
   })
 
   // Prevent context menu on right click
   canvas.addEventListener('contextmenu', (ev) => {
-    if (pointerActive) ev.preventDefault()
+    ev.preventDefault()
   })
 
   function getForwardVector(): Vec3 {
@@ -642,7 +1011,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         if (pressedKeys.has('KeyA')) addScaled(cameraPos, right, -move)
         if (pressedKeys.has('KeyD')) addScaled(cameraPos, right, move)
         if (pressedKeys.has('KeyE') || pressedKeys.has('Space')) addScaled(cameraPos, upVec, move)
-        if (pressedKeys.has('KeyQ') || pressedKeys.has('ControlLeft')) addScaled(cameraPos, upVec, -move)
+        if (pressedKeys.has('KeyQ') || pressedKeys.has('ShiftLeft')) addScaled(cameraPos, upVec, -move)
       }
 
       position = [...cameraPos] as Vec3
@@ -678,7 +1047,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         if (pressedKeys.has('KeyE') || pressedKeys.has('Space')) {
           orbitTarget[1] += move
         }
-        if (pressedKeys.has('KeyQ') || pressedKeys.has('ControlLeft')) {
+        if (pressedKeys.has('KeyQ') || pressedKeys.has('ShiftLeft')) {
           orbitTarget[1] -= move
         }
       }
@@ -707,6 +1076,122 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
       if (Math.hypot(right[0], right[1], right[2]) < 1e-4) right = [1, 0, 0]
       right = normalize(right)
       upVec = normalize(cross(right, forward))
+    }
+
+    // Handle ellipsoid editing via camera drag or node drag
+    const selectedNode = get(ellipsoidSelectedNode)
+    const editAxis = get(ellipsoidEditAxis)
+
+    if (selectedNode && lastCameraPos) {
+      // Node-based editing: drag to expand/contract specific end of axis
+      const currentSelection = get(highlightSelectionStore)
+
+      if (currentSelection && currentSelection.shape === 'ellipsoid') {
+        // Calculate camera position delta
+        const deltaX = position[0] - lastCameraPos[0]
+        const deltaY = position[1] - lastCameraPos[1]
+        const deltaZ = position[2] - lastCameraPos[2]
+
+        const sensitivity = 0.5
+
+        // Map node to axis and direction
+        const axis = selectedNode[1] as 'x' | 'y' | 'z'
+        const direction = selectedNode[0] === '+' ? 1 : -1
+
+        if (axis === 'x') {
+          const currentRadius = get(ellipsoidRadiusX)
+          const newRadius = Math.max(0.5, currentRadius + (deltaX * direction) * sensitivity / worldScale)
+          ellipsoidRadiusX.set(newRadius)
+
+          highlightSelectionStore.update(sel => {
+            if (sel && sel.shape === 'ellipsoid') {
+              return { ...sel, radiusX: newRadius }
+            }
+            return sel
+          })
+        } else if (axis === 'y') {
+          const currentRadius = get(ellipsoidRadiusY)
+          const newRadius = Math.max(0.5, currentRadius + (deltaY * direction) * sensitivity / worldScale)
+          ellipsoidRadiusY.set(newRadius)
+
+          highlightSelectionStore.update(sel => {
+            if (sel && sel.shape === 'ellipsoid') {
+              return { ...sel, radiusY: newRadius }
+            }
+            return sel
+          })
+        } else if (axis === 'z') {
+          const currentRadius = get(ellipsoidRadiusZ)
+          const newRadius = Math.max(0.5, currentRadius + (deltaZ * direction) * sensitivity / worldScale)
+          ellipsoidRadiusZ.set(newRadius)
+
+          highlightSelectionStore.update(sel => {
+            if (sel && sel.shape === 'ellipsoid') {
+              return { ...sel, radiusZ: newRadius }
+            }
+            return sel
+          })
+        }
+
+        lastCameraPos = [...position] as Vec3
+      }
+    } else if (editAxis && lastCameraPos) {
+      // Axis-based editing: drag to expand/contract both ends symmetrically
+      const currentSelection = get(highlightSelectionStore)
+
+      if (currentSelection && currentSelection.shape === 'ellipsoid') {
+        // Calculate camera position delta
+        const deltaX = position[0] - lastCameraPos[0]
+        const deltaY = position[1] - lastCameraPos[1]
+        const deltaZ = position[2] - lastCameraPos[2]
+
+        // Map camera movement to radius changes based on selected axis
+        const sensitivity = 0.5 // Controls how much camera movement affects radius
+
+        if (editAxis === 'x') {
+          // Editing X radius: use X camera movement
+          const currentRadius = get(ellipsoidRadiusX)
+          const newRadius = Math.max(0.5, currentRadius + deltaX * sensitivity / worldScale)
+          ellipsoidRadiusX.set(newRadius)
+
+          // Update selection
+          highlightSelectionStore.update(sel => {
+            if (sel && sel.shape === 'ellipsoid') {
+              return { ...sel, radiusX: newRadius }
+            }
+            return sel
+          })
+        } else if (editAxis === 'y') {
+          // Editing Y radius: use Y camera movement
+          const currentRadius = get(ellipsoidRadiusY)
+          const newRadius = Math.max(0.5, currentRadius + deltaY * sensitivity / worldScale)
+          ellipsoidRadiusY.set(newRadius)
+
+          // Update selection
+          highlightSelectionStore.update(sel => {
+            if (sel && sel.shape === 'ellipsoid') {
+              return { ...sel, radiusY: newRadius }
+            }
+            return sel
+          })
+        } else if (editAxis === 'z') {
+          // Editing Z radius: use Z camera movement
+          const currentRadius = get(ellipsoidRadiusZ)
+          const newRadius = Math.max(0.5, currentRadius + deltaZ * sensitivity / worldScale)
+          ellipsoidRadiusZ.set(newRadius)
+
+          // Update selection
+          highlightSelectionStore.update(sel => {
+            if (sel && sel.shape === 'ellipsoid') {
+              return { ...sel, radiusZ: newRadius }
+            }
+            return sel
+          })
+        }
+
+        // Update last camera position for next frame
+        lastCameraPos = [...position] as Vec3
+      }
     }
 
     const viewProj = multiplyMat4(proj, view)

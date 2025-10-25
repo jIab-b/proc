@@ -10,6 +10,9 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
     interactionMode,
     highlightShape,
     highlightRadius,
+    ellipsoidRadiusX,
+    ellipsoidRadiusY,
+    ellipsoidRadiusZ,
     highlightSelection,
     gpuHooks,
     BlockType,
@@ -219,6 +222,18 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
 
           const terrainState = createTerrainGeneratorState(params.profile, params.params)
 
+          // Helper function to check if a point is inside the ellipsoid
+          const isInsideEllipsoid = (x: number, y: number, z: number): boolean => {
+            if (!params.ellipsoidMask) return true
+
+            const mask = params.ellipsoidMask
+            const dx = (x - mask.center[0]) / mask.radiusX
+            const dy = (y - mask.center[1]) / mask.radiusY
+            const dz = (z - mask.center[2]) / mask.radiusZ
+
+            return (dx * dx + dy * dy + dz * dz) <= 1
+          }
+
           if (params.action === 'clear') {
             console.log('Clearing region')
             const min = chunkRegion.min
@@ -227,14 +242,49 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
               for (let y = min[1]; y <= max[1]; y++) {
                 for (let z = min[2]; z <= max[2]; z++) {
                   if (x >= 0 && x < chunk.size.x && y >= 0 && y < chunk.size.y && z >= 0 && z < chunk.size.z) {
-                    chunk.setBlock(x, y, z, BlockType.Air)
+                    if (isInsideEllipsoid(x, y, z)) {
+                      chunk.setBlock(x, y, z, BlockType.Air)
+                    }
                   }
                 }
               }
             }
           } else {
             console.log('Generating terrain in chunk region:', chunkRegion)
-            generateRegion(chunk, chunkRegion, terrainState)
+
+            // Generate terrain with ellipsoid masking
+            if (params.ellipsoidMask) {
+              console.log('Using ellipsoid mask:', params.ellipsoidMask)
+
+              // Generate terrain only inside the ellipsoid
+              const min = chunkRegion.min
+              const max = chunkRegion.max
+
+              for (let x = min[0]; x <= max[0]; x++) {
+                for (let z = min[2]; z <= max[2]; z++) {
+                  if (!isInsideEllipsoid(x, max[1], z)) continue
+
+                  // Sample height for this column
+                  const height = terrainState.params.amplitude * 0.5 + terrainState.params.elevation * chunk.size.y
+
+                  for (let y = min[1]; y <= max[1]; y++) {
+                    if (!isInsideEllipsoid(x, y, z)) continue
+
+                    if (y <= height) {
+                      const blockType = y >= height - 1 ? BlockType.Grass :
+                                       y >= height - 4 ? BlockType.Dirt :
+                                       BlockType.Stone
+                      chunk.setBlock(x, y, z, blockType)
+                    } else {
+                      chunk.setBlock(x, y, z, BlockType.Air)
+                    }
+                  }
+                }
+              }
+            } else {
+              generateRegion(chunk, chunkRegion, terrainState)
+            }
+
             console.log('Terrain generation complete')
           }
 
@@ -342,12 +392,28 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
         <select bind:value={$highlightShape}>
           <option value="cube">Cube</option>
           <option value="sphere">Sphere</option>
+          <option value="ellipsoid">Ellipsoid</option>
         </select>
       </div>
-      <div class="context-section">
-        <label>Radius: {$highlightRadius}</label>
-        <input type="range" min="1" max="16" step="1" bind:value={$highlightRadius} />
-      </div>
+      {#if $highlightShape === 'ellipsoid'}
+        <div class="context-section">
+          <label>Radius X: {$ellipsoidRadiusX}</label>
+          <input type="range" min="1" max="32" step="0.5" bind:value={$ellipsoidRadiusX} />
+        </div>
+        <div class="context-section">
+          <label>Radius Y: {$ellipsoidRadiusY}</label>
+          <input type="range" min="1" max="32" step="0.5" bind:value={$ellipsoidRadiusY} />
+        </div>
+        <div class="context-section">
+          <label>Radius Z: {$ellipsoidRadiusZ}</label>
+          <input type="range" min="1" max="32" step="0.5" bind:value={$ellipsoidRadiusZ} />
+        </div>
+      {:else}
+        <div class="context-section">
+          <label>Radius: {$highlightRadius}</label>
+          <input type="range" min="1" max="16" step="1" bind:value={$highlightRadius} />
+        </div>
+      {/if}
     {/if}
   </div>
 {/if}
