@@ -362,7 +362,7 @@
 <style>
   :global(:root) {
     --sidebar-width: min(320px, 25vw);
-    --sidebar-min-width: 240px;
+    --sidebar-min-width: 180px;
     --sidebar-max-width: 380px;
   }
 
