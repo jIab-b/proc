@@ -332,105 +332,77 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         const ry = (highlightSelection.radiusY ?? highlightSelection.radius) + halfStep
         const rz = (highlightSelection.radiusZ ?? highlightSelection.radius) + halfStep
 
-        // Draw 3 elliptical cross-sections with shading
-        const segments = 64
+        // Draw 3 elliptical cross-sections (OPTIMIZED)
+        const segments = 16  // Reduced from 64 to 16 for 4x performance boost
         const activeAxis = get(ellipsoidEditAxis)
 
-        // Helper to draw filled ellipse with gradient
-        const drawFilledEllipse = (points: Array<[number, number]>, isActive: boolean) => {
-          if (points.length < 3) return
-
-          // Calculate center for gradient
-          let centerX = 0, centerY = 0
-          points.forEach(p => { centerX += p[0]; centerY += p[1] })
-          centerX /= points.length
-          centerY /= points.length
-
-          // Create radial gradient for depth effect
-          const maxRadius = Math.max(...points.map(p => Math.hypot(p[0] - centerX, p[1] - centerY)))
-          const gradient = overlayCtx.createRadialGradient(centerX, centerY, 0, centerX, centerY, maxRadius)
-
-          if (isActive) {
-            gradient.addColorStop(0, 'rgba(255, 160, 140, 0.35)')
-            gradient.addColorStop(0.7, 'rgba(255, 120, 100, 0.22)')
-            gradient.addColorStop(1, 'rgba(255, 100, 80, 0.12)')
-          } else {
-            gradient.addColorStop(0, 'rgba(255, 140, 120, 0.28)')
-            gradient.addColorStop(0.7, 'rgba(255, 100, 80, 0.18)')
-            gradient.addColorStop(1, 'rgba(255, 80, 60, 0.08)')
-          }
-
-          overlayCtx.fillStyle = gradient
-          overlayCtx.beginPath()
-          overlayCtx.moveTo(points[0]![0], points[0]![1])
-          for (let i = 1; i < points.length; i++) {
-            overlayCtx.lineTo(points[i]![0], points[i]![1])
-          }
-          overlayCtx.closePath()
-          overlayCtx.fill()
-        }
+        // PERFORMANCE: Removed expensive gradient fills - just use simple strokes
+        // This eliminates 3 gradient creations and 100+ Math.hypot calls per frame
 
         // XY plane (around Z axis) - controls Z radius
-        const xyPoints: Array<[number, number]> = []
+        overlayCtx.lineWidth = activeAxis === 'z' ? 3 : 2
+        overlayCtx.strokeStyle = activeAxis === 'z' ? 'rgba(255, 140, 100, 0.95)' : 'rgba(255, 100, 80, 0.7)'
+        overlayCtx.beginPath()
+        let firstPoint = true
         for (let i = 0; i <= segments; i++) {
           const angle = (i / segments) * Math.PI * 2
           const x = baseCenter[0] + rx * Math.cos(angle)
           const y = baseCenter[1] + ry * Math.sin(angle)
           const z = baseCenter[2]
           const screen = projectChunk([x, y, z])
-          if (screen) xyPoints.push(screen)
+          if (screen) {
+            if (firstPoint) {
+              overlayCtx.moveTo(screen[0], screen[1])
+              firstPoint = false
+            } else {
+              overlayCtx.lineTo(screen[0], screen[1])
+            }
+          }
         }
-        drawFilledEllipse(xyPoints, activeAxis === 'z')
-
-        overlayCtx.lineWidth = activeAxis === 'z' ? 3 : 1.5
-        overlayCtx.strokeStyle = activeAxis === 'z' ? 'rgba(255, 140, 100, 0.95)' : 'rgba(255, 100, 80, 0.85)'
-        overlayCtx.beginPath()
-        xyPoints.forEach((p, i) => {
-          if (i === 0) overlayCtx.moveTo(p[0], p[1])
-          else overlayCtx.lineTo(p[0], p[1])
-        })
         overlayCtx.stroke()
 
         // XZ plane (around Y axis) - controls Y radius
-        const xzPoints: Array<[number, number]> = []
+        overlayCtx.lineWidth = activeAxis === 'y' ? 3 : 2
+        overlayCtx.strokeStyle = activeAxis === 'y' ? 'rgba(255, 140, 100, 0.95)' : 'rgba(255, 100, 80, 0.7)'
+        overlayCtx.beginPath()
+        firstPoint = true
         for (let i = 0; i <= segments; i++) {
           const angle = (i / segments) * Math.PI * 2
           const x = baseCenter[0] + rx * Math.cos(angle)
           const y = baseCenter[1]
           const z = baseCenter[2] + rz * Math.sin(angle)
           const screen = projectChunk([x, y, z])
-          if (screen) xzPoints.push(screen)
+          if (screen) {
+            if (firstPoint) {
+              overlayCtx.moveTo(screen[0], screen[1])
+              firstPoint = false
+            } else {
+              overlayCtx.lineTo(screen[0], screen[1])
+            }
+          }
         }
-        drawFilledEllipse(xzPoints, activeAxis === 'y')
-
-        overlayCtx.lineWidth = activeAxis === 'y' ? 3 : 1.5
-        overlayCtx.strokeStyle = activeAxis === 'y' ? 'rgba(255, 140, 100, 0.95)' : 'rgba(255, 100, 80, 0.85)'
-        overlayCtx.beginPath()
-        xzPoints.forEach((p, i) => {
-          if (i === 0) overlayCtx.moveTo(p[0], p[1])
-          else overlayCtx.lineTo(p[0], p[1])
-        })
         overlayCtx.stroke()
 
         // YZ plane (around X axis) - controls X radius
-        const yzPoints: Array<[number, number]> = []
+        overlayCtx.lineWidth = activeAxis === 'x' ? 3 : 2
+        overlayCtx.strokeStyle = activeAxis === 'x' ? 'rgba(255, 140, 100, 0.95)' : 'rgba(255, 100, 80, 0.7)'
+        overlayCtx.beginPath()
+        firstPoint = true
         for (let i = 0; i <= segments; i++) {
           const angle = (i / segments) * Math.PI * 2
           const x = baseCenter[0]
           const y = baseCenter[1] + ry * Math.cos(angle)
           const z = baseCenter[2] + rz * Math.sin(angle)
           const screen = projectChunk([x, y, z])
-          if (screen) yzPoints.push(screen)
+          if (screen) {
+            if (firstPoint) {
+              overlayCtx.moveTo(screen[0], screen[1])
+              firstPoint = false
+            } else {
+              overlayCtx.lineTo(screen[0], screen[1])
+            }
+          }
         }
-        drawFilledEllipse(yzPoints, activeAxis === 'x')
-
-        overlayCtx.lineWidth = activeAxis === 'x' ? 3 : 1.5
-        overlayCtx.strokeStyle = activeAxis === 'x' ? 'rgba(255, 140, 100, 0.95)' : 'rgba(255, 100, 80, 0.85)'
-        overlayCtx.beginPath()
-        yzPoints.forEach((p, i) => {
-          if (i === 0) overlayCtx.moveTo(p[0], p[1])
-          else overlayCtx.lineTo(p[0], p[1])
-        })
         overlayCtx.stroke()
 
         // Draw axis endpoint nodes (6 nodes total: +x, -x, +y, -y, +z, -z)
@@ -652,6 +624,13 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
         if (ev.button === 2) {
           ev.preventDefault()
+
+          // Check if right-clicking on a node - show context menu
+          if (clickedNode && clickedNode !== 'center') {
+            showNodeContextMenu(clickedNode, ev.clientX, ev.clientY)
+            ev.stopPropagation()
+            return
+          }
 
           // Compute ray direction for click position
           let rayDir: Vec3 = overviewForward
@@ -1050,6 +1029,72 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     return false
   }
 
+  // Helper: show context menu for node
+  function showNodeContextMenu(node: EllipsoidNode, x: number, y: number) {
+    if (!node) return
+
+    // Remove any existing menu
+    const existingMenu = document.querySelector('.ellipsoid-context-menu')
+    if (existingMenu) existingMenu.remove()
+
+    // Create menu container
+    const menu = document.createElement('div')
+    menu.className = 'ellipsoid-context-menu'
+    menu.style.position = 'fixed'
+    menu.style.left = x + 'px'
+    menu.style.top = y + 'px'
+    menu.style.background = 'rgba(30, 30, 40, 0.95)'
+    menu.style.border = '1px solid rgba(255, 255, 255, 0.2)'
+    menu.style.borderRadius = '4px'
+    menu.style.padding = '4px 0'
+    menu.style.zIndex = '10000'
+    menu.style.minWidth = '120px'
+    menu.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.3)'
+
+    // Move option
+    const moveOption = document.createElement('div')
+    moveOption.textContent = 'Move'
+    moveOption.style.padding = '8px 16px'
+    moveOption.style.cursor = 'pointer'
+    moveOption.style.color = '#fff'
+    moveOption.style.fontSize = '14px'
+    moveOption.style.transition = 'background 0.1s'
+    moveOption.onmouseenter = () => moveOption.style.background = 'rgba(255, 255, 255, 0.1)'
+    moveOption.onmouseleave = () => moveOption.style.background = 'transparent'
+    moveOption.onclick = () => {
+      menu.remove()
+      // Start move/drag mode
+      ellipsoidSelectedNode.set(node)
+      ellipsoidNodeAdjustActive = true
+      ellipsoidEditAxis.set(null)
+      ellipsoidMovementActive = false
+      ellipsoidCenterDragActive = false
+      centerNodeSelected = false
+      activatedNodes.add(node)
+
+      nodeEditStartX = x
+      nodeEditStartY = y
+      const axis = node[1] as 'x' | 'y' | 'z'
+      if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
+      else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
+      else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
+
+      console.log('Context menu: Starting move mode for node', node)
+    }
+
+    menu.appendChild(moveOption)
+    document.body.appendChild(menu)
+
+    // Close menu when clicking elsewhere
+    const closeMenu = (e: MouseEvent) => {
+      if (!menu.contains(e.target as Node)) {
+        menu.remove()
+        document.removeEventListener('mousedown', closeMenu)
+      }
+    }
+    setTimeout(() => document.addEventListener('mousedown', closeMenu), 0)
+  }
+
   // Helper: check if a click is near an ellipsoid node
   function getClickedNode(clickX: number, clickY: number, center: Vec3, rx: number, ry: number, rz: number): EllipsoidNode {
     const halfStep = 0.5
@@ -1133,6 +1178,14 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
       if (ev.button === 2) {
         ev.preventDefault()
+
+        // Check if right-clicking on a node - show context menu
+        if (clickedNode && clickedNode !== 'center') {
+          showNodeContextMenu(clickedNode, ev.clientX, ev.clientY)
+          handledEllipsoidInteraction = true
+          return
+        }
+
         // Right-click in player mode: create/position ellipsoid at raycast location
         const hit = raycast(cameraPos, getForwardVector())
         if (hit) {
