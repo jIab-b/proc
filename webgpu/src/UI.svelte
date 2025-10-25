@@ -360,10 +360,30 @@
 </div>
 
 <style>
+  :global(:root) {
+    --sidebar-width: min(320px, 25vw);
+    --sidebar-min-width: 180px;
+    --sidebar-max-width: 380px;
+  }
+
+  @media (max-width: 1200px) {
+    :global(:root) {
+      --sidebar-width: min(280px, 22vw);
+    }
+  }
+
+  @media (max-width: 768px) {
+    :global(:root) {
+      --sidebar-width: min(250px, 30vw);
+    }
+  }
+
   .sidebar {
-    width: 380px;
+    width: var(--sidebar-width);
+    min-width: var(--sidebar-min-width);
+    max-width: var(--sidebar-max-width);
     height: calc(100vh - 32px);
-    margin: 16px 0 16px 16px;
+    margin: clamp(12px, 2vw, 16px) 0 clamp(12px, 2vw, 16px) clamp(12px, 2vw, 16px);
     background: rgba(20, 30, 45, 0.95);
     border: 1px solid rgba(210, 223, 244, 0.2);
     border-radius: 16px;
@@ -375,7 +395,7 @@
 
   h3 {
     margin: 0;
-    font-size: 14px;
+    font-size: clamp(12px, 3vw, 14px);
     font-weight: 600;
     color: #d2dff4;
   }
@@ -392,7 +412,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 16px 20px;
+    padding: clamp(12px, 2.5vw, 16px) clamp(16px, 3vw, 20px);
     border-bottom: 1px solid rgba(210, 223, 244, 0.1);
   }
 
@@ -415,10 +435,10 @@
   .grid-content {
     flex: 1;
     overflow-y: auto;
-    padding: 10px 12px 6px;
+    padding: clamp(8px, 2vw, 10px) clamp(10px, 2.5vw, 12px) clamp(4px, 1vw, 6px);
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-    gap: 4px;
+    grid-template-columns: repeat(auto-fill, minmax(clamp(70px, 18vw, 80px), 1fr));
+    gap: clamp(2px, 0.5vw, 4px);
   }
 
   .block-item {
@@ -426,8 +446,8 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 1px;
-    padding: 6px 6px 1px;
+    gap: clamp(0px, 0.2vw, 1px);
+    padding: clamp(4px, 1vw, 6px) clamp(4px, 1vw, 6px) clamp(0px, 0.2vw, 1px);
     background: rgba(34, 50, 68, 0.5);
     border: 2px solid rgba(190, 210, 230, 0.2);
     border-radius: 9px;
@@ -446,12 +466,12 @@
   }
 
   .block-item canvas {
-    width: 52px;
-    height: 52px;
+    width: clamp(45px, 12vw, 52px);
+    height: clamp(45px, 12vw, 52px);
   }
 
   .block-item span {
-    font-size: 11px;
+    font-size: clamp(9px, 2.2vw, 11px);
     color: #c8d5e8;
     text-align: center;
     line-height: 1.1;
@@ -460,15 +480,15 @@
 
   .delete-btn {
     position: absolute;
-    top: 4px;
-    right: 4px;
-    width: 20px;
-    height: 20px;
+    top: clamp(2px, 0.5vw, 4px);
+    right: clamp(2px, 0.5vw, 4px);
+    width: clamp(16px, 4vw, 20px);
+    height: clamp(16px, 4vw, 20px);
     border-radius: 4px;
     background: rgba(220, 60, 60, 0.8);
     border: none;
     color: white;
-    font-size: 16px;
+    font-size: clamp(12px, 3vw, 16px);
     line-height: 1;
     cursor: pointer;
     transition: background 0.2s;
@@ -480,23 +500,23 @@
 
   /* Face Viewer */
   .face-viewer {
-    padding: 16px 20px;
+    padding: clamp(12px, 2.5vw, 16px) clamp(16px, 3vw, 20px);
     border-bottom: 1px solid rgba(210, 223, 244, 0.15);
   }
 
   .face-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-    margin-top: 12px;
+    gap: clamp(6px, 1.5vw, 8px);
+    margin-top: clamp(8px, 2vw, 12px);
   }
 
   .face-box {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 6px;
-    padding: 8px;
+    gap: clamp(4px, 1vw, 6px);
+    padding: clamp(6px, 1.5vw, 8px);
     background: rgba(34, 50, 68, 0.5);
     border: 2px solid rgba(190, 210, 230, 0.2);
     border-radius: 8px;
@@ -515,45 +535,45 @@
   }
 
   .face-box label {
-    font-size: 10px;
+    font-size: clamp(8px, 2vw, 10px);
     color: #8fa0b8;
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
 
   .face-preview {
-    width: 48px;
-    height: 48px;
+    width: clamp(40px, 10vw, 48px);
+    height: clamp(40px, 10vw, 48px);
     border-radius: 4px;
   }
 
   /* Texture Generator */
   .texture-generator {
-    padding: 16px 20px;
+    padding: clamp(12px, 2.5vw, 16px) clamp(16px, 3vw, 20px);
   }
 
   .texture-generator textarea {
     width: 100%;
-    margin-top: 12px;
-    padding: 10px;
+    margin-top: clamp(8px, 2vw, 12px);
+    padding: clamp(8px, 2vw, 10px);
     background: rgba(34, 50, 68, 0.6);
     border: 1px solid rgba(190, 210, 230, 0.25);
     border-radius: 8px;
     color: #e3ebf7;
-    font-size: 13px;
+    font-size: clamp(11px, 2.5vw, 13px);
     font-family: inherit;
     resize: vertical;
   }
 
   .generate-btn {
     width: 100%;
-    margin-top: 10px;
-    padding: 12px;
+    margin-top: clamp(8px, 2vw, 10px);
+    padding: clamp(10px, 2.5vw, 12px);
     background: rgba(68, 96, 128, 0.7);
     border: 1px solid rgba(120, 180, 240, 0.5);
     border-radius: 8px;
     color: #d2dff4;
-    font-size: 13px;
+    font-size: clamp(11px, 2.5vw, 13px);
     font-weight: 600;
     cursor: pointer;
     transition: all 0.2s;

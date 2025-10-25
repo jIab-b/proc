@@ -214,10 +214,10 @@
 
 <style>
   .panel {
-    padding: 16px;
+    padding: clamp(12px, 2.5vw, 16px);
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: clamp(12px, 3vw, 16px);
     border-top: 1px solid rgba(210, 223, 244, 0.1);
   }
 
@@ -229,7 +229,7 @@
 
   h3 {
     margin: 0;
-    font-size: 14px;
+    font-size: clamp(12px, 3vw, 14px);
     font-weight: 600;
     letter-spacing: 0.6px;
     text-transform: uppercase;
@@ -237,24 +237,24 @@
   }
 
   .status {
-    font-size: 11px;
+    font-size: clamp(9px, 2vw, 11px);
     color: #7fa8f5;
   }
 
   section {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: clamp(6px, 1.5vw, 8px);
   }
 
   .grid {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 10px 12px;
+    gap: clamp(8px, 2vw, 10px) clamp(10px, 2.5vw, 12px);
   }
 
   label {
-    font-size: 11px;
+    font-size: clamp(9px, 2vw, 11px);
     color: #7f8ca5;
     letter-spacing: 0.5px;
     text-transform: uppercase;
@@ -268,8 +268,8 @@
     border: 1px solid rgba(160, 180, 205, 0.3);
     background: rgba(34, 50, 68, 0.6);
     color: #e3ebf7;
-    padding: 8px;
-    font-size: 13px;
+    padding: clamp(6px, 1.5vw, 8px);
+    font-size: clamp(11px, 2.5vw, 13px);
   }
 
   input[type='range'] {
@@ -277,7 +277,7 @@
   }
 
   .value {
-    font-size: 11px;
+    font-size: clamp(9px, 2vw, 11px);
     color: #a0b5d0;
     text-align: right;
   }
@@ -285,16 +285,16 @@
   .actions {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: clamp(8px, 2vw, 10px);
   }
 
   button {
-    padding: 10px;
+    padding: clamp(8px, 2vw, 10px);
     border-radius: 8px;
     border: 1px solid rgba(120, 150, 190, 0.4);
     background: rgba(60, 80, 108, 0.6);
     color: #d6e3ff;
-    font-size: 13px;
+    font-size: clamp(11px, 2.5vw, 13px);
     cursor: pointer;
     transition: background 0.15s ease, transform 0.15s ease;
   }
@@ -321,8 +321,8 @@
 
   .seed-row {
     display: grid;
-    grid-template-columns: 1fr 40px;
-    gap: 8px;
+    grid-template-columns: 1fr clamp(32px, 8vw, 40px);
+    gap: clamp(6px, 1.5vw, 8px);
     align-items: center;
   }
 </style>

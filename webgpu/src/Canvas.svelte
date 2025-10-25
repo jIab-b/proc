@@ -433,14 +433,14 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 20px;
+    padding: clamp(8px, 2vw, 20px);
   }
 
   .canvas-shell {
     position: relative;
     width: 100%;
     height: 100%;
-    max-width: 1120px;
+    max-width: calc(100vw - var(--sidebar-width) - 2 * clamp(8px, 2vw, 20px));
     aspect-ratio: 16 / 9;
     background: rgba(12, 22, 32, 0.6);
     border: 1px solid rgba(210, 223, 244, 0.1);
@@ -475,7 +475,7 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
     padding: 4px;
-    min-width: 180px;
+    min-width: clamp(160px, 15vw, 180px);
     z-index: 1000;
     backdrop-filter: blur(8px);
   }
@@ -486,10 +486,10 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
     background: transparent;
     border: none;
     color: #e3ebf7;
-    padding: 8px 12px;
+    padding: clamp(6px, 1.5vw, 8px) clamp(10px, 2vw, 12px);
     text-align: left;
     cursor: pointer;
-    font-size: 13px;
+    font-size: clamp(11px, 2.5vw, 13px);
     border-radius: 4px;
     transition: background 0.15s;
   }
@@ -499,9 +499,9 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
   }
 
   .submenu {
-    margin-left: 8px;
-    margin-top: 4px;
-    padding-left: 8px;
+    margin-left: clamp(6px, 1.5vw, 8px);
+    margin-top: clamp(2px, 0.5vw, 4px);
+    padding-left: clamp(6px, 1.5vw, 8px);
     border-left: 2px solid rgba(210, 223, 244, 0.2);
   }
 
@@ -511,10 +511,10 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
     background: transparent;
     border: none;
     color: #c8d5e8;
-    padding: 6px 12px;
+    padding: clamp(4px, 1vw, 6px) clamp(8px, 2vw, 12px);
     text-align: left;
     cursor: pointer;
-    font-size: 12px;
+    font-size: clamp(10px, 2.2vw, 12px);
     border-radius: 4px;
     transition: background 0.15s;
   }
@@ -536,8 +536,8 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
 
   .submenu-label {
     color: #8a98ab;
-    padding: 4px 12px;
-    font-size: 11px;
+    padding: clamp(2px, 0.5vw, 4px) clamp(8px, 2vw, 12px);
+    font-size: clamp(9px, 2vw, 11px);
     font-weight: 500;
     text-transform: uppercase;
   }
@@ -545,18 +545,18 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
   .context-divider {
     height: 1px;
     background: rgba(210, 223, 244, 0.2);
-    margin: 8px 0;
+    margin: clamp(6px, 1.5vw, 8px) 0;
   }
 
   .context-section {
-    padding: 4px 8px 6px;
+    padding: clamp(2px, 0.5vw, 4px) clamp(6px, 1.5vw, 8px) clamp(4px, 1vw, 6px);
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: clamp(2px, 0.5vw, 4px);
   }
 
   .context-section label {
-    font-size: 11px;
+    font-size: clamp(9px, 2vw, 11px);
     text-transform: uppercase;
     color: #8fa0b8;
   }
@@ -567,9 +567,9 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
     background: rgba(34, 50, 68, 0.6);
     border: 1px solid rgba(190, 210, 230, 0.25);
     border-radius: 4px;
-    padding: 6px;
+    padding: clamp(4px, 1vw, 6px);
     color: #e3ebf7;
-    font-size: 12px;
+    font-size: clamp(10px, 2.2vw, 12px);
   }
 
   .context-section input[type='range'] {
