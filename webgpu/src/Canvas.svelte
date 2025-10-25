@@ -2,6 +2,7 @@
 import { onMount } from 'svelte'
 import { createRenderer } from './renderer'
 import { MapManager, CaptureSystem, DSLEngine, createWorldConfig, generateTerrain, type CameraSnapshot } from './engine'
+import { generateRegion, createTerrainGeneratorState } from './procedural/terrainGenerator'
   import {
     ChunkManager,
     selectedBlockType,
@@ -17,7 +18,8 @@ import { MapManager, CaptureSystem, DSLEngine, createWorldConfig, generateTerrai
     API_BASE_URL,
     customBlocks as customBlocksStore,
     type CustomBlock,
-    type Vec3
+    type Vec3,
+    type TerrainGenerateParams
   } from './core'
 
   let canvasEl: HTMLCanvasElement
@@ -166,6 +168,79 @@ import { MapManager, CaptureSystem, DSLEngine, createWorldConfig, generateTerrai
         },
         uploadFaceBitmapsToGPU: (bitmaps, customBlock) => {
           renderer?.applyCustomBlockTextures(bitmaps, customBlock, $customBlocksStore)
+        },
+        getCameraPosition: () => {
+          const camera = renderer?.getCamera()
+          return camera ? [...camera.position] as [number, number, number] : null
+        },
+        generateTerrain: (params: TerrainGenerateParams) => {
+          console.log('generateTerrain hook called with params (world coords):', params)
+          console.log('chunkOriginOffset:', chunkOriginOffset, 'worldScale:', worldScale)
+
+          // Convert world coordinates to chunk coordinates
+          const worldToChunk = (worldCoord: Vec3): Vec3 => [
+            (worldCoord[0] - chunkOriginOffset[0]) / worldScale,
+            (worldCoord[1] - chunkOriginOffset[1]) / worldScale,
+            (worldCoord[2] - chunkOriginOffset[2]) / worldScale
+          ]
+
+          const chunkMin = worldToChunk(params.region.min)
+          const chunkMax = worldToChunk(params.region.max)
+
+          // Clamp to chunk bounds
+          const chunkRegion = {
+            min: [
+              Math.max(0, Math.floor(chunkMin[0])),
+              Math.max(0, Math.floor(chunkMin[1])),
+              Math.max(0, Math.floor(chunkMin[2]))
+            ] as [number, number, number],
+            max: [
+              Math.min(chunk.size.x - 1, Math.floor(chunkMax[0])),
+              Math.min(chunk.size.y - 1, Math.floor(chunkMax[1])),
+              Math.min(chunk.size.z - 1, Math.floor(chunkMax[2]))
+            ] as [number, number, number]
+          }
+
+          console.log('World region min:', params.region.min, 'max:', params.region.max)
+          console.log('World to chunk conversion:')
+          console.log('  chunkMin:', chunkMin)
+          console.log('  chunkMax:', chunkMax)
+          console.log('Converted to chunk coords (floored):', chunkRegion)
+          console.log('Chunk size:', chunk.size)
+          console.log('Region within bounds?',
+            chunkRegion.min[0] >= 0 && chunkRegion.max[0] < chunk.size.x &&
+            chunkRegion.min[1] >= 0 && chunkRegion.max[1] < chunk.size.y &&
+            chunkRegion.min[2] >= 0 && chunkRegion.max[2] < chunk.size.z
+          )
+          console.log('Bounds check details:')
+          console.log('  X: [', chunkRegion.min[0], ',', chunkRegion.max[0], '] vs chunk [0,', chunk.size.x - 1, ']')
+          console.log('  Y: [', chunkRegion.min[1], ',', chunkRegion.max[1], '] vs chunk [0,', chunk.size.y - 1, ']')
+          console.log('  Z: [', chunkRegion.min[2], ',', chunkRegion.max[2], '] vs chunk [0,', chunk.size.z - 1, ']')
+
+          const terrainState = createTerrainGeneratorState(params.profile, params.params)
+
+          if (params.action === 'clear') {
+            console.log('Clearing region')
+            const min = chunkRegion.min
+            const max = chunkRegion.max
+            for (let x = min[0]; x <= max[0]; x++) {
+              for (let y = min[1]; y <= max[1]; y++) {
+                for (let z = min[2]; z <= max[2]; z++) {
+                  if (x >= 0 && x < chunk.size.x && y >= 0 && y < chunk.size.y && z >= 0 && z < chunk.size.z) {
+                    chunk.setBlock(x, y, z, BlockType.Air)
+                  }
+                }
+              }
+            }
+          } else {
+            console.log('Generating terrain in chunk region:', chunkRegion)
+            generateRegion(chunk, chunkRegion, terrainState)
+            console.log('Terrain generation complete')
+          }
+
+          console.log('Marking mesh dirty')
+          renderer?.markMeshDirty()
+          console.log('Done')
         }
       })
 

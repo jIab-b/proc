@@ -1191,6 +1191,72 @@ async def load_map(sequence: int):
         raise HTTPException(status_code=500, detail=f"Failed to load map: {exc}") from exc
 
 
+class TerrainRegion(BaseModel):
+    min: List[int]
+    max: List[int]
+
+
+class TerrainParams(BaseModel):
+    seed: int = 1337
+    amplitude: float = 10
+    roughness: float = 2.4
+    elevation: float = 0.35
+
+
+class TerrainGenerateRequest(BaseModel):
+    action: str  # 'generate', 'preview', or 'clear'
+    region: TerrainRegion
+    profile: str  # 'rolling_hills', 'mountain', 'hybrid'
+    params: TerrainParams
+
+
+@app.post("/api/terrain/generate")
+async def generate_terrain(request: TerrainGenerateRequest):
+    """
+    Handle terrain generation requests from the client.
+    The actual terrain generation happens client-side, this endpoint
+    validates the request and acknowledges it.
+    """
+    if request.action not in ("generate", "preview", "clear"):
+        raise HTTPException(status_code=400, detail="Invalid action. Must be 'generate', 'preview', or 'clear'")
+
+    if request.profile not in ("rolling_hills", "mountain", "hybrid"):
+        raise HTTPException(status_code=400, detail="Invalid profile. Must be 'rolling_hills', 'mountain', or 'hybrid'")
+
+    # Validate region coordinates
+    if not all(isinstance(v, int) for v in request.region.min):
+        raise HTTPException(status_code=400, detail="Region min coordinates must be integers")
+    if not all(isinstance(v, int) for v in request.region.max):
+        raise HTTPException(status_code=400, detail="Region max coordinates must be integers")
+
+    # Log the terrain generation request
+    write_log_entry({
+        "event": "terrain_generate",
+        "action": request.action,
+        "profile": request.profile,
+        "region": {
+            "min": request.region.min,
+            "max": request.region.max
+        },
+        "params": {
+            "seed": request.params.seed,
+            "amplitude": request.params.amplitude,
+            "roughness": request.params.roughness,
+            "elevation": request.params.elevation
+        }
+    })
+
+    return {
+        "status": "ok",
+        "action": request.action,
+        "profile": request.profile,
+        "region": {
+            "min": request.region.min,
+            "max": request.region.max
+        }
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 

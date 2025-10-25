@@ -5,9 +5,9 @@
     terrainSeed,
     terrainAmplitude,
     terrainRoughness,
-    terrainElevation,
-    highlightSelection
+    terrainElevation
   } from '../stores'
+  import { gpuHooks, API_BASE_URL } from '../core'
 
   import { writable } from 'svelte/store'
 
@@ -29,18 +29,23 @@
   async function runGeneration(action: 'generate' | 'preview' | 'clear') {
     if (isGenerating) return
 
-    const selection = $highlightSelection
-    if (!selection) {
-      alert('Select a region using Highlight mode before generating terrain.')
+    // Get camera position
+    const cameraPos = $gpuHooks.getCameraPosition?.()
+    if (!cameraPos) {
+      alert('Camera position not available.')
       return
+    }
+
+    // Define a large region around the player (32x32x32 blocks centered on player)
+    const regionSize = 16
+    const region = {
+      min: cameraPos.map(pos => Math.floor(pos - regionSize)) as [number, number, number],
+      max: cameraPos.map(pos => Math.floor(pos + regionSize)) as [number, number, number]
     }
 
     const requestBody = {
       action,
-      region: {
-        min: selection.center.map((value, index) => value - selection.radius) as [number, number, number],
-        max: selection.center.map((value, index) => value + selection.radius) as [number, number, number]
-      },
+      region,
       profile: $terrainProfile,
       params: {
         seed: $terrainSeed,
@@ -53,18 +58,35 @@
     try {
       isGenerating = true
       status.set('Working...')
-      const res = await fetch('/api/terrain/generate', {
+
+      console.log('Terrain generation request:', requestBody)
+      console.log('generateTerrain hook available:', !!$gpuHooks.generateTerrain)
+
+      // Call backend API to validate and log the request
+      const res = await fetch(`${API_BASE_URL}/api/terrain/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody)
       })
+
       if (!res.ok) {
         const detail = await res.text()
         throw new Error(detail || `HTTP ${res.status}`)
       }
+
+      console.log('Backend API responded OK, applying terrain generation...')
+
+      // Apply terrain generation locally
+      if (!$gpuHooks.generateTerrain) {
+        throw new Error('generateTerrain hook not available')
+      }
+      $gpuHooks.generateTerrain(requestBody)
+
+      console.log('Terrain generation complete')
       status.set('Done')
       setTimeout(() => status.set('Ready'), 1200)
     } catch (err) {
+      console.error('Terrain generation error:', err)
       status.set('Error')
       alert(`Terrain generation failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
@@ -114,10 +136,10 @@
 
   <section class="actions">
     <button type="button" class="primary" on:click={() => runGeneration('generate')} disabled={isGenerating}>
-      Apply to Region
+      Generate Around Player
     </button>
     <button type="button" on:click={() => runGeneration('preview')} disabled={isGenerating}>
-      Preview
+      Preview Around Player
     </button>
     <button type="button" class="ghost" on:click={() => runGeneration('clear')} disabled={isGenerating}>
       Clear Region

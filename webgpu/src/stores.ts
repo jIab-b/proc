@@ -36,14 +36,30 @@ export const terrainRoughness = writable<number>(2.4)
 export const terrainElevation = writable<number>(0.35)
 
 // GPU hooks (set by WebGPU engine)
+export interface TerrainGenerateParams {
+  action: 'generate' | 'preview' | 'clear'
+  region: { min: [number, number, number]; max: [number, number, number] }
+  profile: 'rolling_hills' | 'mountain' | 'hybrid'
+  params: {
+    seed: number
+    amplitude: number
+    roughness: number
+    elevation: number
+  }
+}
+
 export interface GPUHooks {
   requestFaceBitmaps: ((tiles: Partial<Record<BlockFaceKey, FaceTileInfo>>) => Promise<Record<BlockFaceKey, ImageBitmap>>) | null
   uploadFaceBitmapsToGPU: ((bitmaps: Record<BlockFaceKey, ImageBitmap>, customBlock: CustomBlock) => void) | null
+  getCameraPosition: (() => [number, number, number] | null) | null
+  generateTerrain: ((params: TerrainGenerateParams) => void) | null
 }
 
 export const gpuHooks = writable<GPUHooks>({
   requestFaceBitmaps: null,
-  uploadFaceBitmapsToGPU: null
+  uploadFaceBitmapsToGPU: null,
+  getCameraPosition: null,
+  generateTerrain: null
 })
 
 export type InteractionMode = 'block' | 'highlight'

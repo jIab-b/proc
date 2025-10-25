@@ -4,7 +4,6 @@
 import type { ChunkManager, BlockType } from './core'
 import { API_BASE_URL } from './core'
 import { createTerrainGeneratorState, generateRegion, type TerrainProfile, type TerrainParams } from './procedural/terrainGenerator'
-import { createTerrainGeneratorState, generateRegion, type TerrainProfile, type TerrainParams } from './procedural/terrainGenerator'
 
 // ============================================================================
 // TERRAIN GENERATION

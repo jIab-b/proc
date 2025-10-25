@@ -78,9 +78,23 @@ export interface CustomBlock {
   textureLayer?: number
 }
 
+export interface TerrainGenerateParams {
+  action: 'generate' | 'preview' | 'clear'
+  region: { min: [number, number, number]; max: [number, number, number] }
+  profile: 'rolling_hills' | 'mountain' | 'hybrid'
+  params: {
+    seed: number
+    amplitude: number
+    roughness: number
+    elevation: number
+  }
+}
+
 export interface GPUHooks {
   requestFaceBitmaps: ((tiles: Partial<Record<BlockFaceKey, FaceTileInfo>>) => Promise<Record<BlockFaceKey, ImageBitmap>>) | null
   uploadFaceBitmapsToGPU: ((bitmaps: Record<BlockFaceKey, ImageBitmap>, customBlock: CustomBlock) => void) | null
+  getCameraPosition: (() => [number, number, number] | null) | null
+  generateTerrain: ((params: TerrainGenerateParams) => void) | null
 }
 
 export type InteractionMode = 'block' | 'highlight'
@@ -103,7 +117,12 @@ export const terrainSeed: Writable<number> = writable(1337)
 export const terrainAmplitude: Writable<number> = writable(10)
 export const terrainRoughness: Writable<number> = writable(2.4)
 export const terrainElevation: Writable<number> = writable(0.35)
-export const gpuHooks: Writable<GPUHooks> = writable({ requestFaceBitmaps: null, uploadFaceBitmapsToGPU: null })
+export const gpuHooks: Writable<GPUHooks> = writable({
+  requestFaceBitmaps: null,
+  uploadFaceBitmapsToGPU: null,
+  getCameraPosition: null,
+  generateTerrain: null
+})
 export const interactionMode: Writable<InteractionMode> = writable('block')
 export const highlightShape: Writable<HighlightShape> = writable('cube')
 export const highlightRadius: Writable<number> = writable(2)
