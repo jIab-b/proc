@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { get } from 'svelte/store'
   import { initWebGPUEngine } from '../webgpuEngine'
   import {
     selectedBlockType,
@@ -44,6 +45,13 @@
   }
 
   function handleContextMenu(event: MouseEvent) {
+    const path = event.composedPath()
+    const isCanvasContext = (canvasEl && path.includes(canvasEl)) || (overlayCanvasEl && path.includes(overlayCanvasEl))
+    if (isCanvasContext && get(interactionMode) === 'highlight') {
+      event.preventDefault()
+      return
+    }
+
     // Don't show context menu if we're in game (pointer locked)
     if (isInGame) {
       return

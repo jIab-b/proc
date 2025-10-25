@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount } from 'svelte'
+import { get } from 'svelte/store'
 import { createRenderer } from './renderer'
 import { MapManager, CaptureSystem, DSLEngine, createWorldConfig, generateTerrain, type CameraSnapshot } from './engine'
 import { generateRegion, createTerrainGeneratorState } from './procedural/terrainGenerator'
@@ -60,6 +61,13 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
   }
 
   function handleContextMenu(event: MouseEvent) {
+    const path = event.composedPath()
+    const isCanvasContext = (canvasEl && path.includes(canvasEl)) || (overlayCanvasEl && path.includes(overlayCanvasEl))
+    if (isCanvasContext && get(interactionMode) === 'highlight') {
+      event.preventDefault()
+      return
+    }
+
     if (isInGame) return
     event.preventDefault()
     contextMenuX = event.clientX
