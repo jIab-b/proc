@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 def load_env():
-    """Load environment variables from .env file"""
+    """Load environment variables from .env file (small change to check)"""
     env_path = Path(".env")
     if not env_path.exists():
         return
