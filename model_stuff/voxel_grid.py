@@ -65,8 +65,8 @@ class DenoisingVoxelGrid(nn.Module):
             "base_reference",
             torch.zeros((*grid_size, num_materials), dtype=torch.float32, device=device),
         )
-        self.edit_logits = nn.Parameter(torch.zeros_like(self.base_logits))
-        self.mask_logits = nn.Parameter(torch.zeros(grid_size, dtype=torch.float32, device=device))
+        self.material_delta = nn.Parameter(torch.zeros_like(self.base_logits))
+        self.occupancy_delta = nn.Parameter(torch.zeros(grid_size, dtype=torch.float32, device=device))
 
         palette = get_material_palette().to(torch.float32)
         self.register_buffer("palette_target", palette.clone())
@@ -81,8 +81,11 @@ class DenoisingVoxelGrid(nn.Module):
 
     # ------------------------------------------------------------------
     def final_logits(self) -> torch.Tensor:
-        mask = torch.sigmoid(self.mask_logits)[..., None]
-        return self.base_logits + mask * self.edit_logits
+        logits = self.base_logits + self.material_delta
+        air = logits[..., self.sky_index] - self.occupancy_delta
+        logits = logits.clone()
+        logits[..., self.sky_index] = air
+        return logits
 
     def palette(self) -> torch.Tensor:
         return self.palette_embed.clamp(0.0, 1.0)
@@ -164,7 +167,7 @@ class DenoisingVoxelGrid(nn.Module):
         return 1.0 - probs[..., self.sky_index]
 
     def get_mask_probs(self) -> torch.Tensor:
-        return torch.sigmoid(self.mask_logits)
+        return self.get_occupancy_probs()
 
     def get_stats(self) -> dict:
         occ = self.get_occupancy_probs()
@@ -198,8 +201,8 @@ class DenoisingVoxelGrid(nn.Module):
         logits = base_logits.detach().to(self.base_logits.device)
         self.base_reference.copy_(logits)
         self.base_logits.copy_(logits)
-        self.edit_logits.data.zero_()
-        self.mask_logits.data.zero_()
+        self.material_delta.data.zero_()
+        self.occupancy_delta.data.zero_()
 
     def to(self, device: torch.device) -> "DenoisingVoxelGrid":
         super().to(device)
@@ -211,31 +214,31 @@ class DenoisingVoxelGrid(nn.Module):
     @torch.no_grad()
     def apply_noise(
         self,
-        mask_std: float,
-        edit_std: float,
+        occ_std: float,
+        mat_std: float,
         *,
         fraction: float = 0.02,
         bias_power: float = 1.5,
     ) -> dict:
-        mask_std = float(mask_std)
-        edit_std = float(edit_std)
+        occ_std = float(occ_std)
+        mat_std = float(mat_std)
         fraction = float(fraction)
         bias_power = float(bias_power)
 
         stats = {
-            "mask_std": mask_std,
-            "edit_std": edit_std,
+            "occ_std": occ_std,
+            "mat_std": mat_std,
             "fraction": fraction,
             "bias_power": bias_power,
-            "mask_voxels": 0,
-            "edit_voxels": 0,
-            "edit_channels": 0,
-            "mask_mean_abs_noise": 0.0,
-            "edit_mean_abs_noise": 0.0,
+            "occ_voxels": 0,
+            "mat_voxels": 0,
+            "mat_channels": 0,
+            "occ_mean_abs_noise": 0.0,
+            "mat_mean_abs_noise": 0.0,
             "selector_mean": 0.0,
         }
 
-        if (mask_std <= 0.0 and edit_std <= 0.0) or fraction <= 0.0:
+        if (occ_std <= 0.0 and mat_std <= 0.0) or fraction <= 0.0:
             return stats
 
         base_probs = F.softmax(self.base_reference, dim=-1)
@@ -247,25 +250,25 @@ class DenoisingVoxelGrid(nn.Module):
         mask_prob = (fraction * bias).clamp(0.0, 1.0)
         mask_selector = torch.bernoulli(mask_prob)
         mask_selector_bool = mask_selector > 0.0
-        stats["mask_voxels"] = int(mask_selector_bool.sum().item())
+        stats["occ_voxels"] = int(mask_selector_bool.sum().item())
         stats["selector_mean"] = float(mask_selector.mean().item())
 
-        if mask_std > 0.0:
-            noise = torch.randn_like(self.mask_logits) * mask_std
-            self.mask_logits.add_(noise * mask_selector)
+        if occ_std > 0.0:
+            noise = torch.randn_like(self.occupancy_delta) * occ_std
+            self.occupancy_delta.add_(noise * mask_selector)
             if mask_selector_bool.any():
                 mask_vals = (noise * mask_selector)[mask_selector_bool]
-                stats["mask_mean_abs_noise"] = float(mask_vals.abs().mean().item())
+                stats["occ_mean_abs_noise"] = float(mask_vals.abs().mean().item())
 
-        if edit_std > 0.0:
-            noise = torch.randn_like(self.edit_logits) * edit_std
+        if mat_std > 0.0:
+            noise = torch.randn_like(self.material_delta) * mat_std
             edit_mask = mask_selector_bool[..., None].expand_as(noise)
-            self.edit_logits.add_(noise * edit_mask)
+            self.material_delta.add_(noise * edit_mask)
             if mask_selector_bool.any():
                 edit_vals = (noise * edit_mask)[edit_mask]
-                stats["edit_mean_abs_noise"] = float(edit_vals.abs().mean().item())
-                stats["edit_voxels"] = stats["mask_voxels"]
-                stats["edit_channels"] = int(edit_mask.sum().item())
+                stats["mat_mean_abs_noise"] = float(edit_vals.abs().mean().item())
+                stats["mat_voxels"] = stats["occ_voxels"]
+                stats["mat_channels"] = int(edit_mask.sum().item())
 
         return stats
 
@@ -315,16 +318,13 @@ class DenoisingVoxelGrid(nn.Module):
     @torch.no_grad()
     def harden(self, strength: float = 5.0, reset_prob: float = 0.5) -> None:
         strength = float(strength)
-        reset_prob = float(reset_prob)
-        reset_prob = min(max(reset_prob, 1e-4), 1 - 1e-4)
         probs = self.get_material_probs()
         hard_idx = probs.argmax(dim=-1)
         one_hot = F.one_hot(hard_idx, self.num_materials).to(self.base_logits.dtype) * strength
         self.base_logits.copy_(one_hot)
         self.base_reference.copy_(one_hot)
-        self.edit_logits.zero_()
-        reset_value = torch.logit(torch.tensor(reset_prob, device=self.device, dtype=self.mask_logits.dtype))
-        self.mask_logits.fill_(reset_value)
+        self.material_delta.zero_()
+        self.occupancy_delta.zero_()
 
     @torch.no_grad()
     def reset_palette(self) -> None:

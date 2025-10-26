@@ -106,7 +106,7 @@ def train(args: argparse.Namespace) -> Path:
 
     param_groups = [
         {
-            "params": [scene.grid.edit_logits, scene.grid.mask_logits],
+            "params": [scene.grid.material_delta, scene.grid.occupancy_delta],
             "lr": float(args.learning_rate) * float(args.edit_lr_scale),
         },
         {
@@ -184,7 +184,8 @@ def train(args: argparse.Namespace) -> Path:
         initial_occ_tensor = scene.occupancy_probs().detach().cpu()
         initial_mat_tensor = scene.material_probs().detach().cpu()
         initial_mask_tensor = scene.mask_probs().detach().cpu()
-        initial_edit_tensor = scene.grid.edit_logits.detach().cpu()
+        initial_mat_delta = scene.grid.material_delta.detach().cpu()
+        initial_occ_delta = scene.grid.occupancy_delta.detach().cpu()
         initial_palette_tensor = scene.grid.palette().detach().cpu()
 
         initial_dict = {
@@ -192,7 +193,8 @@ def train(args: argparse.Namespace) -> Path:
             "occupancy_probs": initial_occ_tensor.numpy().tolist(),
             "material_probs": initial_mat_tensor.numpy().tolist(),
             "mask_probs": initial_mask_tensor.numpy().tolist(),
-            "edit_logits": initial_edit_tensor.numpy().tolist(),
+            "material_delta": initial_mat_delta.numpy().tolist(),
+            "occupancy_delta": initial_occ_delta.numpy().tolist(),
             "palette": initial_palette_tensor.numpy().tolist(),
             "base_reference": scene.grid.base_reference.detach().cpu().numpy().tolist(),
             "grid_size": list(scene.grid.grid_size),
@@ -207,7 +209,8 @@ def train(args: argparse.Namespace) -> Path:
         initial_occ = scene.occupancy_probs().detach().cpu().numpy()
         initial_mat = scene.material_probs().detach().cpu().numpy()
         initial_mask = scene.mask_probs().detach().cpu().numpy()
-        initial_edit = scene.grid.edit_logits.detach().cpu().numpy()
+        initial_mat_delta = scene.grid.material_delta.detach().cpu().numpy()
+        initial_occ_delta = scene.grid.occupancy_delta.detach().cpu().numpy()
         
         total_voxels = initial_occ.size
         init_summary = {
@@ -269,25 +272,26 @@ def train(args: argparse.Namespace) -> Path:
     with torch.no_grad():
         prev_occ = scene.occupancy_probs().detach()
         prev_mask = scene.mask_probs().detach()
-        prev_edit = scene.grid.edit_logits.detach().clone()
+        prev_mat_delta = scene.grid.material_delta.detach().clone()
+        prev_occ_delta = scene.grid.occupancy_delta.detach().clone()
         prev_base = scene.grid.base_logits.detach().clone()
 
     for step in range(1, args.steps + 1):
         t = (step - 1) / max(args.steps - 1, 1)
         temperature = lerp(args.temperature_start, args.temperature_end, t)
 
-        mask_noise, edit_noise, noise_ramp = compute_noise(step)
+        occ_noise, mat_noise, noise_ramp = compute_noise(step)
         noise_stats = scene.grid.apply_noise(
-            mask_noise,
-            edit_noise,
+            occ_noise,
+            mat_noise,
             fraction=float(args.explore_noise_fraction),
             bias_power=float(args.explore_noise_bias_power),
         )
         noise_stats = noise_stats or {}
         noise_stats.update(
             {
-                "schedule_mask_noise": mask_noise,
-                "schedule_edit_noise": edit_noise,
+                "schedule_occ_noise": occ_noise,
+                "schedule_mat_noise": mat_noise,
                 "noise_ramp": noise_ramp,
                 "noise_min": float(args.explore_noise_min),
             }
@@ -379,8 +383,8 @@ def train(args: argparse.Namespace) -> Path:
         reg = regularisation_losses(
             occ_probs=occ,
             mat_probs=mats,
-            mask_probs=mask_probs,
-            edit_logits=scene.grid.edit_logits,
+            occ_delta=scene.grid.occupancy_delta,
+            mat_delta=scene.grid.material_delta,
             palette_embed=scene.grid.palette_embed,
             palette_target=scene.grid.palette_target,
             lambda_mask=lambdas["mask"],
@@ -410,12 +414,14 @@ def train(args: argparse.Namespace) -> Path:
             )
             occ_current = scene.occupancy_probs()
             mask_current = scene.mask_probs()
-            edit_current = scene.grid.edit_logits
+            mat_res_current = scene.grid.material_delta
+            occ_res_current = scene.grid.occupancy_delta
             base_current = scene.grid.base_logits
             stats = scene.stats()
             occ_delta = (occ_current - prev_occ).abs()
             mask_delta = (mask_current - prev_mask).abs()
-            edit_delta = (edit_current - prev_edit).abs()
+            mat_delta = (mat_res_current - prev_mat_delta).abs()
+            occ_res_delta = (occ_res_current - prev_occ_delta).abs()
             base_delta = (base_current - prev_base).abs()
             change_thr = float(args.change_voxel_threshold)
             change_stats = {
@@ -425,9 +431,12 @@ def train(args: argparse.Namespace) -> Path:
                 "mask_mean_abs": float(mask_delta.mean().item()),
                 "mask_max_abs": float(mask_delta.max().item()),
                 "mask_voxels": int((mask_delta > change_thr).sum().item()),
-                "edit_mean_abs": float(edit_delta.mean().item()),
-                "edit_max_abs": float(edit_delta.max().item()),
-                "edit_voxels": int((edit_delta > change_thr).sum().item()),
+                "mat_res_mean_abs": float(mat_delta.mean().item()),
+                "mat_res_max_abs": float(mat_delta.max().item()),
+                "mat_res_voxels": int((mat_delta > change_thr).sum().item()),
+                "occ_res_mean_abs": float(occ_res_delta.mean().item()),
+                "occ_res_max_abs": float(occ_res_delta.max().item()),
+                "occ_res_voxels": int((occ_res_delta > change_thr).sum().item()),
                 "base_mean_abs": float(base_delta.mean().item()),
                 "base_max_abs": float(base_delta.max().item()),
                 "base_voxels": int((base_delta > change_thr).sum().item()),
@@ -435,7 +444,8 @@ def train(args: argparse.Namespace) -> Path:
             }
             prev_occ = occ_current.detach()
             prev_mask = mask_current.detach()
-            prev_edit = edit_current.detach().clone()
+            prev_mat_delta = mat_res_current.detach().clone()
+            prev_occ_delta = occ_res_current.detach().clone()
             prev_base = base_current.detach().clone()
         base_update_stats = base_update_stats or {}
 
@@ -485,11 +495,11 @@ def train(args: argparse.Namespace) -> Path:
                 "  🌫️ NOISE:"
                 f" ramp={noise_stats.get('noise_ramp', 0.0):.4f}"
                 f" min={noise_stats.get('noise_min', 0.0):.4f}"
-                f" mask_std={noise_stats.get('mask_std', 0.0):.4f}"
-                f" edit_std={noise_stats.get('edit_std', 0.0):.4f}"
-                f" mask_voxels={noise_stats.get('mask_voxels', 0)}"
-                f" edit_voxels={noise_stats.get('edit_voxels', 0)}"
-                f" edit_channels={noise_stats.get('edit_channels', 0)}"
+                f" occ_std={noise_stats.get('occ_std', 0.0):.4f}"
+                f" mat_std={noise_stats.get('mat_std', 0.0):.4f}"
+                f" occ_vox={noise_stats.get('occ_voxels', 0)}"
+                f" mat_vox={noise_stats.get('mat_voxels', 0)}"
+                f" mat_channels={noise_stats.get('mat_channels', 0)}"
                 f" selector_mean={noise_stats.get('selector_mean', 0.0):.4f}"
             )
             print(
@@ -509,7 +519,8 @@ def train(args: argparse.Namespace) -> Path:
                 f" occ_max={change_stats['occ_max_abs']:.3e}"
                 f" occ_vox={change_stats['occ_voxels']}"
                 f" mask_mean={change_stats['mask_mean_abs']:.3e}"
-                f" edit_mean={change_stats['edit_mean_abs']:.3e}"
+                f" mat_res_mean={change_stats['mat_res_mean_abs']:.3e}"
+                f" occ_res_mean={change_stats['occ_res_mean_abs']:.3e}"
                 f" base_mean={change_stats['base_mean_abs']:.3e}"
                 f" thr={change_stats['threshold']:.1e}"
             )
@@ -574,12 +585,14 @@ def train(args: argparse.Namespace) -> Path:
                 curr_occ = scene.occupancy_probs().detach().cpu().numpy()
                 curr_mat = scene.material_probs().detach().cpu().numpy()
                 curr_mask = scene.mask_probs().detach().cpu().numpy()
-                curr_edit = scene.grid.edit_logits.detach().cpu().numpy()
+                curr_mat_delta = scene.grid.material_delta.detach().cpu().numpy()
+                curr_occ_delta = scene.grid.occupancy_delta.detach().cpu().numpy()
 
                 diff_occ = curr_occ - initial_occ
                 diff_mat = curr_mat - initial_mat
                 diff_mask = curr_mask - initial_mask
-                diff_edit = curr_edit - initial_edit
+                diff_mat_delta = curr_mat_delta - initial_mat_delta
+                diff_occ_delta = curr_occ_delta - initial_occ_delta
                 
                 changed_mask = (
                     np.abs(diff_occ) > change_threshold
@@ -589,7 +602,8 @@ def train(args: argparse.Namespace) -> Path:
                 mean_abs_occ = float(np.abs(diff_occ).mean())
                 mean_abs_mat = float(np.abs(diff_mat).mean())
                 mean_abs_mask = float(np.abs(diff_mask).mean())
-                mean_abs_edit = float(np.abs(diff_edit).mean())
+                mean_abs_mat_delta = float(np.abs(diff_mat_delta).mean())
+                mean_abs_occ_delta = float(np.abs(diff_occ_delta).mean())
                 
                 # Histogram for occ diffs (10 bins -1 to 1)
                 hist_occ, _ = np.histogram(diff_occ.flatten(), bins=10, range=(-1,1))
@@ -611,7 +625,8 @@ def train(args: argparse.Namespace) -> Path:
                     mat_mean_changes.append(float(diff_mat[:, :, :, m].mean()))
 
                 mask_mean_change = float(diff_mask.mean())
-                edit_mean_change = float(diff_edit.mean())
+                occ_delta_mean_change = float(diff_occ_delta.mean())
+                mat_delta_mean_change = float(diff_mat_delta.mean())
 
                 summary_entry = {
                     "step": int(step),
@@ -619,13 +634,15 @@ def train(args: argparse.Namespace) -> Path:
                     "mean_abs_occ_diff": mean_abs_occ,
                     "mean_abs_mat_diff": mean_abs_mat,
                     "mean_abs_mask_diff": mean_abs_mask,
-                    "mean_abs_edit_diff": mean_abs_edit,
+                    "mean_abs_mat_delta_diff": mean_abs_mat_delta,
+                    "mean_abs_occ_delta_diff": mean_abs_occ_delta,
                     "occ_diff_histogram": hist_occ,
                     "top_occ_changes": top_occ,
                     "slice_means_occ": slice_means_occ,
                     "mat_mean_changes": mat_mean_changes,
                     "mask_mean_change": mask_mean_change,
-                    "edit_mean_change": edit_mean_change,
+                    "occ_delta_mean_change": occ_delta_mean_change,
+                    "mat_delta_mean_change": mat_delta_mean_change,
                     "threshold": change_threshold,
                 }
                 
@@ -643,7 +660,7 @@ def train(args: argparse.Namespace) -> Path:
         photo_optimizer = torch.optim.Adam(
             [
                 {
-                    "params": [scene.grid.edit_logits, scene.grid.mask_logits],
+                    "params": [scene.grid.material_delta, scene.grid.occupancy_delta],
                     "lr": photo_lr * float(args.edit_lr_scale),
                 },
                 {
@@ -682,8 +699,8 @@ def train(args: argparse.Namespace) -> Path:
             reg = regularisation_losses(
                 occ_probs=occ,
                 mat_probs=mats,
-                mask_probs=mask_probs,
-                edit_logits=scene.grid.edit_logits,
+                occ_delta=scene.grid.occupancy_delta,
+                mat_delta=scene.grid.material_delta,
                 palette_embed=scene.grid.palette_embed,
                 palette_target=scene.grid.palette_target,
                 lambda_mask=lambdas["mask"],
@@ -713,12 +730,14 @@ def train(args: argparse.Namespace) -> Path:
         curr_occ = scene.occupancy_probs().detach().cpu().numpy()
         curr_mat = scene.material_probs().detach().cpu().numpy()
         curr_mask = scene.mask_probs().detach().cpu().numpy()
-        curr_edit = scene.grid.edit_logits.detach().cpu().numpy()
+        curr_mat_delta = scene.grid.material_delta.detach().cpu().numpy()
+        curr_occ_delta = scene.grid.occupancy_delta.detach().cpu().numpy()
 
         diff_occ = curr_occ - initial_occ
         diff_mat = curr_mat - initial_mat
         diff_mask = curr_mask - initial_mask
-        diff_edit = curr_edit - initial_edit
+        diff_mat_delta = curr_mat_delta - initial_mat_delta
+        diff_occ_delta = curr_occ_delta - initial_occ_delta
         
         changed_mask = (
             np.abs(diff_occ) > change_threshold
@@ -728,7 +747,8 @@ def train(args: argparse.Namespace) -> Path:
         mean_abs_occ = float(np.abs(diff_occ).mean())
         mean_abs_mat = float(np.abs(diff_mat).mean())
         mean_abs_mask = float(np.abs(diff_mask).mean())
-        mean_abs_edit = float(np.abs(diff_edit).mean())
+        mean_abs_mat_delta = float(np.abs(diff_mat_delta).mean())
+        mean_abs_occ_delta = float(np.abs(diff_occ_delta).mean())
         
         hist_occ, _ = np.histogram(diff_occ.flatten(), bins=10, range=(-1,1))
         hist_occ = [int(x) for x in hist_occ]
@@ -746,7 +766,8 @@ def train(args: argparse.Namespace) -> Path:
             mat_mean_changes.append(float(diff_mat[:, :, :, m].mean()))
 
         mask_mean_change = float(diff_mask.mean())
-        edit_mean_change = float(diff_edit.mean())
+        occ_delta_mean_change = float(diff_occ_delta.mean())
+        mat_delta_mean_change = float(diff_mat_delta.mean())
 
         summary_entry = {
             "step": final_step,
@@ -754,13 +775,15 @@ def train(args: argparse.Namespace) -> Path:
             "mean_abs_occ_diff": mean_abs_occ,
             "mean_abs_mat_diff": mean_abs_mat,
             "mean_abs_mask_diff": mean_abs_mask,
-            "mean_abs_edit_diff": mean_abs_edit,
+            "mean_abs_mat_delta_diff": mean_abs_mat_delta,
+            "mean_abs_occ_delta_diff": mean_abs_occ_delta,
             "occ_diff_histogram": hist_occ,
             "top_occ_changes": top_occ,
             "slice_means_occ": slice_means_occ,
             "mat_mean_changes": mat_mean_changes,
             "mask_mean_change": mask_mean_change,
-            "edit_mean_change": edit_mean_change,
+            "occ_delta_mean_change": occ_delta_mean_change,
+            "mat_delta_mean_change": mat_delta_mean_change,
             "threshold": change_threshold,
         }
 
