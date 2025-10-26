@@ -197,7 +197,7 @@ class DenoisingVoxelGrid(nn.Module):
     def load_state(self, base_logits: torch.Tensor) -> None:
         logits = base_logits.detach().to(self.base_logits.device)
         self.base_reference.copy_(logits)
-        self.base_logits.zero_()
+        self.base_logits.copy_(logits)
         self.edit_logits.data.zero_()
         self.mask_logits.data.zero_()
 
@@ -209,11 +209,108 @@ class DenoisingVoxelGrid(nn.Module):
 
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def apply_noise(self, mask_std: float, edit_std: float) -> None:
+    def apply_noise(
+        self,
+        mask_std: float,
+        edit_std: float,
+        *,
+        fraction: float = 0.02,
+        bias_power: float = 1.5,
+    ) -> dict:
+        mask_std = float(mask_std)
+        edit_std = float(edit_std)
+        fraction = float(fraction)
+        bias_power = float(bias_power)
+
+        stats = {
+            "mask_std": mask_std,
+            "edit_std": edit_std,
+            "fraction": fraction,
+            "bias_power": bias_power,
+            "mask_voxels": 0,
+            "edit_voxels": 0,
+            "edit_channels": 0,
+            "mask_mean_abs_noise": 0.0,
+            "edit_mean_abs_noise": 0.0,
+            "selector_mean": 0.0,
+        }
+
+        if (mask_std <= 0.0 and edit_std <= 0.0) or fraction <= 0.0:
+            return stats
+
+        base_probs = F.softmax(self.base_reference, dim=-1)
+        base_occ = 1.0 - base_probs[..., self.sky_index]
+        current_occ = self.get_occupancy_probs()
+        bias = 0.5 * (base_occ + current_occ)
+        bias = bias.clamp_min(1e-4).pow(bias_power)
+
+        mask_prob = (fraction * bias).clamp(0.0, 1.0)
+        mask_selector = torch.bernoulli(mask_prob)
+        mask_selector_bool = mask_selector > 0.0
+        stats["mask_voxels"] = int(mask_selector_bool.sum().item())
+        stats["selector_mean"] = float(mask_selector.mean().item())
+
         if mask_std > 0.0:
-            self.mask_logits.add_(torch.randn_like(self.mask_logits) * mask_std)
+            noise = torch.randn_like(self.mask_logits) * mask_std
+            self.mask_logits.add_(noise * mask_selector)
+            if mask_selector_bool.any():
+                mask_vals = (noise * mask_selector)[mask_selector_bool]
+                stats["mask_mean_abs_noise"] = float(mask_vals.abs().mean().item())
+
         if edit_std > 0.0:
-            self.edit_logits.add_(torch.randn_like(self.edit_logits) * edit_std)
+            noise = torch.randn_like(self.edit_logits) * edit_std
+            edit_mask = mask_selector_bool[..., None].expand_as(noise)
+            self.edit_logits.add_(noise * edit_mask)
+            if mask_selector_bool.any():
+                edit_vals = (noise * edit_mask)[edit_mask]
+                stats["edit_mean_abs_noise"] = float(edit_vals.abs().mean().item())
+                stats["edit_voxels"] = stats["mask_voxels"]
+                stats["edit_channels"] = int(edit_mask.sum().item())
+
+        return stats
+
+    @torch.no_grad()
+    def integrate_base_logits(
+        self,
+        new_logits: torch.Tensor,
+        rate: float,
+        bias: float = 1.0,
+    ) -> dict:
+        rate = float(rate)
+        bias = float(bias)
+        stats = {
+            "rate": rate,
+            "bias": bias,
+            "mean_abs_update": 0.0,
+            "max_abs_update": 0.0,
+            "weight_mean": 0.0,
+            "weight_min": 0.0,
+            "weight_max": 0.0,
+            "updated_voxels": 0,
+        }
+        if rate <= 0.0:
+            return stats
+
+        new_logits = new_logits.detach().to(self.base_reference.device)
+        diff = new_logits - self.base_reference
+        diff_energy = diff.pow(2).mean(dim=-1)
+        if bias > 0.0:
+            weights = torch.exp(-bias * diff_energy).clamp_min(0.0)
+        else:
+            weights = torch.ones_like(diff_energy)
+        stats["weight_mean"] = float(weights.mean().item())
+        stats["weight_min"] = float(weights.min().item())
+        stats["weight_max"] = float(weights.max().item())
+
+        blend = (rate * weights).clamp(0.0, 1.0)[..., None]
+        update = diff * blend
+        stats["mean_abs_update"] = float(update.abs().mean().item())
+        stats["max_abs_update"] = float(update.abs().max().item())
+        stats["updated_voxels"] = int((blend.squeeze(-1) > 0).sum().item())
+
+        self.base_reference.add_(update)
+        self.base_logits.copy_(self.base_reference)
+        return stats
 
     @torch.no_grad()
     def harden(self, strength: float = 5.0, reset_prob: float = 0.5) -> None:

@@ -147,12 +147,35 @@ def train(args: argparse.Namespace) -> Path:
             "palette": float(args.lambda_palette_l2) * factor,
         }
 
-    def compute_noise(step: int) -> tuple[float, float]:
-        if args.warmup_steps <= 0:
-            return float(args.explore_mask_noise), float(args.explore_edit_noise)
-        phase = max(0.0, 1.0 - (step - 1) / max(args.warmup_steps, 1))
-        phase = phase ** max(float(args.explore_noise_decay), 1.0)
-        return float(args.explore_mask_noise) * phase, float(args.explore_edit_noise) * phase
+    def compute_noise(step: int) -> tuple[float, float, float]:
+        base_mask = float(args.explore_mask_noise)
+        base_edit = float(args.explore_edit_noise)
+        if base_mask <= 0.0 and base_edit <= 0.0:
+            return 0.0, 0.0, 0.0
+
+        ramp_steps = max(int(args.explore_noise_ramp), 0)
+        if ramp_steps <= 0:
+            ramp = 1.0
+        else:
+            ramp_phase = min(1.0, max(0.0, (step - 1) / max(ramp_steps, 1)))
+            ramp = ramp_phase ** max(float(args.explore_noise_gamma), 1e-6)
+
+        hold_steps = max(int(args.explore_noise_hold), 0)
+        decay_steps = max(int(args.explore_noise_decay_steps), 0)
+        if decay_steps > 0:
+            decay_start = ramp_steps + hold_steps
+            if step > decay_start:
+                decay_phase = min(1.0, max(0.0, (step - decay_start) / max(decay_steps, 1)))
+                ramp *= max(0.0, 1.0 - decay_phase)
+
+        min_floor = float(args.explore_noise_min)
+        if min_floor > 0.0:
+            ramp = max(ramp, min_floor)
+        ramp = min(ramp, 1.0)
+
+        mask_noise = base_mask * ramp
+        edit_noise = base_edit * ramp
+        return mask_noise, edit_noise, ramp
 
     if args.fuckdump:
         fuckdump_dir.mkdir(exist_ok=True)
@@ -179,7 +202,7 @@ def train(args: argparse.Namespace) -> Path:
             json.dump(initial_dict, f, indent=2)
 
         print("FUCKDUMP: Saving initial summary")
-        change_threshold = max(float(args.fuckdump_change_threshold), 1e-4)
+        change_threshold = max(float(args.fuckdump_change_threshold), 1e-8)
 
         initial_occ = scene.occupancy_probs().detach().cpu().numpy()
         initial_mat = scene.material_probs().detach().cpu().numpy()
@@ -243,12 +266,32 @@ def train(args: argparse.Namespace) -> Path:
         scene.train()
     save_image(preview_rgba[0, :3], images_dir / "preview_init.png")
 
+    with torch.no_grad():
+        prev_occ = scene.occupancy_probs().detach()
+        prev_mask = scene.mask_probs().detach()
+        prev_edit = scene.grid.edit_logits.detach().clone()
+        prev_base = scene.grid.base_logits.detach().clone()
+
     for step in range(1, args.steps + 1):
         t = (step - 1) / max(args.steps - 1, 1)
         temperature = lerp(args.temperature_start, args.temperature_end, t)
 
-        mask_noise, edit_noise = compute_noise(step)
-        scene.grid.apply_noise(mask_noise, edit_noise)
+        mask_noise, edit_noise, noise_ramp = compute_noise(step)
+        noise_stats = scene.grid.apply_noise(
+            mask_noise,
+            edit_noise,
+            fraction=float(args.explore_noise_fraction),
+            bias_power=float(args.explore_noise_bias_power),
+        )
+        noise_stats = noise_stats or {}
+        noise_stats.update(
+            {
+                "schedule_mask_noise": mask_noise,
+                "schedule_edit_noise": edit_noise,
+                "noise_ramp": noise_ramp,
+                "noise_min": float(args.explore_noise_min),
+            }
+        )
 
         with torch.no_grad():
             sampler.update_focus(scene.mask_probs().detach(), threshold=args.focus_threshold)
@@ -359,9 +402,45 @@ def train(args: argparse.Namespace) -> Path:
         if args.harden_interval > 0 and step % args.harden_interval == 0:
             scene.grid.harden(args.harden_strength, args.harden_reset_prob)
 
+        with torch.no_grad():
+            base_update_stats = scene.grid.integrate_base_logits(
+                scene.grid.final_logits().detach(),
+                rate=float(args.base_update_rate),
+                bias=float(args.base_update_bias),
+            )
+            occ_current = scene.occupancy_probs()
+            mask_current = scene.mask_probs()
+            edit_current = scene.grid.edit_logits
+            base_current = scene.grid.base_logits
+            stats = scene.stats()
+            occ_delta = (occ_current - prev_occ).abs()
+            mask_delta = (mask_current - prev_mask).abs()
+            edit_delta = (edit_current - prev_edit).abs()
+            base_delta = (base_current - prev_base).abs()
+            change_thr = float(args.change_voxel_threshold)
+            change_stats = {
+                "occ_mean_abs": float(occ_delta.mean().item()),
+                "occ_max_abs": float(occ_delta.max().item()),
+                "occ_voxels": int((occ_delta > change_thr).sum().item()),
+                "mask_mean_abs": float(mask_delta.mean().item()),
+                "mask_max_abs": float(mask_delta.max().item()),
+                "mask_voxels": int((mask_delta > change_thr).sum().item()),
+                "edit_mean_abs": float(edit_delta.mean().item()),
+                "edit_max_abs": float(edit_delta.max().item()),
+                "edit_voxels": int((edit_delta > change_thr).sum().item()),
+                "base_mean_abs": float(base_delta.mean().item()),
+                "base_max_abs": float(base_delta.max().item()),
+                "base_voxels": int((base_delta > change_thr).sum().item()),
+                "threshold": change_thr,
+            }
+            prev_occ = occ_current.detach()
+            prev_mask = mask_current.detach()
+            prev_edit = edit_current.detach().clone()
+            prev_base = base_current.detach().clone()
+        base_update_stats = base_update_stats or {}
+
         # FUCKDUMP MODE: Extensive debugging output
         if args.fuckdump:
-            stats = scene.stats()
 
             # Create fuckdump subdirectory
             fuckdump_dir.mkdir(exist_ok=True)
@@ -402,6 +481,38 @@ def train(args: argparse.Namespace) -> Path:
             for loss_name, loss_value in losses.items():
                 print(f"    {loss_name}: {loss_value:.6f}")
             print(f"    TOTAL: {total_loss.item():.6f}")
+            print(
+                "  🌫️ NOISE:"
+                f" ramp={noise_stats.get('noise_ramp', 0.0):.4f}"
+                f" min={noise_stats.get('noise_min', 0.0):.4f}"
+                f" mask_std={noise_stats.get('mask_std', 0.0):.4f}"
+                f" edit_std={noise_stats.get('edit_std', 0.0):.4f}"
+                f" mask_voxels={noise_stats.get('mask_voxels', 0)}"
+                f" edit_voxels={noise_stats.get('edit_voxels', 0)}"
+                f" edit_channels={noise_stats.get('edit_channels', 0)}"
+                f" selector_mean={noise_stats.get('selector_mean', 0.0):.4f}"
+            )
+            print(
+                "  🧱 BASE:"
+                f" rate={base_update_stats.get('rate', 0.0):.3f}"
+                f" bias={base_update_stats.get('bias', 0.0):.3f}"
+                f" mean|Δ|={base_update_stats.get('mean_abs_update', 0.0):.3e}"
+                f" max|Δ|={base_update_stats.get('max_abs_update', 0.0):.3e}"
+                f" weights=({base_update_stats.get('weight_min', 0.0):.3f},"
+                f"{base_update_stats.get('weight_mean', 0.0):.3f},"
+                f"{base_update_stats.get('weight_max', 0.0):.3f})"
+                f" updated_voxels={base_update_stats.get('updated_voxels', 0)}"
+            )
+            print(
+                "  🔄 CHANGE:"
+                f" occ_mean={change_stats['occ_mean_abs']:.3e}"
+                f" occ_max={change_stats['occ_max_abs']:.3e}"
+                f" occ_vox={change_stats['occ_voxels']}"
+                f" mask_mean={change_stats['mask_mean_abs']:.3e}"
+                f" edit_mean={change_stats['edit_mean_abs']:.3e}"
+                f" base_mean={change_stats['base_mean_abs']:.3e}"
+                f" thr={change_stats['threshold']:.1e}"
+            )
 
             # Voxel statistics
             print(f"  🧊 VOXELS: active={stats['num_active_voxels']}/{stats['total_voxels']} "
@@ -432,6 +543,9 @@ def train(args: argparse.Namespace) -> Path:
                 "loss_total": float(total_loss.item()),
                 "losses": losses,
                 "stats": stats,
+                "noise": noise_stats,
+                "base_update": base_update_stats,
+                "delta": change_stats,
                 "sample": {
                     "from_dataset": sample.from_dataset,
                     "index": sample.index,
@@ -445,10 +559,10 @@ def train(args: argparse.Namespace) -> Path:
                 f"active={stats['num_active_voxels']}/{stats['total_voxels']}"
             )
 
-        if step % args.image_interval == 0:
+        if step == 1 or step % args.image_interval == 0:
             save_image(rgb_pred[0], images_dir / f"step_{step:04d}.png")
 
-        if step % args.map_interval == 0 or step == args.steps:
+        if args.fuckdump or step == 1 or step % args.map_interval == 0 or step == args.steps:
             scene.save_map(
                 maps_dir / f"step_{step:04d}.json",
                 threshold=args.export_threshold,
@@ -699,18 +813,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", type=str, default="out_local/voxel_sds")
     parser.add_argument("--fuckdump", action="store_true", help="Enable extensive debugging output")
     parser.add_argument("--export_threshold", type=float, default=0.5)
-    parser.add_argument("--fuckdump_change_threshold", type=float, default=0.01)
+    parser.add_argument("--fuckdump_change_threshold", type=float, default=1e-4)
+    parser.add_argument("--change_voxel_threshold", type=float, default=1e-3)
     parser.add_argument("--train_occupancy_threshold", type=float, default=0.05)
     parser.add_argument("--log_interval", type=int, default=10)
-    parser.add_argument("--image_interval", type=int, default=50)
-    parser.add_argument("--map_interval", type=int, default=100)
+    parser.add_argument("--image_interval", type=int, default=10)
+    parser.add_argument("--map_interval", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sdxl_dtype", type=str, default="auto", choices=["auto", "fp16", "fp32"])
     parser.add_argument("--warmup_steps", type=int, default=500)
     parser.add_argument("--warmup_reg_factor", type=float, default=0.0)
-    parser.add_argument("--explore_mask_noise", type=float, default=0.3)
-    parser.add_argument("--explore_edit_noise", type=float, default=0.1)
-    parser.add_argument("--explore_noise_decay", type=float, default=1.0)
+    parser.add_argument("--explore_mask_noise", type=float, default=0.35)
+    parser.add_argument("--explore_edit_noise", type=float, default=0.12)
+    parser.add_argument("--explore_noise_ramp", type=int, default=80)
+    parser.add_argument("--explore_noise_gamma", type=float, default=1.0)
+    parser.add_argument("--explore_noise_hold", type=int, default=0)
+    parser.add_argument("--explore_noise_decay_steps", type=int, default=0)
+    parser.add_argument("--explore_noise_fraction", type=float, default=0.05)
+    parser.add_argument("--explore_noise_bias_power", type=float, default=2.0)
+    parser.add_argument("--explore_noise_min", type=float, default=0.02)
+    parser.add_argument("--base_update_rate", type=float, default=0.05)
+    parser.add_argument("--base_update_bias", type=float, default=0.5)
     parser.add_argument("--focus_threshold", type=float, default=0.65)
     parser.add_argument("--edit_lr_scale", type=float, default=3.0)
     parser.add_argument("--palette_lr_scale", type=float, default=0.5)
