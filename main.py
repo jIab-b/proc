@@ -648,6 +648,17 @@ async def health():
     return {"status": "healthy"}
 
 
+@app.post("/shutdown")
+async def shutdown():
+    """Shutdown the server"""
+    import os
+    import signal
+    print("🛑 Shutdown requested via API")
+    # Get the current process and send SIGTERM
+    os.kill(os.getpid(), signal.SIGTERM)
+    return {"status": "shutting_down"}
+
+
 @app.get("/api/textures")
 async def list_textures():
     """List all saved textures"""
