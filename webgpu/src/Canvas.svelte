@@ -14,7 +14,8 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
     ellipsoidRadiusX,
     ellipsoidRadiusY,
     ellipsoidRadiusZ,
-    planeSize,
+    planeSizeX,
+    planeSizeZ,
     highlightSelection,
     gpuHooks,
     BlockType,
@@ -465,8 +466,12 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
         </div>
       {:else if $highlightShape === 'plane'}
         <div class="context-section">
-          <label>Plane Size: {$planeSize}</label>
-          <input type="range" min="4" max="32" step="1" bind:value={$planeSize} />
+          <label>Plane Size X: {$planeSizeX}</label>
+          <input type="range" min="4" max="32" step="1" bind:value={$planeSizeX} />
+        </div>
+        <div class="context-section">
+          <label>Plane Size Z: {$planeSizeZ}</label>
+          <input type="range" min="4" max="32" step="1" bind:value={$planeSizeZ} />
         </div>
       {:else}
         <div class="context-section">

@@ -65,8 +65,10 @@
       const chunkCenter = $highlightSelection.center
       const worldCenter = $gpuHooks.chunkToWorld?.(chunkCenter) || chunkCenter
       const worldScale = $gpuHooks.getWorldScale?.() || 2
-      const size = $highlightSelection.planeSize ?? 8
-      const worldSize = size * worldScale
+      const sizeX = $highlightSelection.planeSizeX ?? 8
+      const sizeZ = $highlightSelection.planeSizeZ ?? 8
+      const worldSizeX = sizeX * worldScale
+      const worldSizeZ = sizeZ * worldScale
 
       // Get camera position to determine max Y
       const cameraPos = $gpuHooks.getCameraPosition?.()
@@ -74,14 +76,14 @@
 
       region = {
         min: [
-          Math.floor(worldCenter[0] - worldSize),
+          Math.floor(worldCenter[0] - worldSizeX),
           Math.floor(worldCenter[1]),  // Base Y from plane
-          Math.floor(worldCenter[2] - worldSize)
+          Math.floor(worldCenter[2] - worldSizeZ)
         ] as [number, number, number],
         max: [
-          Math.floor(worldCenter[0] + worldSize),
+          Math.floor(worldCenter[0] + worldSizeX),
           Math.floor(maxY),  // Generate upwards
-          Math.floor(worldCenter[2] + worldSize)
+          Math.floor(worldCenter[2] + worldSizeZ)
         ] as [number, number, number]
       }
     } else {

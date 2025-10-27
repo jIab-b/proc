@@ -3,6 +3,7 @@
 
 import { get } from 'svelte/store'
 import terrainWGSL from './pipelines/render/terrain.wgsl?raw'
+import planeWGSL from './pipelines/render/plane.wgsl?raw'
 import {
   createPerspective,
   lookAt,
@@ -18,7 +19,8 @@ import {
   ellipsoidRadiusX,
   ellipsoidRadiusY,
   ellipsoidRadiusZ,
-  planeSize,
+  planeSizeX,
+  planeSizeZ,
   ellipsoidEditAxis,
   ellipsoidSelectedNode,
   highlightSelection as highlightSelectionStore,
@@ -176,6 +178,88 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     primitive: { topology: 'triangle-list', cullMode: 'back' },
     depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' }
   })
+
+  // === Plane Highlight Shader Pipeline ===
+  const planeShaderModule = device.createShaderModule({ code: planeWGSL })
+  const planeShaderInfo = await planeShaderModule.getCompilationInfo()
+  if (planeShaderInfo.messages?.length) {
+    for (const m of planeShaderInfo.messages) console.error(`plane.wgsl: ${m.lineNum}:${m.linePos} ${m.message}`)
+  }
+
+  // Plane bind group layout: camera + plane uniforms
+  const planeBGL = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },  // Camera
+      { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }   // Plane uniforms
+    ]
+  })
+
+  // Plane uniform buffer (center, sizeX, sizeZ, color)
+  const planeUniformBuffer = device.createBuffer({
+    size: 48, // 3*4 (center) + 4 (pad) + 4 (sizeX) + 4 (sizeZ) + 3*4 (color) + 4 (pad) = 48 bytes
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+  })
+
+  let planeBindGroup = device.createBindGroup({
+    layout: planeBGL,
+    entries: [
+      { binding: 0, resource: { buffer: cameraBuffer } },
+      { binding: 1, resource: { buffer: planeUniformBuffer } }
+    ]
+  })
+
+  const planePipeline = device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [planeBGL] }),
+    vertex: {
+      module: planeShaderModule,
+      entryPoint: 'vs_main',
+      buffers: [{
+        arrayStride: 5 * 4, // position (3) + uv (2)
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: 'float32x3' },  // position
+          { shaderLocation: 1, offset: 12, format: 'float32x2' }  // uv
+        ]
+      }]
+    },
+    fragment: {
+      module: planeShaderModule,
+      entryPoint: 'fs_main',
+      targets: [{
+        format,
+        blend: {
+          color: {
+            srcFactor: 'src-alpha',
+            dstFactor: 'one-minus-src-alpha',
+            operation: 'add'
+          },
+          alpha: {
+            srcFactor: 'one',
+            dstFactor: 'one-minus-src-alpha',
+            operation: 'add'
+          }
+        }
+      }]
+    },
+    primitive: { topology: 'triangle-list', cullMode: 'none' },
+    depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' }
+  })
+
+  // Plane geometry: simple quad (-1 to 1 in X and Z)
+  const planeVertices = new Float32Array([
+    // position (x, y, z), uv (u, v)
+    -1, 0, -1,  0, 0,
+     1, 0, -1,  1, 0,
+     1, 0,  1,  1, 1,
+    -1, 0, -1,  0, 0,
+     1, 0,  1,  1, 1,
+    -1, 0,  1,  0, 1
+  ])
+
+  const planeVertexBuffer = device.createBuffer({
+    size: planeVertices.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+  })
+  device.queue.writeBuffer(planeVertexBuffer, 0, planeVertices)
 
   setBlockTextureIndices(BlockType.Plank, null)
   let meshDirty = true
@@ -469,50 +553,20 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         overlayCtx.lineWidth = 1.5
         overlayCtx.strokeStyle = 'rgba(255, 100, 80, 0.85)'
       } else if (highlightSelection.shape === 'plane') {
-        // Draw horizontal plane as a grid (RED)
-        const size = highlightSelection.planeSize ?? 8
+        // Plane is now rendered via WebGPU shader (see plane.wgsl)
+        // Just draw the interaction nodes on the overlay
+        const sizeX = highlightSelection.planeSizeX ?? 8
+        const sizeZ = highlightSelection.planeSizeZ ?? 8
         const y = baseCenter[1]  // Fixed Y coordinate (the base height)
 
-        // Draw grid lines in red
-        overlayCtx.strokeStyle = 'rgba(255, 100, 80, 0.7)'
-        overlayCtx.lineWidth = 1.5
-
-        // Draw X lines (parallel to X axis)
-        for (let z = -size; z <= size; z += 2) {
-          const p1: Vec3 = [baseCenter[0] - size, y, baseCenter[2] + z]
-          const p2: Vec3 = [baseCenter[0] + size, y, baseCenter[2] + z]
-          const s1 = projectChunk(p1)
-          const s2 = projectChunk(p2)
-          if (s1 && s2) {
-            overlayCtx.beginPath()
-            overlayCtx.moveTo(s1[0], s1[1])
-            overlayCtx.lineTo(s2[0], s2[1])
-            overlayCtx.stroke()
-          }
-        }
-
-        // Draw Z lines (parallel to Z axis)
-        for (let x = -size; x <= size; x += 2) {
-          const p1: Vec3 = [baseCenter[0] + x, y, baseCenter[2] - size]
-          const p2: Vec3 = [baseCenter[0] + x, y, baseCenter[2] + size]
-          const s1 = projectChunk(p1)
-          const s2 = projectChunk(p2)
-          if (s1 && s2) {
-            overlayCtx.beginPath()
-            overlayCtx.moveTo(s1[0], s1[1])
-            overlayCtx.lineTo(s2[0], s2[1])
-            overlayCtx.stroke()
-          }
-        }
-
-        // Draw corner nodes and center node
+        // Draw side nodes (middle of each edge) and center node
         const nodeRadius = 6
         const selectedNode = get(ellipsoidSelectedNode)
         const nodes: Array<{ pos: Vec3; id: EllipsoidNode }> = [
-          { pos: [baseCenter[0] + size, y, baseCenter[2] + size], id: '+x' },  // +X+Z corner
-          { pos: [baseCenter[0] - size, y, baseCenter[2] + size], id: '-x' },  // -X+Z corner
-          { pos: [baseCenter[0] + size, y, baseCenter[2] - size], id: '+z' },  // +X-Z corner
-          { pos: [baseCenter[0] - size, y, baseCenter[2] - size], id: '-z' },  // -X-Z corner
+          { pos: [baseCenter[0] + sizeX, y, baseCenter[2]], id: '+x' },  // Right edge (drags in X)
+          { pos: [baseCenter[0] - sizeX, y, baseCenter[2]], id: '-x' },  // Left edge (drags in X)
+          { pos: [baseCenter[0], y, baseCenter[2] + sizeZ], id: '+z' },  // Front edge (drags in Z)
+          { pos: [baseCenter[0], y, baseCenter[2] - sizeZ], id: '-z' },  // Back edge (drags in Z)
           { pos: [baseCenter[0], y, baseCenter[2]], id: 'center' }
         ]
 
@@ -708,7 +762,8 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             console.warn('⚠️  ELLIPSOID IS OFF-SCREEN! Pan camera to position:', currentSelection.center)
           }
         } else if (currentSelection && currentSelection.shape === 'plane') {
-          const size = currentSelection.planeSize ?? 8
+          const sizeX = currentSelection.planeSizeX ?? 8
+          const sizeZ = currentSelection.planeSizeZ ?? 8
 
           // Calculate if plane is visible
           const centerWorld = chunkToWorld([
@@ -718,10 +773,11 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           ])
           const isVisible = latestCamera && projectToScreen(centerWorld, latestCamera.viewProjectionMatrix, canvas.width, canvas.height) !== null
 
-          console.log('Current plane:', currentSelection.center, 'size:', size)
+          console.log('Current plane:', currentSelection.center, 'sizeX:', sizeX, 'sizeZ:', sizeZ)
           console.log('⚠️  Plane visible:', isVisible, '- Center world pos:', centerWorld)
 
-          clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, size, 0, 0, 'plane')
+          // Pass max(sizeX, sizeZ) as a general size parameter for click detection
+          clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, sizeX, 0, sizeZ, 'plane')
           console.log('Clicked node:', clickedNode)
           console.log('Activated nodes:', Array.from(activatedNodes))
 
@@ -788,8 +844,9 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             selection.radiusZ = get(ellipsoidRadiusZ)
             console.log('Ellipsoid created at (CHUNK coords):', centerPos, 'with radii:', selection.radiusX, selection.radiusY, selection.radiusZ)
           } else if (shape === 'plane') {
-            selection.planeSize = get(planeSize)
-            console.log('Plane created at (CHUNK coords):', centerPos, 'with size:', selection.planeSize)
+            selection.planeSizeX = get(planeSizeX)
+            selection.planeSizeZ = get(planeSizeZ)
+            console.log('Plane created at (CHUNK coords):', centerPos, 'with sizes:', selection.planeSizeX, 'x', selection.planeSizeZ)
           }
           ellipsoidSelectedNode.set(null)
           ellipsoidEditAxis.set(null)
@@ -997,11 +1054,72 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         ev.preventDefault()
 
         // Calculate mouse delta from start position
-        const deltaX = ev.clientX - nodeEditStartX
-        const deltaY = ev.clientY - nodeEditStartY
+        const mouseX = ev.clientX
+        const mouseY = ev.clientY
+        const deltaX = mouseX - nodeEditStartX
+        const deltaY = mouseY - nodeEditStartY
 
-        // Use the primary movement direction (the larger delta)
-        const delta = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : -deltaY
+        // Camera-aware delta calculation
+        let delta = 0
+
+        if (latestCamera) {
+          // Get the axis direction in world space based on which node is selected
+          let worldAxisDir: Vec3 = [0, 0, 0]
+
+          if (selectedNode === '+x' || selectedNode === '-x') {
+            worldAxisDir = [1, 0, 0]  // X axis
+          } else if (selectedNode === '+y' || selectedNode === '-y') {
+            worldAxisDir = [0, 1, 0]  // Y axis
+          } else if (selectedNode === '+z' || selectedNode === '-z') {
+            worldAxisDir = [0, 0, 1]  // Z axis
+          }
+
+          // Project the world axis direction onto screen space
+          const currentSelection = get(highlightSelectionStore)
+          if (currentSelection) {
+            const center = currentSelection.center
+            const baseCenter: Vec3 = [center[0] + 0.5, center[1] + 0.5, center[2] + 0.5]
+            const centerWorld = chunkToWorld(baseCenter)
+
+            // Point along the axis
+            const axisPoint: Vec3 = [
+              centerWorld[0] + worldAxisDir[0],
+              centerWorld[1] + worldAxisDir[1],
+              centerWorld[2] + worldAxisDir[2]
+            ]
+
+            const centerScreen = projectToScreen(centerWorld, latestCamera.viewProjectionMatrix, canvas.width, canvas.height)
+            const axisScreen = projectToScreen(axisPoint, latestCamera.viewProjectionMatrix, canvas.width, canvas.height)
+
+            if (centerScreen && axisScreen) {
+              // Screen space axis direction
+              const screenAxisX = axisScreen[0] - centerScreen[0]
+              const screenAxisY = axisScreen[1] - centerScreen[1]
+              const screenAxisLen = Math.hypot(screenAxisX, screenAxisY)
+
+              if (screenAxisLen > 0.001) {
+                // Normalize screen axis direction
+                const screenAxisNormX = screenAxisX / screenAxisLen
+                const screenAxisNormY = screenAxisY / screenAxisLen
+
+                // Project mouse delta onto screen axis
+                delta = deltaX * screenAxisNormX + deltaY * screenAxisNormY
+              } else {
+                // Fallback if axis is perpendicular to view
+                delta = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : -deltaY
+              }
+            } else {
+              // Fallback if projection fails
+              delta = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : -deltaY
+            }
+          } else {
+            // Fallback if no selection
+            delta = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : -deltaY
+          }
+        } else {
+          // Fallback if no camera
+          delta = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : -deltaY
+        }
 
         // Sensitivity: pixels to radius units
         const sensitivity = 0.05
@@ -1011,14 +1129,25 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         const currentSelection = get(highlightSelectionStore)
 
         if (currentSelection && currentSelection.shape === 'plane') {
-          // For plane, all corner nodes resize the plane uniformly
-          planeSize.set(newRadius)
-          highlightSelectionStore.update(sel => {
-            if (sel && sel.shape === 'plane') {
-              return { ...sel, planeSize: newRadius }
-            }
-            return sel
-          })
+          // For plane, update only the dimension corresponding to the selected node
+          // '+x'/'-x' nodes control X dimension, '+z'/'-z' nodes control Z dimension
+          if (selectedNode === '+x' || selectedNode === '-x') {
+            planeSizeX.set(newRadius)
+            highlightSelectionStore.update(sel => {
+              if (sel && sel.shape === 'plane') {
+                return { ...sel, planeSizeX: newRadius }
+              }
+              return sel
+            })
+          } else if (selectedNode === '+z' || selectedNode === '-z') {
+            planeSizeZ.set(newRadius)
+            highlightSelectionStore.update(sel => {
+              if (sel && sel.shape === 'plane') {
+                return { ...sel, planeSizeZ: newRadius }
+              }
+              return sel
+            })
+          }
         } else if (currentSelection && currentSelection.shape === 'ellipsoid') {
           const axis = selectedNode[1] as 'x' | 'y' | 'z'
           if (axis === 'x') {
@@ -1200,7 +1329,12 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
       // Check if we're working with plane or ellipsoid
       const currentSelection = get(highlightSelectionStore)
       if (currentSelection && currentSelection.shape === 'plane') {
-        nodeEditStartRadius = get(planeSize)
+        // For plane, set starting radius based on which node (X or Z direction)
+        if (node === '+x' || node === '-x') {
+          nodeEditStartRadius = get(planeSizeX)
+        } else if (node === '+z' || node === '-z') {
+          nodeEditStartRadius = get(planeSizeZ)
+        }
       } else {
         const axis = node[1] as 'x' | 'y' | 'z'
         if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
@@ -1506,19 +1640,23 @@ Examples:
           radiusZ: rz
         }
       } else if (currentSelection.shape === 'plane') {
-        const size = (currentSelection.planeSize ?? 8) * worldScale
+        const sizeX = (currentSelection.planeSizeX ?? 8) * worldScale
+        const sizeZ = (currentSelection.planeSizeZ ?? 8) * worldScale
         region = {
           min: [
-            Math.floor(worldCenter[0] - size),
+            Math.floor(worldCenter[0] - sizeX),
             Math.floor(worldCenter[1]),
-            Math.floor(worldCenter[2] - size)
+            Math.floor(worldCenter[2] - sizeZ)
           ],
           max: [
-            Math.floor(worldCenter[0] + size),
+            Math.floor(worldCenter[0] + sizeX),
             Math.floor(worldCenter[1] + 64),
-            Math.floor(worldCenter[2] + size)
+            Math.floor(worldCenter[2] + sizeZ)
           ]
         }
+      } else {
+        // This should never happen since we check for ellipsoid/plane at the top
+        throw new Error('LLM generation requires an ellipsoid or plane selection')
       }
 
       console.log('[LLM] Generating terrain with params:', params)
@@ -1677,14 +1815,16 @@ Examples:
     let nodes: Array<{ pos: Vec3; id: EllipsoidNode }>
 
     if (shape === 'plane') {
-      // For plane, use corner nodes at the same Y level
-      const size = rx // For plane, rx is actually the planeSize
+      // For plane, use side nodes (middle of each edge) at the same Y level
+      // rx is planeSizeX, rz is planeSizeZ
+      const sizeX = rx
+      const sizeZ = rz
       const y = baseCenter[1]
       nodes = [
-        { pos: [baseCenter[0] + size, y, baseCenter[2] + size], id: '+x' },  // +X+Z corner
-        { pos: [baseCenter[0] - size, y, baseCenter[2] + size], id: '-x' },  // -X+Z corner
-        { pos: [baseCenter[0] + size, y, baseCenter[2] - size], id: '+z' },  // +X-Z corner
-        { pos: [baseCenter[0] - size, y, baseCenter[2] - size], id: '-z' }   // -X-Z corner
+        { pos: [baseCenter[0] + sizeX, y, baseCenter[2]], id: '+x' },  // Right edge
+        { pos: [baseCenter[0] - sizeX, y, baseCenter[2]], id: '-x' },  // Left edge
+        { pos: [baseCenter[0], y, baseCenter[2] + sizeZ], id: '+z' },  // Front edge
+        { pos: [baseCenter[0], y, baseCenter[2] - sizeZ], id: '-z' }   // Back edge
       ]
     } else {
       // Ellipsoid nodes
@@ -1748,9 +1888,10 @@ Examples:
 
         clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, rx, ry, rz, 'ellipsoid')
       } else if (currentSelection && currentSelection.shape === 'plane') {
-        const size = currentSelection.planeSize ?? 8
+        const sizeX = currentSelection.planeSizeX ?? 8
+        const sizeZ = currentSelection.planeSizeZ ?? 8
 
-        clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, size, 0, 0, 'plane')
+        clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, sizeX, 0, sizeZ, 'plane')
       }
 
       if (ev.button === 2) {
@@ -1776,7 +1917,8 @@ Examples:
             selection.radiusY = get(ellipsoidRadiusY)
             selection.radiusZ = get(ellipsoidRadiusZ)
           } else if (shape === 'plane') {
-            selection.planeSize = get(planeSize)
+            selection.planeSizeX = get(planeSizeX)
+            selection.planeSizeZ = get(planeSizeZ)
           }
           ellipsoidSelectedNode.set(null)
           ellipsoidEditAxis.set(null)
@@ -1817,8 +1959,12 @@ Examples:
           nodeEditStartY = ev.clientY
 
           if (currentSelection.shape === 'plane') {
-            // For plane, all corner nodes adjust the same planeSize
-            nodeEditStartRadius = get(planeSize)
+            // For plane, set starting radius based on which node (X or Z direction)
+            if (clickedNode === '+x' || clickedNode === '-x') {
+              nodeEditStartRadius = get(planeSizeX)
+            } else if (clickedNode === '+z' || clickedNode === '-z') {
+              nodeEditStartRadius = get(planeSizeZ)
+            }
           } else {
             const axis = clickedNode[1] as 'x' | 'y' | 'z'
             if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
@@ -2269,6 +2415,30 @@ Examples:
       pass.setVertexBuffer(0, vertexBuffer)
       pass.draw(vertexCount, 1, 0, 0)
     }
+
+    // Render plane highlight if there's a plane selection
+    if (highlightSelection && highlightSelection.shape === 'plane') {
+      const center = highlightSelection.center
+      const sizeX = highlightSelection.planeSizeX ?? 8
+      const sizeZ = highlightSelection.planeSizeZ ?? 8
+
+      // Convert chunk coordinates to world coordinates
+      const centerWorld = chunkToWorld([center[0] + 0.5, center[1] + 0.5, center[2] + 0.5])
+
+      // Update plane uniforms
+      const planeUniforms = new Float32Array([
+        centerWorld[0], centerWorld[1], centerWorld[2], 0,  // center + padding
+        sizeX * worldScale, sizeZ * worldScale, 0, 0,       // sizeX, sizeZ + padding
+        1.0, 0.2, 0.2, 0                                     // red color + padding
+      ])
+      device.queue.writeBuffer(planeUniformBuffer, 0, planeUniforms)
+
+      pass.setPipeline(planePipeline)
+      pass.setBindGroup(0, planeBindGroup)
+      pass.setVertexBuffer(0, planeVertexBuffer)
+      pass.draw(6, 1, 0, 0)  // 6 vertices for the quad
+    }
+
     pass.end()
     device.queue.submit([encoder.finish()])
     renderOverlay()

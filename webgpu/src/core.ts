@@ -115,7 +115,8 @@ export interface HighlightSelection {
   radiusX?: number  // For ellipsoid
   radiusY?: number  // For ellipsoid
   radiusZ?: number  // For ellipsoid
-  planeSize?: number  // For plane - size in X and Z directions
+  planeSizeX?: number  // For plane - size in X direction
+  planeSizeZ?: number  // For plane - size in Z direction
   shape: HighlightShape
 }
 
@@ -146,7 +147,8 @@ export const ellipsoidRadiusX: Writable<number> = writable(4)
 export const ellipsoidRadiusY: Writable<number> = writable(2)
 export const ellipsoidRadiusZ: Writable<number> = writable(4)
 export const ellipsoidEditAxis: Writable<'x' | 'y' | 'z' | null> = writable(null)
-export const planeSize: Writable<number> = writable(8)  // Size of plane in X and Z directions
+export const planeSizeX: Writable<number> = writable(8)  // Size of plane in X direction
+export const planeSizeZ: Writable<number> = writable(8)  // Size of plane in Z direction
 export type EllipsoidNode = '+x' | '-x' | '+y' | '-y' | '+z' | '-z' | 'center' | null
 export const ellipsoidSelectedNode: Writable<EllipsoidNode> = writable(null)
 export const highlightSelection: Writable<HighlightSelection | null> = writable(null)
