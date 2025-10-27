@@ -111,6 +111,21 @@
       }
     }
 
+    console.log('=== TERRAIN GENERATION REQUEST ===')
+    console.log('Action:', action)
+    console.log('Region (WORLD coords):', region)
+    console.log('Profile:', $terrainProfile)
+    console.log('Highlight selection:', $highlightSelection)
+    if ($highlightSelection) {
+      console.log('  Shape:', $highlightSelection.shape)
+      console.log('  Center (CHUNK coords):', $highlightSelection.center)
+      if ($gpuHooks.chunkToWorld) {
+        const worldCenter = $gpuHooks.chunkToWorld($highlightSelection.center)
+        console.log('  Center (WORLD coords):', worldCenter)
+      }
+      console.log('  WorldScale:', $gpuHooks.getWorldScale?.())
+    }
+
     // Add ellipsoid mask if using ellipsoid selection
     if ($highlightSelection && $highlightSelection.shape === 'ellipsoid') {
       // Convert center from chunk to world coordinates

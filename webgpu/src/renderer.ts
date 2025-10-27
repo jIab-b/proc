@@ -759,7 +759,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           }
 
           const hit = raycast(overviewPos, rayDir)
-          console.log('Ellipsoid mode right-click raycast:', hit)
+          console.log(`${shape} mode right-click raycast:`, hit)
 
           let centerPos: Vec3
           if (hit) {
@@ -773,7 +773,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             ]
             const chunkPos = worldToChunk(worldPos)
             centerPos = [Math.floor(chunkPos[0]), Math.floor(chunkPos[1]), Math.floor(chunkPos[2])]
-            console.log('No raycast hit - creating ellipsoid at click position:', centerPos)
+            console.log(`No raycast hit - creating ${shape} at click position (CHUNK coords):`, centerPos)
           }
 
           const radius = get(highlightRadius)
@@ -786,8 +786,10 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             selection.radiusX = get(ellipsoidRadiusX)
             selection.radiusY = get(ellipsoidRadiusY)
             selection.radiusZ = get(ellipsoidRadiusZ)
+            console.log('Ellipsoid created at (CHUNK coords):', centerPos, 'with radii:', selection.radiusX, selection.radiusY, selection.radiusZ)
           } else if (shape === 'plane') {
             selection.planeSize = get(planeSize)
+            console.log('Plane created at (CHUNK coords):', centerPos, 'with size:', selection.planeSize)
           }
           ellipsoidSelectedNode.set(null)
           ellipsoidEditAxis.set(null)
@@ -797,7 +799,6 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           ellipsoidNodeAdjustActive = false
           ellipsoidCenterDragActive = false
           lastCameraPos = [...overviewPos] as Vec3
-          console.log('Ellipsoid created at:', centerPos, 'with radii:', selection.radiusX, selection.radiusY, selection.radiusZ)
 
           ev.stopPropagation()
           return
@@ -1388,40 +1389,47 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
   // Helper: generate terrain using OpenAI LLM
   async function generateTerrainWithLLM(description: string) {
+    console.log('=== OPENAI API CALL TRIGGERED ===')
+    console.log('[LLM] Description:', description)
+    console.trace('Call stack:')
+
+    // Check if there's a current ellipsoid/plane selection
+    const currentSelection = get(highlightSelectionStore)
+    if (!currentSelection) {
+      alert('Please create an ellipsoid or plane selection first (right-click to create)')
+      return
+    }
+
     const apiKey = import.meta.env.VITE_OPENAI_API_KEY
     if (!apiKey) {
+      console.error('[LLM] No API key found')
       throw new Error('VITE_OPENAI_API_KEY not found in environment variables. Please set it in your .env file.')
     }
 
     console.log('[LLM] Generating terrain for description:', description)
+    console.log('[LLM] Using selection:', currentSelection)
 
     // Prepare the prompt for the LLM
-    const systemPrompt = `You are a terrain generation assistant. You help users generate terrain using a DSL (Domain Specific Language) command.
+    const systemPrompt = `You are a terrain generation assistant. Based on the user's description, respond with ONLY a JSON object (no explanation, no markdown) with these fields:
 
-The terrain-dsl command syntax is:
-generate <cx1> <cz1> <cx2> <cz2> <profile> [seed] [amplitude] [roughness] [elevation]
+{
+  "profile": "rolling_hills" | "mountain" | "hybrid",
+  "amplitude": number (8-18, controls terrain height variation),
+  "roughness": number (2.0-3.0, controls terrain detail/jaggedness),
+  "elevation": number (0.3-0.6, controls base height)
+}
 
-Arguments:
-- cx1, cz1: Starting chunk coordinates (integers, can be negative)
-- cx2, cz2: Ending chunk coordinates (integers, can be negative)
-- profile: Terrain profile, must be one of: rolling_hills, mountain, hybrid
-- seed: Optional random seed (integer)
-- amplitude: Optional height amplitude (float, typically 8-18)
-- roughness: Optional terrain roughness (float, typically 2.2-2.8)
-- elevation: Optional base elevation (float, typically 0.35-0.5)
+Guidelines:
+- rolling_hills: gentle, smooth terrain (amplitude: 8-12, roughness: 2.0-2.4)
+- mountain: dramatic peaks and valleys (amplitude: 14-18, roughness: 2.6-3.0)
+- hybrid: mix of both (amplitude: 10-14, roughness: 2.2-2.6)
 
 Examples:
-- "generate 0 0 9 9 rolling_hills" - Generate a 10x10 chunk region with rolling hills
-- "generate -5 -5 5 5 mountain 7331 18 2.8 0.5" - Generate an 11x11 chunk mountain region with custom parameters
-- "generate 0 0 4 4 hybrid 42" - Generate a 5x5 chunk hybrid region with seed 42
+- "gentle rolling hills" → {"profile": "rolling_hills", "amplitude": 10, "roughness": 2.2, "elevation": 0.4}
+- "dramatic mountains" → {"profile": "mountain", "amplitude": 16, "roughness": 2.8, "elevation": 0.45}
+- "varied landscape" → {"profile": "hybrid", "amplitude": 12, "roughness": 2.5, "elevation": 0.42}`
 
-Based on the user's description, generate ONLY the terrain-dsl command (just the command, no explanation).
-For region size, use reasonable defaults:
-- Small descriptions: 5x5 to 10x10 chunks (cx1=0, cz1=0, cx2=4-9, cz2=4-9)
-- Medium descriptions: 10x10 to 20x20 chunks
-- Large descriptions: 20x20 to 50x50 chunks`
-
-    const userPrompt = `Generate terrain: ${description}`
+    const userPrompt = `Terrain description: ${description}`
 
     try {
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -1453,10 +1461,128 @@ For region size, use reasonable defaults:
         throw new Error('Empty response from LLM')
       }
 
-      console.log('[LLM] Generated command:', llmResponse)
+      console.log('[LLM] Raw response:', llmResponse)
 
-      // Parse and execute the terrain command
-      await executeTerrainCommand(llmResponse, chunk)
+      // Parse JSON response
+      const params = JSON.parse(llmResponse)
+      console.log('[LLM] Parsed params:', params)
+
+      // Now use the gpuHooks.generateTerrain with the current selection
+      // This will use the ellipsoid/plane you created
+      const { generateRegion, createTerrainGeneratorState } = await import('./procedural/terrainGenerator')
+
+      // Get world coordinates from the current selection
+      const worldCenter = chunkToWorld([
+        currentSelection.center[0] + 0.5,
+        currentSelection.center[1] + 0.5,
+        currentSelection.center[2] + 0.5
+      ])
+
+      let region: { min: Vec3; max: Vec3 }
+      let ellipsoidMask = null
+
+      if (currentSelection.shape === 'ellipsoid') {
+        const rx = (currentSelection.radiusX ?? currentSelection.radius) * worldScale
+        const ry = (currentSelection.radiusY ?? currentSelection.radius) * worldScale
+        const rz = (currentSelection.radiusZ ?? currentSelection.radius) * worldScale
+
+        region = {
+          min: [
+            Math.floor(worldCenter[0] - rx),
+            Math.floor(worldCenter[1] - ry),
+            Math.floor(worldCenter[2] - rz)
+          ],
+          max: [
+            Math.floor(worldCenter[0] + rx),
+            Math.floor(worldCenter[1] + ry),
+            Math.floor(worldCenter[2] + rz)
+          ]
+        }
+
+        ellipsoidMask = {
+          center: worldCenter,
+          radiusX: rx,
+          radiusY: ry,
+          radiusZ: rz
+        }
+      } else if (currentSelection.shape === 'plane') {
+        const size = (currentSelection.planeSize ?? 8) * worldScale
+        region = {
+          min: [
+            Math.floor(worldCenter[0] - size),
+            Math.floor(worldCenter[1]),
+            Math.floor(worldCenter[2] - size)
+          ],
+          max: [
+            Math.floor(worldCenter[0] + size),
+            Math.floor(worldCenter[1] + 64),
+            Math.floor(worldCenter[2] + size)
+          ]
+        }
+      }
+
+      console.log('[LLM] Generating terrain with params:', params)
+      console.log('[LLM] Region:', region)
+      console.log('[LLM] Ellipsoid mask:', ellipsoidMask)
+
+      // Convert world coordinates back to chunk coordinates for terrain generation
+      const chunkMin = worldToChunk(region.min)
+      const chunkMax = worldToChunk(region.max)
+
+      const chunkRegion = {
+        min: [
+          Math.max(0, Math.floor(chunkMin[0])),
+          Math.max(0, Math.floor(chunkMin[1])),
+          Math.max(0, Math.floor(chunkMin[2]))
+        ] as Vec3,
+        max: [
+          Math.min(chunk.size.x - 1, Math.floor(chunkMax[0])),
+          Math.min(chunk.size.y - 1, Math.floor(chunkMax[1])),
+          Math.min(chunk.size.z - 1, Math.floor(chunkMax[2]))
+        ] as Vec3
+      }
+
+      console.log('[LLM] Chunk region:', chunkRegion)
+
+      const terrainState = createTerrainGeneratorState(params.profile, {
+        seed: Math.floor(Math.random() * 1000000),
+        amplitude: params.amplitude,
+        roughness: params.roughness,
+        elevation: params.elevation
+      })
+
+      generateRegion(chunk, chunkRegion, terrainState)
+
+      // Handle ellipsoid masking if needed
+      if (ellipsoidMask) {
+        const isInsideEllipsoid = (chunkX: number, chunkY: number, chunkZ: number): boolean => {
+          const worldX = chunkX * worldScale + chunkOriginOffset[0]
+          const worldY = chunkY * worldScale + chunkOriginOffset[1]
+          const worldZ = chunkZ * worldScale + chunkOriginOffset[2]
+
+          const dx = (worldX - ellipsoidMask.center[0]) / ellipsoidMask.radiusX
+          const dy = (worldY - ellipsoidMask.center[1]) / ellipsoidMask.radiusY
+          const dz = (worldZ - ellipsoidMask.center[2]) / ellipsoidMask.radiusZ
+
+          return (dx * dx + dy * dy + dz * dz) <= 1
+        }
+
+        // Clear blocks outside ellipsoid
+        for (let x = chunkRegion.min[0]; x <= chunkRegion.max[0]; x++) {
+          for (let y = chunkRegion.min[1]; y <= chunkRegion.max[1]; y++) {
+            for (let z = chunkRegion.min[2]; z <= chunkRegion.max[2]; z++) {
+              if (!isInsideEllipsoid(x, y, z)) {
+                chunk.setBlock(x, y, z, 0) // BlockType.Air
+              }
+            }
+          }
+        }
+      }
+
+      console.log('[LLM] Marking mesh dirty')
+      meshDirty = true
+
+      alert(`Terrain generated with ${params.profile} profile!`)
     } catch (error) {
       console.error('[LLM] Error:', error)
       throw error

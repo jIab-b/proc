@@ -15,7 +15,9 @@ export type WorldConfig = {
 }
 
 export function createWorldConfig(seed: number = Date.now()): WorldConfig {
-  return { seed, dimensions: { x: 64, y: 48, z: 64 } }
+  // Increased from 64x48x64 to 256x128x256 to support larger terrain generation
+  // This allows generating terrain across a much larger area
+  return { seed, dimensions: { x: 256, y: 128, z: 256 } }
 }
 
 export function generateTerrain(chunk: ChunkManager, config: WorldConfig, BlockType: any) {

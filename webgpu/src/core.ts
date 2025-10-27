@@ -140,7 +140,7 @@ export const gpuHooks: Writable<GPUHooks> = writable({
   generateTerrain: null
 })
 export const interactionMode: Writable<InteractionMode> = writable('highlight')
-export const highlightShape: Writable<HighlightShape> = writable('ellipsoid')
+export const highlightShape: Writable<HighlightShape> = writable('plane')
 export const highlightRadius: Writable<number> = writable(2)
 export const ellipsoidRadiusX: Writable<number> = writable(4)
 export const ellipsoidRadiusY: Writable<number> = writable(2)

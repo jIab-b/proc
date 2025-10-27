@@ -197,8 +197,12 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
           (worldCoord[2] - chunkOriginOffset[2]) / worldScale
         ],
         generateTerrain: (params: TerrainGenerateParams) => {
-          console.log('generateTerrain hook called with params (world coords):', params)
+          console.log('=== GENERATE TERRAIN HOOK CALLED ===')
+          console.log('Params (WORLD coords):', params)
           console.log('chunkOriginOffset:', chunkOriginOffset, 'worldScale:', worldScale)
+          console.log('Region min (WORLD):', params.region.min)
+          console.log('Region max (WORLD):', params.region.max)
+          console.log('Ellipsoid mask:', params.ellipsoidMask)
 
           // Convert world coordinates to chunk coordinates
           const worldToChunk = (worldCoord: Vec3): Vec3 => [
@@ -209,6 +213,10 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
 
           const chunkMin = worldToChunk(params.region.min)
           const chunkMax = worldToChunk(params.region.max)
+
+          console.log('After conversion to CHUNK coords:')
+          console.log('  chunkMin:', chunkMin)
+          console.log('  chunkMax:', chunkMax)
 
           // Clamp to chunk bounds
           const chunkRegion = {
@@ -286,24 +294,52 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
               const min = chunkRegion.min
               const max = chunkRegion.max
 
+              console.log('Generating terrain in region:', { min, max })
+              console.log('Region size:', (max[0] - min[0] + 1), 'x', (max[1] - min[1] + 1), 'x', (max[2] - min[2] + 1))
+
               // First, generate the full terrain region
+              console.log('Calling generateRegion...')
               generateRegion(chunk, chunkRegion, terrainState)
+              console.log('generateRegion completed')
 
               // Then, clear blocks outside the ellipsoid
+              let clearedCount = 0
               for (let x = min[0]; x <= max[0]; x++) {
                 for (let y = min[1]; y <= max[1]; y++) {
                   for (let z = min[2]; z <= max[2]; z++) {
                     if (!isInsideEllipsoid(x, y, z)) {
                       chunk.setBlock(x, y, z, BlockType.Air)
+                      clearedCount++
                     }
                   }
                 }
               }
+              console.log('Cleared', clearedCount, 'blocks outside ellipsoid')
             } else {
+              console.log('No ellipsoid mask, generating full region:', chunkRegion)
+              console.log('Region size:',
+                (chunkRegion.max[0] - chunkRegion.min[0] + 1), 'x',
+                (chunkRegion.max[1] - chunkRegion.min[1] + 1), 'x',
+                (chunkRegion.max[2] - chunkRegion.min[2] + 1))
               generateRegion(chunk, chunkRegion, terrainState)
+              console.log('generateRegion completed')
             }
 
-            console.log('Terrain generation complete')
+            // Count non-air blocks to verify terrain was generated
+            let nonAirCount = 0
+            for (let x = chunkRegion.min[0]; x <= chunkRegion.max[0]; x++) {
+              for (let y = chunkRegion.min[1]; y <= chunkRegion.max[1]; y++) {
+                for (let z = chunkRegion.min[2]; z <= chunkRegion.max[2]; z++) {
+                  if (x >= 0 && x < chunk.size.x && y >= 0 && y < chunk.size.y && z >= 0 && z < chunk.size.z) {
+                    const block = chunk.getBlock(x, y, z)
+                    if (block !== BlockType.Air) {
+                      nonAirCount++
+                    }
+                  }
+                }
+              }
+            }
+            console.log('Terrain generation complete - Non-air blocks in region:', nonAirCount)
           }
 
           console.log('Marking mesh dirty')
