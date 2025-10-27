@@ -14,6 +14,7 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
     ellipsoidRadiusX,
     ellipsoidRadiusY,
     ellipsoidRadiusZ,
+    planeSize,
     highlightSelection,
     gpuHooks,
     BlockType,
@@ -184,6 +185,17 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
           const camera = renderer?.getCamera()
           return camera ? [...camera.position] as [number, number, number] : null
         },
+        getWorldScale: () => worldScale,
+        chunkToWorld: (chunkCoord: Vec3): Vec3 => [
+          chunkCoord[0] * worldScale + chunkOriginOffset[0],
+          chunkCoord[1] * worldScale + chunkOriginOffset[1],
+          chunkCoord[2] * worldScale + chunkOriginOffset[2]
+        ],
+        worldToChunk: (worldCoord: Vec3): Vec3 => [
+          (worldCoord[0] - chunkOriginOffset[0]) / worldScale,
+          (worldCoord[1] - chunkOriginOffset[1]) / worldScale,
+          (worldCoord[2] - chunkOriginOffset[2]) / worldScale
+        ],
         generateTerrain: (params: TerrainGenerateParams) => {
           console.log('generateTerrain hook called with params (world coords):', params)
           console.log('chunkOriginOffset:', chunkOriginOffset, 'worldScale:', worldScale)
@@ -231,13 +243,19 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
           const terrainState = createTerrainGeneratorState(params.profile, params.params)
 
           // Helper function to check if a point is inside the ellipsoid
-          const isInsideEllipsoid = (x: number, y: number, z: number): boolean => {
+          // Takes CHUNK coordinates and converts to WORLD coordinates for comparison
+          const isInsideEllipsoid = (chunkX: number, chunkY: number, chunkZ: number): boolean => {
             if (!params.ellipsoidMask) return true
 
+            // Convert chunk coordinates to world coordinates
+            const worldX = chunkX * worldScale + chunkOriginOffset[0]
+            const worldY = chunkY * worldScale + chunkOriginOffset[1]
+            const worldZ = chunkZ * worldScale + chunkOriginOffset[2]
+
             const mask = params.ellipsoidMask
-            const dx = (x - mask.center[0]) / mask.radiusX
-            const dy = (y - mask.center[1]) / mask.radiusY
-            const dz = (z - mask.center[2]) / mask.radiusZ
+            const dx = (worldX - mask.center[0]) / mask.radiusX
+            const dy = (worldY - mask.center[1]) / mask.radiusY
+            const dz = (worldZ - mask.center[2]) / mask.radiusZ
 
             return (dx * dx + dy * dy + dz * dz) <= 1
           }
@@ -264,26 +282,18 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
             if (params.ellipsoidMask) {
               console.log('Using ellipsoid mask:', params.ellipsoidMask)
 
-              // Generate terrain only inside the ellipsoid
+              // Generate terrain only inside the ellipsoid using the procedural generator
               const min = chunkRegion.min
               const max = chunkRegion.max
 
+              // First, generate the full terrain region
+              generateRegion(chunk, chunkRegion, terrainState)
+
+              // Then, clear blocks outside the ellipsoid
               for (let x = min[0]; x <= max[0]; x++) {
-                for (let z = min[2]; z <= max[2]; z++) {
-                  if (!isInsideEllipsoid(x, max[1], z)) continue
-
-                  // Sample height for this column
-                  const height = terrainState.params.amplitude * 0.5 + terrainState.params.elevation * chunk.size.y
-
-                  for (let y = min[1]; y <= max[1]; y++) {
-                    if (!isInsideEllipsoid(x, y, z)) continue
-
-                    if (y <= height) {
-                      const blockType = y >= height - 1 ? BlockType.Grass :
-                                       y >= height - 4 ? BlockType.Dirt :
-                                       BlockType.Stone
-                      chunk.setBlock(x, y, z, blockType)
-                    } else {
+                for (let y = min[1]; y <= max[1]; y++) {
+                  for (let z = min[2]; z <= max[2]; z++) {
+                    if (!isInsideEllipsoid(x, y, z)) {
                       chunk.setBlock(x, y, z, BlockType.Air)
                     }
                   }
@@ -401,6 +411,7 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
           <option value="cube">Cube</option>
           <option value="sphere">Sphere</option>
           <option value="ellipsoid">Ellipsoid</option>
+          <option value="plane">Plane (Terrain Base)</option>
         </select>
       </div>
       {#if $highlightShape === 'ellipsoid'}
@@ -415,6 +426,11 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
         <div class="context-section">
           <label>Radius Z: {$ellipsoidRadiusZ}</label>
           <input type="range" min="1" max="32" step="0.5" bind:value={$ellipsoidRadiusZ} />
+        </div>
+      {:else if $highlightShape === 'plane'}
+        <div class="context-section">
+          <label>Plane Size: {$planeSize}</label>
+          <input type="range" min="4" max="32" step="1" bind:value={$planeSize} />
         </div>
       {:else}
         <div class="context-section">

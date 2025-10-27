@@ -31,24 +31,57 @@
 
     let region: { min: [number, number, number]; max: [number, number, number] }
 
-    // Check if there's a highlight selection (ellipsoid)
+    // Check if there's a highlight selection (ellipsoid or plane)
     if ($highlightSelection && $highlightSelection.shape === 'ellipsoid') {
       // Use ellipsoid bounds for terrain generation
-      const center = $highlightSelection.center
+      // highlightSelection.center is in CHUNK coordinates, need to convert to WORLD coordinates
+      const chunkCenter = $highlightSelection.center
+      const worldCenter = $gpuHooks.chunkToWorld?.(chunkCenter) || chunkCenter
+      const worldScale = $gpuHooks.getWorldScale?.() || 2
+
       const rx = $highlightSelection.radiusX ?? $highlightSelection.radius
       const ry = $highlightSelection.radiusY ?? $highlightSelection.radius
       const rz = $highlightSelection.radiusZ ?? $highlightSelection.radius
 
+      // Convert radii from chunk coordinates to world coordinates
+      const worldRx = rx * worldScale
+      const worldRy = ry * worldScale
+      const worldRz = rz * worldScale
+
       region = {
         min: [
-          Math.floor(center[0] - rx),
-          Math.floor(center[1] - ry),
-          Math.floor(center[2] - rz)
+          Math.floor(worldCenter[0] - worldRx),
+          Math.floor(worldCenter[1] - worldRy),
+          Math.floor(worldCenter[2] - worldRz)
         ] as [number, number, number],
         max: [
-          Math.floor(center[0] + rx),
-          Math.floor(center[1] + ry),
-          Math.floor(center[2] + rz)
+          Math.floor(worldCenter[0] + worldRx),
+          Math.floor(worldCenter[1] + worldRy),
+          Math.floor(worldCenter[2] + worldRz)
+        ] as [number, number, number]
+      }
+    } else if ($highlightSelection && $highlightSelection.shape === 'plane') {
+      // Use plane for terrain base generation
+      const chunkCenter = $highlightSelection.center
+      const worldCenter = $gpuHooks.chunkToWorld?.(chunkCenter) || chunkCenter
+      const worldScale = $gpuHooks.getWorldScale?.() || 2
+      const size = $highlightSelection.planeSize ?? 8
+      const worldSize = size * worldScale
+
+      // Get camera position to determine max Y
+      const cameraPos = $gpuHooks.getCameraPosition?.()
+      const maxY = cameraPos ? cameraPos[1] + 32 : worldCenter[1] + 64
+
+      region = {
+        min: [
+          Math.floor(worldCenter[0] - worldSize),
+          Math.floor(worldCenter[1]),  // Base Y from plane
+          Math.floor(worldCenter[2] - worldSize)
+        ] as [number, number, number],
+        max: [
+          Math.floor(worldCenter[0] + worldSize),
+          Math.floor(maxY),  // Generate upwards
+          Math.floor(worldCenter[2] + worldSize)
         ] as [number, number, number]
       }
     } else {
@@ -80,11 +113,20 @@
 
     // Add ellipsoid mask if using ellipsoid selection
     if ($highlightSelection && $highlightSelection.shape === 'ellipsoid') {
+      // Convert center from chunk to world coordinates
+      const chunkCenter = $highlightSelection.center
+      const worldCenter = $gpuHooks.chunkToWorld?.(chunkCenter) || chunkCenter
+      const worldScale = $gpuHooks.getWorldScale?.() || 2
+
+      const rx = $highlightSelection.radiusX ?? $highlightSelection.radius
+      const ry = $highlightSelection.radiusY ?? $highlightSelection.radius
+      const rz = $highlightSelection.radiusZ ?? $highlightSelection.radius
+
       requestBody.ellipsoidMask = {
-        center: $highlightSelection.center,
-        radiusX: $highlightSelection.radiusX ?? $highlightSelection.radius,
-        radiusY: $highlightSelection.radiusY ?? $highlightSelection.radius,
-        radiusZ: $highlightSelection.radiusZ ?? $highlightSelection.radius
+        center: worldCenter,
+        radiusX: rx * worldScale,
+        radiusY: ry * worldScale,
+        radiusZ: rz * worldScale
       }
     }
 

@@ -100,11 +100,14 @@ export interface GPUHooks {
   requestFaceBitmaps: ((tiles: Partial<Record<BlockFaceKey, FaceTileInfo>>) => Promise<Record<BlockFaceKey, ImageBitmap>>) | null
   uploadFaceBitmapsToGPU: ((bitmaps: Record<BlockFaceKey, ImageBitmap>, customBlock: CustomBlock) => void) | null
   getCameraPosition: (() => [number, number, number] | null) | null
+  getWorldScale: (() => number) | null
+  chunkToWorld: ((chunkCoord: Vec3) => Vec3) | null
+  worldToChunk: ((worldCoord: Vec3) => Vec3) | null
   generateTerrain: ((params: TerrainGenerateParams) => void) | null
 }
 
 export type InteractionMode = 'block' | 'highlight'
-export type HighlightShape = 'cube' | 'sphere' | 'ellipsoid'
+export type HighlightShape = 'cube' | 'sphere' | 'ellipsoid' | 'plane'
 
 export interface HighlightSelection {
   center: [number, number, number]
@@ -112,6 +115,7 @@ export interface HighlightSelection {
   radiusX?: number  // For ellipsoid
   radiusY?: number  // For ellipsoid
   radiusZ?: number  // For ellipsoid
+  planeSize?: number  // For plane - size in X and Z directions
   shape: HighlightShape
 }
 
@@ -130,6 +134,9 @@ export const gpuHooks: Writable<GPUHooks> = writable({
   requestFaceBitmaps: null,
   uploadFaceBitmapsToGPU: null,
   getCameraPosition: null,
+  getWorldScale: null,
+  chunkToWorld: null,
+  worldToChunk: null,
   generateTerrain: null
 })
 export const interactionMode: Writable<InteractionMode> = writable('highlight')
@@ -139,6 +146,7 @@ export const ellipsoidRadiusX: Writable<number> = writable(4)
 export const ellipsoidRadiusY: Writable<number> = writable(2)
 export const ellipsoidRadiusZ: Writable<number> = writable(4)
 export const ellipsoidEditAxis: Writable<'x' | 'y' | 'z' | null> = writable(null)
+export const planeSize: Writable<number> = writable(8)  // Size of plane in X and Z directions
 export type EllipsoidNode = '+x' | '-x' | '+y' | '-y' | '+z' | '-z' | 'center' | null
 export const ellipsoidSelectedNode: Writable<EllipsoidNode> = writable(null)
 export const highlightSelection: Writable<HighlightSelection | null> = writable(null)

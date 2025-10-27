@@ -74,6 +74,7 @@ def train(args: argparse.Namespace) -> Path:
     scene = VoxelScene.from_map(map_path, device=device)
     scene.train()
     scene.grid.training_occ_threshold = float(args.train_occupancy_threshold)
+    scene.grid.occupancy_scale = float(args.occupancy_scale)
     renderer = VoxelRenderer(scene.grid)
 
     sampler = CameraSampler(
@@ -715,8 +716,6 @@ def train(args: argparse.Namespace) -> Path:
             total_ft.backward()
             photo_optimizer.step()
 
-        scene.grid.harden(args.harden_strength, args.harden_reset_prob)
-
     final_map = run_dir / "final_map.json"
     scene.save_map(
         final_map,
@@ -724,6 +723,15 @@ def train(args: argparse.Namespace) -> Path:
         metadata={"prompt": args.prompt, "steps": args.steps},
     )
     
+    if args.final_harden:
+        scene.grid.harden(args.harden_strength, args.harden_reset_prob)
+        hardened_map = run_dir / "final_map_hardened.json"
+        scene.save_map(
+            hardened_map,
+            threshold=args.export_threshold,
+            metadata={"prompt": args.prompt, "steps": args.steps, "hardened": True},
+        )
+
     if args.fuckdump:
         print(f"FUCKDUMP: Computing final stats")
         final_step = int(args.steps)
@@ -816,10 +824,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature_end", type=float, default=0.1)
     parser.add_argument("--sds_weight", type=float, default=1.0)
     parser.add_argument("--photo_weight", type=float, default=1.0)
-    parser.add_argument("--lambda_sparsity", type=float, default=1e-3)
+    parser.add_argument("--lambda_sparsity", type=float, default=0.0)
     parser.add_argument("--lambda_entropy", type=float, default=1e-4)
     parser.add_argument("--lambda_tv", type=float, default=0.0)
-    parser.add_argument("--lambda_edit_l2", type=float, default=1e-4)
+    parser.add_argument("--lambda_edit_l2", type=float, default=0.0)
     parser.add_argument("--lambda_palette_l2", type=float, default=1e-4)
     parser.add_argument("--novel_view_prob", type=float, default=0.2)
     parser.add_argument("--train_height", type=int, default=192)
@@ -835,7 +843,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_blocks_end", type=int, default=50000)
     parser.add_argument("--output_dir", type=str, default="out_local/voxel_sds")
     parser.add_argument("--fuckdump", action="store_true", help="Enable extensive debugging output")
-    parser.add_argument("--export_threshold", type=float, default=0.5)
+    parser.add_argument("--export_threshold", type=float, default=0.1)
     parser.add_argument("--fuckdump_change_threshold", type=float, default=1e-4)
     parser.add_argument("--change_voxel_threshold", type=float, default=1e-3)
     parser.add_argument("--train_occupancy_threshold", type=float, default=0.05)
@@ -846,17 +854,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sdxl_dtype", type=str, default="auto", choices=["auto", "fp16", "fp32"])
     parser.add_argument("--warmup_steps", type=int, default=500)
     parser.add_argument("--warmup_reg_factor", type=float, default=0.0)
-    parser.add_argument("--explore_mask_noise", type=float, default=0.35)
-    parser.add_argument("--explore_edit_noise", type=float, default=0.12)
+    parser.add_argument("--explore_mask_noise", type=float, default=0.8)
+    parser.add_argument("--explore_edit_noise", type=float, default=0.3)
     parser.add_argument("--explore_noise_ramp", type=int, default=80)
     parser.add_argument("--explore_noise_gamma", type=float, default=1.0)
     parser.add_argument("--explore_noise_hold", type=int, default=0)
     parser.add_argument("--explore_noise_decay_steps", type=int, default=0)
-    parser.add_argument("--explore_noise_fraction", type=float, default=0.05)
-    parser.add_argument("--explore_noise_bias_power", type=float, default=2.0)
-    parser.add_argument("--explore_noise_min", type=float, default=0.02)
-    parser.add_argument("--base_update_rate", type=float, default=0.05)
-    parser.add_argument("--base_update_bias", type=float, default=0.5)
+    parser.add_argument("--explore_noise_fraction", type=float, default=0.08)
+    parser.add_argument("--explore_noise_bias_power", type=float, default=3.0)
+    parser.add_argument("--explore_noise_min", type=float, default=0.3)
+    parser.add_argument("--base_update_rate", type=float, default=0.0)
+    parser.add_argument("--base_update_bias", type=float, default=1.5)
     parser.add_argument("--focus_threshold", type=float, default=0.65)
     parser.add_argument("--edit_lr_scale", type=float, default=3.0)
     parser.add_argument("--palette_lr_scale", type=float, default=0.5)
@@ -866,6 +874,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--final_photo_steps", type=int, default=30)
     parser.add_argument("--final_photo_lr_scale", type=float, default=0.25)
     parser.add_argument("--photo_refine_occ_threshold", type=float, default=0.1)
+    parser.add_argument("--final_harden", action="store_true", help="Optionally harden voxel logits after training and export an additional hardened map")
+    parser.add_argument("--occupancy_scale", type=float, default=8.0)
     args = parser.parse_args()
 
     if args.max_blocks <= 0:

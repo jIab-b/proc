@@ -18,6 +18,7 @@ import {
   ellipsoidRadiusX,
   ellipsoidRadiusY,
   ellipsoidRadiusZ,
+  planeSize,
   ellipsoidEditAxis,
   ellipsoidSelectedNode,
   highlightSelection as highlightSelectionStore,
@@ -467,6 +468,92 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         // Reset style
         overlayCtx.lineWidth = 1.5
         overlayCtx.strokeStyle = 'rgba(255, 100, 80, 0.85)'
+      } else if (highlightSelection.shape === 'plane') {
+        // Draw horizontal plane as a grid (RED)
+        const size = highlightSelection.planeSize ?? 8
+        const y = baseCenter[1]  // Fixed Y coordinate (the base height)
+
+        // Draw grid lines in red
+        overlayCtx.strokeStyle = 'rgba(255, 100, 80, 0.7)'
+        overlayCtx.lineWidth = 1.5
+
+        // Draw X lines (parallel to X axis)
+        for (let z = -size; z <= size; z += 2) {
+          const p1: Vec3 = [baseCenter[0] - size, y, baseCenter[2] + z]
+          const p2: Vec3 = [baseCenter[0] + size, y, baseCenter[2] + z]
+          const s1 = projectChunk(p1)
+          const s2 = projectChunk(p2)
+          if (s1 && s2) {
+            overlayCtx.beginPath()
+            overlayCtx.moveTo(s1[0], s1[1])
+            overlayCtx.lineTo(s2[0], s2[1])
+            overlayCtx.stroke()
+          }
+        }
+
+        // Draw Z lines (parallel to Z axis)
+        for (let x = -size; x <= size; x += 2) {
+          const p1: Vec3 = [baseCenter[0] + x, y, baseCenter[2] - size]
+          const p2: Vec3 = [baseCenter[0] + x, y, baseCenter[2] + size]
+          const s1 = projectChunk(p1)
+          const s2 = projectChunk(p2)
+          if (s1 && s2) {
+            overlayCtx.beginPath()
+            overlayCtx.moveTo(s1[0], s1[1])
+            overlayCtx.lineTo(s2[0], s2[1])
+            overlayCtx.stroke()
+          }
+        }
+
+        // Draw corner nodes and center node
+        const nodeRadius = 6
+        const selectedNode = get(ellipsoidSelectedNode)
+        const nodes: Array<{ pos: Vec3; id: EllipsoidNode }> = [
+          { pos: [baseCenter[0] + size, y, baseCenter[2] + size], id: '+x' },  // +X+Z corner
+          { pos: [baseCenter[0] - size, y, baseCenter[2] + size], id: '-x' },  // -X+Z corner
+          { pos: [baseCenter[0] + size, y, baseCenter[2] - size], id: '+z' },  // +X-Z corner
+          { pos: [baseCenter[0] - size, y, baseCenter[2] - size], id: '-z' },  // -X-Z corner
+          { pos: [baseCenter[0], y, baseCenter[2]], id: 'center' }
+        ]
+
+        nodes.forEach(node => {
+          const screen = projectChunk(node.pos)
+          if (!screen) return
+
+          const isCenter = node.id === 'center'
+          const isActivelyAdjusting = ellipsoidNodeAdjustActive && selectedNode === node.id
+          const wasActivated = activatedNodes.has(node.id)
+          const isSelected = selectedNode === node.id || (isCenter && centerNodeSelected)
+
+          // Red color scheme for plane
+          let nodeFillColor: string
+          let nodeStrokeColor: string
+
+          if (isCenter) {
+            nodeFillColor = isSelected ? 'rgba(255, 140, 120, 0.95)' : 'rgba(255, 120, 100, 0.85)'
+            nodeStrokeColor = isSelected ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 80, 60, 0.9)'
+          } else if (isActivelyAdjusting) {
+            nodeFillColor = 'rgba(255, 100, 80, 0.95)'
+            nodeStrokeColor = 'rgba(255, 255, 255, 0.95)'
+          } else if (wasActivated) {
+            nodeFillColor = 'rgba(255, 60, 60, 0.95)'
+            nodeStrokeColor = 'rgba(200, 30, 30, 0.95)'
+          } else {
+            nodeFillColor = 'rgba(255, 120, 100, 0.85)'
+            nodeStrokeColor = 'rgba(255, 60, 40, 0.95)'
+          }
+
+          const nodeSize = (isActivelyAdjusting || isSelected) ? nodeRadius + 2 : (wasActivated ? nodeRadius + 1 : nodeRadius)
+
+          // Draw node
+          overlayCtx.fillStyle = nodeFillColor
+          overlayCtx.strokeStyle = nodeStrokeColor
+          overlayCtx.lineWidth = (isActivelyAdjusting || isSelected) ? 2.5 : 2
+          overlayCtx.beginPath()
+          overlayCtx.arc(screen[0], screen[1], nodeSize, 0, Math.PI * 2)
+          overlayCtx.fill()
+          overlayCtx.stroke()
+        })
       } else {
         const r = highlightSelection.radius + halfStep
         const corners: Vec3[] = [
@@ -580,7 +667,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
       console.log('Camera forward:', overviewForward)
       console.log('Orbit target:', orbitTarget)
 
-      if (mode === 'highlight' && shape === 'ellipsoid') {
+      if (mode === 'highlight' && (shape === 'ellipsoid' || shape === 'plane')) {
         // Convert client coordinates to canvas coordinates
         // IMPORTANT: Use overlayCanvas rect if available, since nodes are drawn on overlay
         const targetCanvas = overlayCanvas || canvas
@@ -613,12 +700,33 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           console.log('Current ellipsoid:', currentSelection.center, 'radii:', { rx, ry, rz })
           console.log('⚠️  Ellipsoid visible:', isVisible, '- Center world pos:', centerWorld)
 
-          clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, rx, ry, rz)
+          clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, rx, ry, rz, 'ellipsoid')
           console.log('Clicked node:', clickedNode)
           console.log('Activated nodes:', Array.from(activatedNodes))
 
           if (!isVisible) {
             console.warn('⚠️  ELLIPSOID IS OFF-SCREEN! Pan camera to position:', currentSelection.center)
+          }
+        } else if (currentSelection && currentSelection.shape === 'plane') {
+          const size = currentSelection.planeSize ?? 8
+
+          // Calculate if plane is visible
+          const centerWorld = chunkToWorld([
+            currentSelection.center[0] + 0.5,
+            currentSelection.center[1] + 0.5,
+            currentSelection.center[2] + 0.5
+          ])
+          const isVisible = latestCamera && projectToScreen(centerWorld, latestCamera.viewProjectionMatrix, canvas.width, canvas.height) !== null
+
+          console.log('Current plane:', currentSelection.center, 'size:', size)
+          console.log('⚠️  Plane visible:', isVisible, '- Center world pos:', centerWorld)
+
+          clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, size, 0, 0, 'plane')
+          console.log('Clicked node:', clickedNode)
+          console.log('Activated nodes:', Array.from(activatedNodes))
+
+          if (!isVisible) {
+            console.warn('⚠️  PLANE IS OFF-SCREEN! Pan camera to position:', currentSelection.center)
           }
         }
 
@@ -674,9 +782,13 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             shape,
             radius
           }
-          selection.radiusX = get(ellipsoidRadiusX)
-          selection.radiusY = get(ellipsoidRadiusY)
-          selection.radiusZ = get(ellipsoidRadiusZ)
+          if (shape === 'ellipsoid') {
+            selection.radiusX = get(ellipsoidRadiusX)
+            selection.radiusY = get(ellipsoidRadiusY)
+            selection.radiusZ = get(ellipsoidRadiusZ)
+          } else if (shape === 'plane') {
+            selection.planeSize = get(planeSize)
+          }
           ellipsoidSelectedNode.set(null)
           ellipsoidEditAxis.set(null)
           centerNodeSelected = false
@@ -895,10 +1007,19 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         const newRadius = Math.max(0.5, nodeEditStartRadius + delta * sensitivity)
 
         // Update the appropriate radius based on which node is selected
-        const axis = selectedNode[1] as 'x' | 'y' | 'z'
         const currentSelection = get(highlightSelectionStore)
 
-        if (currentSelection && currentSelection.shape === 'ellipsoid') {
+        if (currentSelection && currentSelection.shape === 'plane') {
+          // For plane, all corner nodes resize the plane uniformly
+          planeSize.set(newRadius)
+          highlightSelectionStore.update(sel => {
+            if (sel && sel.shape === 'plane') {
+              return { ...sel, planeSize: newRadius }
+            }
+            return sel
+          })
+        } else if (currentSelection && currentSelection.shape === 'ellipsoid') {
+          const axis = selectedNode[1] as 'x' | 'y' | 'z'
           if (axis === 'x') {
             ellipsoidRadiusX.set(newRadius)
             highlightSelectionStore.update(sel => {
@@ -1074,10 +1195,17 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
       nodeEditStartX = x
       nodeEditStartY = y
-      const axis = node[1] as 'x' | 'y' | 'z'
-      if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
-      else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
-      else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
+
+      // Check if we're working with plane or ellipsoid
+      const currentSelection = get(highlightSelectionStore)
+      if (currentSelection && currentSelection.shape === 'plane') {
+        nodeEditStartRadius = get(planeSize)
+      } else {
+        const axis = node[1] as 'x' | 'y' | 'z'
+        if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
+        else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
+        else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
+      }
 
       console.log('Context menu: Starting move mode for node', node)
     }
@@ -1398,13 +1526,13 @@ For region size, use reasonable defaults:
     }
   }
 
-  // Helper: check if a click is near an ellipsoid node
-  function getClickedNode(clickX: number, clickY: number, center: Vec3, rx: number, ry: number, rz: number): EllipsoidNode {
+  // Helper: check if a click is near an ellipsoid or plane node
+  function getClickedNode(clickX: number, clickY: number, center: Vec3, rx: number, ry: number, rz: number, shape: 'ellipsoid' | 'plane' = 'ellipsoid'): EllipsoidNode {
     const halfStep = 0.5
     const baseCenter: Vec3 = [center[0] + halfStep, center[1] + halfStep, center[2] + halfStep]
     const threshold = 20 // pixels - increased for easier clicking
 
-    console.log('getClickedNode called:', { clickX, clickY, center, rx, ry, rz })
+    console.log('getClickedNode called:', { clickX, clickY, center, rx, ry, rz, shape })
     console.log('Canvas dimensions:', { width: canvas.width, height: canvas.height })
     console.log('Canvas client rect:', canvas.getBoundingClientRect())
 
@@ -1420,16 +1548,31 @@ For region size, use reasonable defaults:
       }
     }
 
-    const nodes: Array<{ pos: Vec3; id: EllipsoidNode }> = [
-      { pos: [baseCenter[0] + rx, baseCenter[1], baseCenter[2]], id: '+x' },
-      { pos: [baseCenter[0] - rx, baseCenter[1], baseCenter[2]], id: '-x' },
-      { pos: [baseCenter[0], baseCenter[1] + ry, baseCenter[2]], id: '+y' },
-      { pos: [baseCenter[0], baseCenter[1] - ry, baseCenter[2]], id: '-y' },
-      { pos: [baseCenter[0], baseCenter[1], baseCenter[2] + rz], id: '+z' },
-      { pos: [baseCenter[0], baseCenter[1], baseCenter[2] - rz], id: '-z' }
-    ]
+    let nodes: Array<{ pos: Vec3; id: EllipsoidNode }>
 
-    console.log('Checking axis nodes:')
+    if (shape === 'plane') {
+      // For plane, use corner nodes at the same Y level
+      const size = rx // For plane, rx is actually the planeSize
+      const y = baseCenter[1]
+      nodes = [
+        { pos: [baseCenter[0] + size, y, baseCenter[2] + size], id: '+x' },  // +X+Z corner
+        { pos: [baseCenter[0] - size, y, baseCenter[2] + size], id: '-x' },  // -X+Z corner
+        { pos: [baseCenter[0] + size, y, baseCenter[2] - size], id: '+z' },  // +X-Z corner
+        { pos: [baseCenter[0] - size, y, baseCenter[2] - size], id: '-z' }   // -X-Z corner
+      ]
+    } else {
+      // Ellipsoid nodes
+      nodes = [
+        { pos: [baseCenter[0] + rx, baseCenter[1], baseCenter[2]], id: '+x' },
+        { pos: [baseCenter[0] - rx, baseCenter[1], baseCenter[2]], id: '-x' },
+        { pos: [baseCenter[0], baseCenter[1] + ry, baseCenter[2]], id: '+y' },
+        { pos: [baseCenter[0], baseCenter[1] - ry, baseCenter[2]], id: '-y' },
+        { pos: [baseCenter[0], baseCenter[1], baseCenter[2] + rz], id: '+z' },
+        { pos: [baseCenter[0], baseCenter[1], baseCenter[2] - rz], id: '-z' }
+      ]
+    }
+
+    console.log('Checking nodes:')
     for (const node of nodes) {
       const screen = projectToScreen(chunkToWorld(node.pos), latestCamera!.viewProjectionMatrix, canvas.width, canvas.height)
       if (screen) {
@@ -1458,7 +1601,8 @@ For region size, use reasonable defaults:
     const mode = get(interactionMode)
 
     let handledEllipsoidInteraction = false
-    if ((isCanvasEvent || isOverlayEvent) && mode === 'highlight' && get(highlightShape) === 'ellipsoid') {
+    const currentShape = get(highlightShape)
+    if ((isCanvasEvent || isOverlayEvent) && mode === 'highlight' && (currentShape === 'ellipsoid' || currentShape === 'plane')) {
       // Convert client coordinates to canvas coordinates
       // IMPORTANT: Use overlayCanvas rect if available, since nodes are drawn on overlay
       const targetCanvas = overlayCanvas || canvas
@@ -1476,7 +1620,11 @@ For region size, use reasonable defaults:
         const ry = currentSelection.radiusY ?? currentSelection.radius
         const rz = currentSelection.radiusZ ?? currentSelection.radius
 
-        clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, rx, ry, rz)
+        clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, rx, ry, rz, 'ellipsoid')
+      } else if (currentSelection && currentSelection.shape === 'plane') {
+        const size = currentSelection.planeSize ?? 8
+
+        clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, size, 0, 0, 'plane')
       }
 
       if (ev.button === 2) {
@@ -1489,7 +1637,7 @@ For region size, use reasonable defaults:
           return
         }
 
-        // Right-click in player mode: create/position ellipsoid at raycast location
+        // Right-click in player mode: create/position ellipsoid/plane at raycast location
         const hit = raycast(cameraPos, getForwardVector())
         if (hit) {
           const selection: HighlightSelection = {
@@ -1501,6 +1649,8 @@ For region size, use reasonable defaults:
             selection.radiusX = get(ellipsoidRadiusX)
             selection.radiusY = get(ellipsoidRadiusY)
             selection.radiusZ = get(ellipsoidRadiusZ)
+          } else if (shape === 'plane') {
+            selection.planeSize = get(planeSize)
           }
           ellipsoidSelectedNode.set(null)
           ellipsoidEditAxis.set(null)
@@ -1514,7 +1664,7 @@ For region size, use reasonable defaults:
         } else {
           ellipsoidMovementActive = false
         }
-      } else if (ev.button === 0 && currentSelection && currentSelection.shape === 'ellipsoid') {
+      } else if (ev.button === 0 && currentSelection && (currentSelection.shape === 'ellipsoid' || currentSelection.shape === 'plane')) {
         if (clickedNode === 'center') {
           ev.preventDefault()
           ellipsoidCenterDragActive = true
@@ -1526,7 +1676,7 @@ For region size, use reasonable defaults:
           lastCameraPos = getCameraWorldPosition()
           handledEllipsoidInteraction = true
         } else if (clickedNode) {
-          // Left-click on axis node: activate mouse-controlled scaling
+          // Left-click on axis/corner node: activate mouse-controlled scaling
           ev.preventDefault()
           ellipsoidNodeAdjustActive = true
           ellipsoidSelectedNode.set(clickedNode)
@@ -1539,10 +1689,16 @@ For region size, use reasonable defaults:
           // Store initial mouse position and current radius
           nodeEditStartX = ev.clientX
           nodeEditStartY = ev.clientY
-          const axis = clickedNode[1] as 'x' | 'y' | 'z'
-          if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
-          else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
-          else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
+
+          if (currentSelection.shape === 'plane') {
+            // For plane, all corner nodes adjust the same planeSize
+            nodeEditStartRadius = get(planeSize)
+          } else {
+            const axis = clickedNode[1] as 'x' | 'y' | 'z'
+            if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
+            else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
+            else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
+          }
 
           handledEllipsoidInteraction = true
         } else {
@@ -1846,10 +2002,28 @@ For region size, use reasonable defaults:
     const editAxis = get(ellipsoidEditAxis)
 
     if (ellipsoidCenterDragActive && lastCameraPos) {
-      // Center drag: move ellipsoid center based on camera translation
+      // Center drag: move ellipsoid/plane center based on camera translation
       const currentSelection = get(highlightSelectionStore)
 
-      if (currentSelection && currentSelection.shape === 'ellipsoid') {
+      if (currentSelection && currentSelection.shape === 'plane') {
+        // For plane, only move along Y axis (vertical)
+        const deltaY = position[1] - lastCameraPos[1]
+        const sensitivity = 0.5
+
+        highlightSelectionStore.update(sel => {
+          if (sel && sel.shape === 'plane') {
+            const nextCenter: Vec3 = [
+              sel.center[0],
+              sel.center[1] + deltaY * sensitivity / worldScale,
+              sel.center[2]
+            ]
+            return { ...sel, center: nextCenter }
+          }
+          return sel
+        })
+
+        lastCameraPos = [...position] as Vec3
+      } else if (currentSelection && currentSelection.shape === 'ellipsoid') {
         const deltaX = position[0] - lastCameraPos[0]
         const deltaY = position[1] - lastCameraPos[1]
         const deltaZ = position[2] - lastCameraPos[2]

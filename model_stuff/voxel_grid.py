@@ -47,6 +47,7 @@ class DenoisingVoxelGrid(nn.Module):
         num_materials: int = len(MATERIALS),
         world_scale: float = 2.0,
         device: torch.device | str = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        occupancy_scale: float = 5.0,
     ) -> None:
         super().__init__()
         device = torch.device(device)
@@ -67,6 +68,7 @@ class DenoisingVoxelGrid(nn.Module):
         )
         self.material_delta = nn.Parameter(torch.zeros_like(self.base_logits))
         self.occupancy_delta = nn.Parameter(torch.zeros(grid_size, dtype=torch.float32, device=device))
+        self.occupancy_scale = float(occupancy_scale)
 
         palette = get_material_palette().to(torch.float32)
         self.register_buffer("palette_target", palette.clone())
@@ -82,7 +84,7 @@ class DenoisingVoxelGrid(nn.Module):
     # ------------------------------------------------------------------
     def final_logits(self) -> torch.Tensor:
         logits = self.base_logits + self.material_delta
-        air = logits[..., self.sky_index] - self.occupancy_delta
+        air = logits[..., self.sky_index] - self.occupancy_delta * self.occupancy_scale
         logits = logits.clone()
         logits[..., self.sky_index] = air
         return logits
