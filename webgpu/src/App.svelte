@@ -1,7 +1,11 @@
 <script>
   import UI from './UI.svelte'
   import Canvas from './Canvas.svelte'
+  import ApiKeyModal from './ApiKeyModal.svelte'
+  import { openaiApiKey } from './stores'
 </script>
+
+<ApiKeyModal />
 
 <div class="app-container">
   <UI />

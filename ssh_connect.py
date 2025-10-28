@@ -31,9 +31,25 @@ def get_remote_file_hash(sftp, remote_path):
     except Exception:
         return None
 
-def should_exclude_file(file_path, exclusions):
+def should_exclude_file(file_path, exclusions, check_global=True):
     file_name = os.path.basename(file_path)
 
+    # Check global exclusions first
+    if check_global and 'global' in exclusions:
+        global_exclusions = exclusions['global']
+        if file_name in global_exclusions.get('files', []):
+            return True
+        for dir_pattern in global_exclusions.get('dirs', []):
+            if dir_pattern in file_path:
+                return True
+        file_ext = os.path.splitext(file_name)[1]
+        if file_ext in global_exclusions.get('extensions', []):
+            return True
+        for pattern in global_exclusions.get('patterns', []):
+            if pattern in file_name:
+                return True
+
+    # Check specific exclusions
     if file_name in exclusions.get('files', []):
         return True
 
@@ -70,6 +86,9 @@ def sync_files_to_remote(host, key_path, dirs_to_sync, remote_base_dir):
             'files': ['package-lock.json', '.DS_Store', 'yarn.lock', 'pnpm-lock.yaml'],
             'extensions': ['.log', '.tmp', '.swp', '.bak'],
             'patterns': ['.min.', 'build.', 'dist.']
+        },
+        'global': {
+            'files': ['.env', '.env.example']
         }
     }
 
@@ -125,6 +144,10 @@ def sync_files_to_remote(host, key_path, dirs_to_sync, remote_base_dir):
             remote_item_path = os.path.join(remote_base_dir, item_to_sync.rstrip('/'))
 
             if os.path.isfile(local_item_path):
+                if should_exclude_file(local_item_path, exclusions):
+                    print(f"Excluding: {local_item_path}")
+                    continue
+
                 print(f"\nSyncing file: {item_to_sync}")
                 print(f"Local: {local_item_path}")
                 print(f"Remote: {remote_item_path}")
@@ -188,7 +211,7 @@ def connect_to_server(host, key_path):
         sys.exit(1)
 
 if __name__ == "__main__":
-    dirs_to_sync = ['webgpu/', 'main.py', 'aio.py', 'requirements_remote.txt']
+    dirs_to_sync = ['webgpu/', 'main.py', 'aio.py', 'requirements_remote.txt', 'vps/']
 
     parser = argparse.ArgumentParser(description='SSH connection and file sync tool')
     parser.add_argument('--sync_proc', action='store_true',

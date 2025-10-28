@@ -39,13 +39,7 @@ def check_env():
     print("  WebGPU Minecraft Editor - All-in-One Launcher")
     print("="*60)
 
-    # Check for FAL_API_KEY
-    if not os.environ.get("FAL_API_KEY") and not os.environ.get("FAL_KEY"):
-        print("\n⚠️  WARNING: FAL_API_KEY not found in environment or .env file!")
-        print("   Texture generation will not work without it.")
-        print("   Create a .env file with: FAL_API_KEY=your_key_here\n")
-    else:
-        print("\n✓ FAL_API_KEY is set")
+    print("\n✓ API keys will be provided by user in the browser")
 
     # Check if required Python packages are installed
     try:
@@ -117,7 +111,9 @@ def launch_server():
             sys.exit(1)
 
         backend_process = subprocess.Popen(
-            [str(venv_python), "main.py"],
+            ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000", "--workers", "1"],
+            cwd=str(Path.cwd()),
+            env={"PATH": str(venv_python.parent)},  # Ensure venv bin in PATH
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             text=True,

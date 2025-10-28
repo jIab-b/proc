@@ -2,6 +2,9 @@ import { writable } from 'svelte/store'
 import type { BlockFaceKey } from './chunks'
 import { BlockType } from './chunks'
 
+// Session API key (user-provided, not persisted)
+export const openaiApiKey = writable<string | null>(null)
+
 export interface FaceTileInfo {
   sequence: number
   path: string

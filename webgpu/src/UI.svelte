@@ -6,6 +6,7 @@
     TEXTURES_ENDPOINT, GENERATE_TILE_ENDPOINT, BLOCKS_ENDPOINT, blockFaceOrder, TILE_BASE_URL, gpuHooks,
     BlockType, type CustomBlock, type FaceTileInfo, type BlockFaceKey
   } from './core'
+  import { openaiApiKey } from './stores'
   import ProceduralTerrainPanel from './lib/ProceduralTerrainPanel.svelte'
   import CameraModeToggle from './lib/CameraModeToggle.svelte'
 
@@ -150,7 +151,10 @@
 
       const res = await fetch(GENERATE_TILE_ENDPOINT, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': $openaiApiKey || ''
+        },
         body: JSON.stringify({
           prompt,
           face: $selectedFace,

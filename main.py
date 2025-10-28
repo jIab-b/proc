@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -48,7 +48,7 @@ app = FastAPI(title="WebGPU Minecraft Editor API")
 # Enable CORS for Vite dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://clockworktower.com", "https://www.clockworktower.com"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -119,15 +119,9 @@ LOGS_DIR = (Path.cwd() / "logs").resolve()
 MAPS_DIR = (Path.cwd() / "maps").resolve()
 MAP_REGISTRY_FILE = MAPS_DIR / "registry.json"
 
-LLM_PROVIDER_DEFAULT = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+LLM_PROVIDER_DEFAULT = os.environ.get("LLM_PROVIDER", "openai").lower()
 ANTHROPIC_MODEL_DEFAULT = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620")
 OPENAI_MODEL_DEFAULT = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-
-
-def get_openai_api_key() -> Optional[str]:
-    """Return the OpenAI API key from the environment."""
-    return os.getenv("OPENAI_API_KEY")
 
 ATLAS_ROWS = 4
 ATLAS_COLS = 3
@@ -357,12 +351,17 @@ def build_dataset_summary(metadata: Dict[str, Any]) -> str:
 async def call_llm_for_reconstruction(
     summary: str,
     user_prompt: str,
+    openai_api_key: str,
     provider: Optional[str] = None,
     model: Optional[str] = None,
 ) -> ReconstructionResponse:
-    """Dispatch a reconstruction request to Anthropic or OpenAI."""
+    """Dispatch a reconstruction request to OpenAI using provided API key."""
     provider_choice = (provider or LLM_PROVIDER_DEFAULT).lower()
-    if provider_choice not in {"anthropic", "openai"}:
+
+    if not openai_api_key:
+        raise HTTPException(status_code=400, detail="OpenAI API key is required")
+
+    if provider_choice not in {"openai", "anthropic"}:
         raise HTTPException(status_code=400, detail="Unsupported LLM provider")
 
     system_prompt = (
@@ -374,87 +373,37 @@ async def call_llm_for_reconstruction(
         "DATASET SUMMARY:\n" + summary + "\n\n" + "USER REQUEST:\n" + user_prompt.strip()
     )
 
-    if provider_choice == "anthropic":
-        if not ANTHROPIC_API_KEY:
-            raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY is not configured")
-        target_model = model or ANTHROPIC_MODEL_DEFAULT
-        headers = {
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        }
-        payload = {
-            "model": target_model,
-            "max_tokens": 1024,
-            "system": system_prompt,
-            "messages": [
-                {"role": "user", "content": [{"type": "text", "text": user_message}]}
-            ],
-            "temperature": 0.2,
-        }
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                "https://api.anthropic.com/v1/messages", json=payload, headers=headers
-            )
-        if response.status_code >= 400:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-        data = response.json()
-        content = data.get("content", [])
-        text_segments = [item.get("text", "") for item in content if item.get("type") == "text"]
-        output_text = "\n".join(segment.strip() for segment in text_segments if segment)
-        return ReconstructionResponse(
-            provider="anthropic",
-            model=target_model,
-            output=output_text or "",
-            tokens=data.get("usage"),
-        )
-
-    openai_api_key = get_openai_api_key()
-    if not openai_api_key:
-        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured")
+    # Use OpenAI for now (only provider with user-provided key support)
     target_model = model or OPENAI_MODEL_DEFAULT
     headers = {
         "Authorization": f"Bearer {openai_api_key}",
         "Content-Type": "application/json",
     }
-    input_blocks = [
-        {
-            "role": "system",
-            "content": [
-                {"type": "input_text", "text": system_prompt}
-            ],
-        },
-        {
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": user_message}
-            ],
-        },
-    ]
+
     payload = {
         "model": target_model,
         "temperature": 0.2,
-        "input": input_blocks,
-        "max_output_tokens": 1024,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ],
+        "max_tokens": 1024,
     }
+
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
-            "https://api.openai.com/v1/responses", json=payload, headers=headers
+            "https://api.openai.com/v1/chat/completions", json=payload, headers=headers
         )
+
     if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+        raise HTTPException(status_code=response.status_code, detail=f"OpenAI API error: {response.text}")
+
     data = response.json()
-    output_text = data.get("output_text") or ""
-    if not output_text:
-        for item in data.get("output", []):
-            if item.get("type") == "message":
-                for content in item.get("content", []):
-                    if content.get("type") in {"output_text", "text"}:
-                        segment = content.get("text", "")
-                        if segment:
-                            if output_text:
-                                output_text += "\n"
-                            output_text += segment
+    choices = data.get("choices", [])
+    output_text = ""
+    if choices:
+        output_text = choices[0].get("message", {}).get("content", "")
+
     return ReconstructionResponse(
         provider="openai",
         model=target_model,
@@ -1018,7 +967,13 @@ async def export_dataset(payload: DatasetUpload):
 
 
 @app.post("/api/reconstruct-dataset")
-async def reconstruct_dataset(request: ReconstructionRequest):
+async def reconstruct_dataset(
+    request: ReconstructionRequest,
+    x_api_key: Optional[str] = Header(None)
+):
+    if not x_api_key:
+        raise HTTPException(status_code=400, detail="X-API-Key header is required")
+
     prompt = request.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt is required")
@@ -1056,6 +1011,7 @@ async def reconstruct_dataset(request: ReconstructionRequest):
     llm_response = await call_llm_for_reconstruction(
         summary=summary,
         user_prompt=prompt,
+        openai_api_key=x_api_key,
         provider=request.provider,
         model=request.model,
     )
@@ -1271,16 +1227,15 @@ async def generate_terrain(request: TerrainGenerateRequest):
 if __name__ == "__main__":
     import uvicorn
 
-    # Check for FAL_API_KEY
-    if not os.environ.get("FAL_API_KEY") and not os.environ.get("FAL_KEY"):
-        print("\n" + "="*60)
-        print("WARNING: FAL_API_KEY not found in environment!")
-        print("Texture generation will not work without it.")
-        print("Set it with: export FAL_API_KEY=your_key_here")
-        print("="*60 + "\n")
+    print("\n" + "="*60)
+    print("  WebGPU Minecraft Editor - FastAPI Backend")
+    print("="*60)
+    print("API keys are provided by the frontend")
+    print("No environment API keys required")
+    print("="*60 + "\n")
 
     print("Starting FastAPI server on http://localhost:8000")
-    print("API docs available at http://localhost:8000/docs")
+    print("API docs available at http://localhost:8000/docs\n")
 
     uvicorn.run(
         "main:app",
