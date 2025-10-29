@@ -510,6 +510,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
           const isCenter = node.id === 'center'
           const isActivelyAdjusting = ellipsoidNodeAdjustActive && selectedNode === node.id
+          const isHovered = hoveredNode === node.id
           const wasActivated = activatedNodes.has(node.id)
           const isSelected = selectedNode === node.id || (isCenter && centerNodeSelected)
 
@@ -517,33 +518,52 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           // - Center node: cyan/blue (unchanged)
           // - Active node (being adjusted): blue
           // - Previously activated node: red
+          // - Hovered node: brighter/highlighted version
           // - Default node: orange
           let nodeFillColor: string
           let nodeStrokeColor: string
 
           if (isCenter) {
-            nodeFillColor = isSelected ? 'rgba(120, 220, 255, 0.95)' : 'rgba(120, 200, 255, 0.85)'
-            nodeStrokeColor = isSelected ? 'rgba(255, 255, 255, 0.95)' : 'rgba(80, 180, 255, 0.9)'
+            if (isSelected) {
+              nodeFillColor = 'rgba(120, 220, 255, 0.95)'
+              nodeStrokeColor = 'rgba(255, 255, 255, 0.95)'
+            } else if (isHovered) {
+              nodeFillColor = 'rgba(100, 200, 255, 0.95)'
+              nodeStrokeColor = 'rgba(200, 240, 255, 0.95)'
+            } else {
+              nodeFillColor = 'rgba(120, 200, 255, 0.85)'
+              nodeStrokeColor = 'rgba(80, 180, 255, 0.9)'
+            }
           } else if (isActivelyAdjusting) {
             // Active node: bright blue
             nodeFillColor = 'rgba(80, 140, 255, 0.95)'
             nodeStrokeColor = 'rgba(255, 255, 255, 0.95)'
           } else if (wasActivated) {
             // Previously activated node: red
-            nodeFillColor = 'rgba(255, 60, 60, 0.95)'
-            nodeStrokeColor = 'rgba(200, 30, 30, 0.95)'
+            if (isHovered) {
+              nodeFillColor = 'rgba(255, 100, 100, 0.95)'
+              nodeStrokeColor = 'rgba(255, 150, 150, 0.95)'
+            } else {
+              nodeFillColor = 'rgba(255, 60, 60, 0.95)'
+              nodeStrokeColor = 'rgba(200, 30, 30, 0.95)'
+            }
           } else {
             // Default node: orange
-            nodeFillColor = 'rgba(255, 120, 100, 0.85)'
-            nodeStrokeColor = 'rgba(255, 60, 40, 0.95)'
+            if (isHovered) {
+              nodeFillColor = 'rgba(255, 150, 130, 0.95)'
+              nodeStrokeColor = 'rgba(255, 180, 160, 0.95)'
+            } else {
+              nodeFillColor = 'rgba(255, 120, 100, 0.85)'
+              nodeStrokeColor = 'rgba(255, 60, 40, 0.95)'
+            }
           }
 
-          const nodeSize = (isActivelyAdjusting || isSelected) ? nodeRadius + 2 : (wasActivated ? nodeRadius + 1 : nodeRadius)
+          const nodeSize = (isActivelyAdjusting || isSelected || isHovered) ? nodeRadius + 2 : (wasActivated ? nodeRadius + 1 : nodeRadius)
 
           // Draw node
           overlayCtx.fillStyle = nodeFillColor
           overlayCtx.strokeStyle = nodeStrokeColor
-          overlayCtx.lineWidth = (isActivelyAdjusting || isSelected) ? 2.5 : 2
+          overlayCtx.lineWidth = (isActivelyAdjusting || isSelected || isHovered) ? 2.5 : 2
           overlayCtx.beginPath()
           overlayCtx.arc(screen[0], screen[1], nodeSize, 0, Math.PI * 2)
           overlayCtx.fill()
@@ -577,6 +597,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
           const isCenter = node.id === 'center'
           const isActivelyAdjusting = ellipsoidNodeAdjustActive && selectedNode === node.id
+          const isHovered = hoveredNode === node.id
           const wasActivated = activatedNodes.has(node.id)
           const isSelected = selectedNode === node.id || (isCenter && centerNodeSelected)
 
@@ -585,25 +606,43 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
           let nodeStrokeColor: string
 
           if (isCenter) {
-            nodeFillColor = isSelected ? 'rgba(255, 140, 120, 0.95)' : 'rgba(255, 120, 100, 0.85)'
-            nodeStrokeColor = isSelected ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 80, 60, 0.9)'
+            if (isSelected) {
+              nodeFillColor = 'rgba(255, 140, 120, 0.95)'
+              nodeStrokeColor = 'rgba(255, 255, 255, 0.95)'
+            } else if (isHovered) {
+              nodeFillColor = 'rgba(255, 120, 110, 0.95)'
+              nodeStrokeColor = 'rgba(255, 200, 180, 0.95)'
+            } else {
+              nodeFillColor = 'rgba(255, 120, 100, 0.85)'
+              nodeStrokeColor = 'rgba(255, 80, 60, 0.9)'
+            }
           } else if (isActivelyAdjusting) {
             nodeFillColor = 'rgba(255, 100, 80, 0.95)'
             nodeStrokeColor = 'rgba(255, 255, 255, 0.95)'
           } else if (wasActivated) {
-            nodeFillColor = 'rgba(255, 60, 60, 0.95)'
-            nodeStrokeColor = 'rgba(200, 30, 30, 0.95)'
+            if (isHovered) {
+              nodeFillColor = 'rgba(255, 100, 100, 0.95)'
+              nodeStrokeColor = 'rgba(255, 150, 150, 0.95)'
+            } else {
+              nodeFillColor = 'rgba(255, 60, 60, 0.95)'
+              nodeStrokeColor = 'rgba(200, 30, 30, 0.95)'
+            }
           } else {
-            nodeFillColor = 'rgba(255, 120, 100, 0.85)'
-            nodeStrokeColor = 'rgba(255, 60, 40, 0.95)'
+            if (isHovered) {
+              nodeFillColor = 'rgba(255, 150, 130, 0.95)'
+              nodeStrokeColor = 'rgba(255, 180, 160, 0.95)'
+            } else {
+              nodeFillColor = 'rgba(255, 120, 100, 0.85)'
+              nodeStrokeColor = 'rgba(255, 60, 40, 0.95)'
+            }
           }
 
-          const nodeSize = (isActivelyAdjusting || isSelected) ? nodeRadius + 2 : (wasActivated ? nodeRadius + 1 : nodeRadius)
+          const nodeSize = (isActivelyAdjusting || isSelected || isHovered) ? nodeRadius + 2 : (wasActivated ? nodeRadius + 1 : nodeRadius)
 
           // Draw node
           overlayCtx.fillStyle = nodeFillColor
           overlayCtx.strokeStyle = nodeStrokeColor
-          overlayCtx.lineWidth = (isActivelyAdjusting || isSelected) ? 2.5 : 2
+          overlayCtx.lineWidth = (isActivelyAdjusting || isSelected || isHovered) ? 2.5 : 2
           overlayCtx.beginPath()
           overlayCtx.arc(screen[0], screen[1], nodeSize, 0, Math.PI * 2)
           overlayCtx.fill()
@@ -1041,6 +1080,7 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   let ellipsoidNodeAdjustActive = false // resizing along axis via node drag
   let ellipsoidCenterDragActive = false // center reposition via left-click drag on center node
   let centerNodeSelected = false
+  let hoveredNode: EllipsoidNode = null // track which node mouse is hovering over
 
   // Track previously activated nodes (to show as red)
   const activatedNodes = new Set<EllipsoidNode>()
@@ -1185,6 +1225,33 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
         // Don't orbit camera while adjusting nodes
         return
+      }
+    }
+
+    // Hover detection for nodes (only in overview mode and not actively dragging a node)
+    if (cameraMode === 'overview' && !ellipsoidNodeAdjustActive && !ellipsoidCenterDragActive) {
+      const currentSelection = get(highlightSelectionStore)
+      if (currentSelection && (currentSelection.shape === 'ellipsoid' || currentSelection.shape === 'plane')) {
+        const rect = canvas.getBoundingClientRect()
+        const canvasX = ((ev.clientX - rect.left) / rect.width) * canvas.width
+        const canvasY = ((ev.clientY - rect.top) / rect.height) * canvas.height
+
+        let newHoveredNode: EllipsoidNode = null
+
+        if (currentSelection.shape === 'ellipsoid') {
+          const rx = currentSelection.radiusX ?? currentSelection.radius
+          const ry = currentSelection.radiusY ?? currentSelection.radius
+          const rz = currentSelection.radiusZ ?? currentSelection.radius
+          newHoveredNode = getClickedNode(canvasX, canvasY, currentSelection.center, rx, ry, rz, 'ellipsoid')
+        } else if (currentSelection.shape === 'plane') {
+          const sizeX = currentSelection.planeSizeX ?? 8
+          const sizeZ = currentSelection.planeSizeZ ?? 8
+          newHoveredNode = getClickedNode(canvasX, canvasY, currentSelection.center, sizeX, 0, sizeZ, 'plane')
+        }
+
+        hoveredNode = newHoveredNode
+      } else {
+        hoveredNode = null
       }
     }
 
