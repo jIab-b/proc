@@ -788,8 +788,8 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
         if (ev.button === 2) {
           ev.preventDefault()
 
-          // Check if right-clicking on a node - show context menu
-          if (clickedNode && clickedNode !== 'center') {
+          // Check if right-clicking on a node - show context menu (including center node)
+          if (clickedNode) {
             showNodeContextMenu(clickedNode, ev.clientX, ev.clientY)
             ev.stopPropagation()
             return
@@ -1320,35 +1320,52 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
     moveOption.onmouseleave = () => moveOption.style.background = 'transparent'
     moveOption.onclick = () => {
       menu.remove()
-      // Start move/drag mode
-      ellipsoidSelectedNode.set(node)
-      ellipsoidNodeAdjustActive = true
-      ellipsoidEditAxis.set(null)
-      ellipsoidMovementActive = false
-      ellipsoidCenterDragActive = false
-      centerNodeSelected = false
-      activatedNodes.add(node)
 
-      nodeEditStartX = x
-      nodeEditStartY = y
+      if (node === 'center') {
+        // Center node: use center drag mode
+        ellipsoidCenterDragActive = true
+        centerNodeSelected = true
+        ellipsoidMovementActive = false
+        ellipsoidNodeAdjustActive = false
+        ellipsoidSelectedNode.set('center')
+        ellipsoidEditAxis.set(null)
+        activatedNodes.add(node)
 
-      // Check if we're working with plane or ellipsoid
-      const currentSelection = get(highlightSelectionStore)
-      if (currentSelection && currentSelection.shape === 'plane') {
-        // For plane, set starting radius based on which node (X or Z direction)
-        if (node === '+x' || node === '-x') {
-          nodeEditStartRadius = get(planeSizeX)
-        } else if (node === '+z' || node === '-z') {
-          nodeEditStartRadius = get(planeSizeZ)
-        }
+        const overviewPos = getCameraWorldPosition()
+        lastCameraPos = [...overviewPos] as Vec3
+
+        console.log('Context menu: Starting CENTER DRAG mode')
       } else {
-        const axis = node[1] as 'x' | 'y' | 'z'
-        if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
-        else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
-        else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
-      }
+        // Side nodes: use node adjust mode for resizing
+        ellipsoidSelectedNode.set(node)
+        ellipsoidNodeAdjustActive = true
+        ellipsoidEditAxis.set(null)
+        ellipsoidMovementActive = false
+        ellipsoidCenterDragActive = false
+        centerNodeSelected = false
+        activatedNodes.add(node)
 
-      console.log('Context menu: Starting move mode for node', node)
+        nodeEditStartX = x
+        nodeEditStartY = y
+
+        // Check if we're working with plane or ellipsoid
+        const currentSelection = get(highlightSelectionStore)
+        if (currentSelection && currentSelection.shape === 'plane') {
+          // For plane, set starting radius based on which node (X or Z direction)
+          if (node === '+x' || node === '-x') {
+            nodeEditStartRadius = get(planeSizeX)
+          } else if (node === '+z' || node === '-z') {
+            nodeEditStartRadius = get(planeSizeZ)
+          }
+        } else {
+          const axis = node[1] as 'x' | 'y' | 'z'
+          if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
+          else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
+          else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
+        }
+
+        console.log('Context menu: Starting move mode for node', node)
+      }
     }
 
     menu.appendChild(moveOption)
@@ -1902,8 +1919,8 @@ Examples:
       if (ev.button === 2) {
         ev.preventDefault()
 
-        // Check if right-clicking on a node - show context menu
-        if (clickedNode && clickedNode !== 'center') {
+        // Check if right-clicking on a node - show context menu (including center node)
+        if (clickedNode) {
           showNodeContextMenu(clickedNode, ev.clientX, ev.clientY)
           handledEllipsoidInteraction = true
           return
