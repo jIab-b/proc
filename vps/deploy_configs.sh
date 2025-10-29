@@ -23,6 +23,15 @@ SERVICE_FILE="/etc/systemd/system/webgpu-backend.service"
 [[ -f "$NGINX_DEFAULT" ]] && cp "$NGINX_DEFAULT" "${NGINX_DEFAULT}.bak.$(date +%Y%m%d)"
 [[ -f "$SERVICE_FILE" ]] && cp "$SERVICE_FILE" "${SERVICE_FILE}.bak.$(date +%Y%m%d)"
 
+# Prepare static files for serving (one-click: copy built dist to public location)
+echo "📁 Preparing static frontend files..."
+mkdir -p /var/www/webgpu
+rm -rf /var/www/webgpu/*  # Clear old files
+cp -r /root/proc/webgpu/dist/* /var/www/webgpu/  # Copy built assets
+chown -R www-data:www-data /var/www/webgpu
+chmod -R 755 /var/www/webgpu
+echo "✓ Static files copied to /var/www/webgpu with correct permissions"
+
 # Copy nginx config from vps/
 cp vps/nginx_config.cfg "$NGINX_DEFAULT"
 
