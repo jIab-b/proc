@@ -1063,14 +1063,21 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
         if (latestCamera) {
           // Get the axis direction in world space based on which node is selected
+          // For negative-side nodes, invert the direction so movement is calculated correctly
           let worldAxisDir: Vec3 = [0, 0, 0]
 
-          if (selectedNode === '+x' || selectedNode === '-x') {
-            worldAxisDir = [1, 0, 0]  // X axis
-          } else if (selectedNode === '+y' || selectedNode === '-y') {
-            worldAxisDir = [0, 1, 0]  // Y axis
-          } else if (selectedNode === '+z' || selectedNode === '-z') {
-            worldAxisDir = [0, 0, 1]  // Z axis
+          if (selectedNode === '+x') {
+            worldAxisDir = [1, 0, 0]  // X axis (positive direction)
+          } else if (selectedNode === '-x') {
+            worldAxisDir = [-1, 0, 0]  // X axis (negative direction)
+          } else if (selectedNode === '+y') {
+            worldAxisDir = [0, 1, 0]  // Y axis (positive direction)
+          } else if (selectedNode === '-y') {
+            worldAxisDir = [0, -1, 0]  // Y axis (negative direction)
+          } else if (selectedNode === '+z') {
+            worldAxisDir = [0, 0, 1]  // Z axis (positive direction)
+          } else if (selectedNode === '-z') {
+            worldAxisDir = [0, 0, -1]  // Z axis (negative direction)
           }
 
           // Project the world axis direction onto screen space
