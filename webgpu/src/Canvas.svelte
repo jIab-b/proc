@@ -486,23 +486,23 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
 <style>
   .canvas-container {
     position: relative;
-    flex: 1;
+    width: 100%;
+    height: 100%;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: clamp(8px, 2vw, 20px);
+    padding: 12px;
   }
 
   .canvas-shell {
     position: relative;
     width: 100%;
     height: 100%;
-    max-width: calc(100vw - var(--sidebar-width) - 2 * clamp(8px, 2vw, 20px));
     aspect-ratio: 16 / 9;
     background: rgba(12, 22, 32, 0.6);
     border: 1px solid rgba(210, 223, 244, 0.1);
-    border-radius: 18px;
-    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
     display: flex;
     align-items: center;
     justify-content: center;

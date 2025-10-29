@@ -383,15 +383,8 @@
   }
 
   .sidebar {
-    width: var(--sidebar-width);
-    min-width: var(--sidebar-min-width);
-    max-width: var(--sidebar-max-width);
-    height: calc(100vh - 32px);
-    margin: clamp(12px, 2vw, 16px) 0 clamp(12px, 2vw, 16px) clamp(12px, 2vw, 16px);
-    background: rgba(20, 30, 45, 0.95);
-    border: 1px solid rgba(210, 223, 244, 0.2);
-    border-radius: 16px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    width: 100%;
+    height: 100%;
     display: flex;
     flex-direction: column;
     overflow-y: auto;

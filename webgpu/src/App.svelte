@@ -1,11 +1,24 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte'
   import UI from './UI.svelte'
   import Canvas from './Canvas.svelte'
   import ApiKeyModal from './ApiKeyModal.svelte'
+  import ResizableWindow from './lib/ResizableWindow.svelte'
   import { openaiApiKey, backendConfig } from './stores'
 
   let showApiKeyModal = true
+
+  // Sidebar window
+  let sidebarX = 12
+  let sidebarY = 12
+  let sidebarWidth = 350
+  let sidebarHeight = window.innerHeight - 40
+
+  // Canvas window
+  let canvasX = 380
+  let canvasY = 12
+  let canvasWidth = window.innerWidth - 410
+  let canvasHeight = window.innerHeight - 40
 
   onMount(async () => {
     // Fetch backend config to determine if API key modal is needed
@@ -33,8 +46,31 @@
 {/if}
 
 <div class="app-container">
-  <UI />
-  <Canvas />
+  <ResizableWindow
+    bind:x={sidebarX}
+    bind:y={sidebarY}
+    bind:width={sidebarWidth}
+    bind:height={sidebarHeight}
+    minWidth={200}
+    maxWidth={600}
+    minHeight={300}
+    maxHeight={window.innerHeight - 20}
+  >
+    <UI />
+  </ResizableWindow>
+
+  <ResizableWindow
+    bind:x={canvasX}
+    bind:y={canvasY}
+    bind:width={canvasWidth}
+    bind:height={canvasHeight}
+    minWidth={400}
+    maxWidth={window.innerWidth - 20}
+    minHeight={300}
+    maxHeight={window.innerHeight - 20}
+  >
+    <Canvas />
+  </ResizableWindow>
 </div>
 
 <style>
@@ -57,8 +93,8 @@
   }
 
   .app-container {
+    position: relative;
     width: 100%;
     height: 100vh;
-    display: flex;
   }
 </style>
