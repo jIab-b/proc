@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  readonly VITE_OPENAI_API_KEY?: string
+  // No environment variables needed - API keys provided by user
 }
 
 interface ImportMeta {

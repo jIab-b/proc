@@ -83,9 +83,17 @@ def wait_for_server(url, timeout=30, service_name="Server"):
     return False
 
 
-def launch_server():
+def launch_server(backend_mode='--dev'):
     """Launch both FastAPI backend and Vite frontend servers asynchronously"""
     check_env()
+
+    mode_label = "PRODUCTION" if backend_mode == '--prod' else "DEVELOPMENT"
+    print(f"\n🔧 Backend mode: {mode_label}")
+    if backend_mode == '--dev':
+        print("   API keys will be loaded from .env")
+    else:
+        print("   API keys will be prompted in frontend")
+    print()
 
     processes = []
 
@@ -111,9 +119,8 @@ def launch_server():
             sys.exit(1)
 
         backend_process = subprocess.Popen(
-            ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000", "--workers", "1"],
+            [str(venv_python), "main.py", backend_mode],
             cwd=str(Path.cwd()),
-            env={"PATH": str(venv_python.parent)},  # Ensure venv bin in PATH
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             text=True,
@@ -218,11 +225,15 @@ def main():
     parser = argparse.ArgumentParser(description='WebGPU Minecraft Editor Launcher')
     parser.add_argument('--launch', action='store_true', help='Start backend + Vite asynchronously, open browser, then exit')
     parser.add_argument('--shutdown', action='store_true', help='Shutdown the running server')
+    parser.add_argument('--prod', action='store_true', help='Production mode: prompt for API key in frontend')
 
     args = parser.parse_args()
 
+    # Determine backend mode
+    backend_mode = '--prod' if args.prod else '--dev'
+
     if args.launch:
-        launch_server()
+        launch_server(backend_mode)
         return
     elif args.shutdown:
         shutdown_server()
@@ -230,6 +241,14 @@ def main():
 
     # Original all-in-one functionality
     check_env()
+
+    mode_label = "PRODUCTION" if backend_mode == '--prod' else "DEVELOPMENT"
+    print(f"\n🔧 Backend mode: {mode_label}")
+    if backend_mode == '--dev':
+        print("   API keys will be loaded from .env")
+    else:
+        print("   API keys will be prompted in frontend")
+    print()
 
     processes = []
 
@@ -259,7 +278,7 @@ def main():
             sys.exit(1)
 
         backend_process = subprocess.Popen(
-            [str(venv_python), "main.py"],
+            [str(venv_python), "main.py", backend_mode],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

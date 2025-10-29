@@ -33,6 +33,7 @@ import {
   type EllipsoidNode
 } from './core'
 import type { CameraSnapshot } from './engine'
+import { openaiApiKey } from './stores'
 
 export interface RendererOptions {
   canvas: HTMLCanvasElement
@@ -1534,10 +1535,10 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
       return
     }
 
-    const apiKey = import.meta.env.VITE_OPENAI_API_KEY
+    const apiKey = get(openaiApiKey)
     if (!apiKey) {
       console.error('[LLM] No API key found')
-      throw new Error('VITE_OPENAI_API_KEY not found in environment variables. Please set it in your .env file.')
+      throw new Error('OpenAI API key not found. Please enter your API key in the modal.')
     }
 
     console.log('[LLM] Generating terrain for description:', description)

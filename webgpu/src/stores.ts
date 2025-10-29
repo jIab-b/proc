@@ -2,6 +2,15 @@ import { writable } from 'svelte/store'
 import type { BlockFaceKey } from './chunks'
 import { BlockType } from './chunks'
 
+// Backend configuration
+export const backendConfig = writable<{
+  mode: 'dev' | 'prod'
+  requiresApiKey: boolean
+}>({
+  mode: 'prod',
+  requiresApiKey: true
+})
+
 // Session API key (user-provided, not persisted)
 export const openaiApiKey = writable<string | null>(null)
 

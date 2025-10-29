@@ -36,7 +36,7 @@ User=root
 Group=root
 WorkingDirectory=/root/proc
 Environment=PATH=/root/proc/venv/bin
-ExecStart=/root/proc/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 2 --access-log --proxy-headers
+ExecStart=/root/proc/venv/bin/python main.py --prod
 Restart=always
 RestartSec=10
 StandardOutput=journal

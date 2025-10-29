@@ -7,6 +7,7 @@ import os
 import json
 import shutil
 import random
+import argparse
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -19,6 +20,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image, ImageDraw
 import httpx
+
+# Global app configuration
+APP_CONFIG = {
+    "mode": "prod",  # Will be set at startup: 'dev' or 'prod'
+    "requires_api_key": True  # Will be False in dev mode
+}
 
 # Load environment variables from .env file
 def load_env():
@@ -34,8 +41,6 @@ def load_env():
                     value = value.strip().strip('"').strip("'")
                     if key and value:
                         os.environ[key] = value
-
-load_env()
 
 # Placeholder for fal_generate_edit - removed client_example dependency
 async def fal_generate_edit(png_grid: bytes, prompt: str, width: int = 512, height: int = 512):
@@ -597,6 +602,15 @@ async def health():
     return {"status": "healthy"}
 
 
+@app.get("/api/config")
+async def get_config():
+    """Get application configuration"""
+    return {
+        "mode": APP_CONFIG["mode"],
+        "requiresApiKey": APP_CONFIG["requires_api_key"]
+    }
+
+
 @app.post("/shutdown")
 async def shutdown():
     """Shutdown the server"""
@@ -971,7 +985,12 @@ async def reconstruct_dataset(
     request: ReconstructionRequest,
     x_api_key: Optional[str] = Header(None)
 ):
-    if not x_api_key:
+    # In dev mode, use environment key if no header provided
+    api_key = x_api_key
+    if not api_key and APP_CONFIG["mode"] == "dev":
+        api_key = os.environ.get("OPENAI_API_KEY")
+
+    if not api_key:
         raise HTTPException(status_code=400, detail="X-API-Key header is required")
 
     prompt = request.prompt.strip()
@@ -1011,7 +1030,7 @@ async def reconstruct_dataset(
     llm_response = await call_llm_for_reconstruction(
         summary=summary,
         user_prompt=prompt,
-        openai_api_key=x_api_key,
+        openai_api_key=api_key,
         provider=request.provider,
         model=request.model,
     )
@@ -1227,18 +1246,43 @@ async def generate_terrain(request: TerrainGenerateRequest):
 if __name__ == "__main__":
     import uvicorn
 
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='WebGPU Minecraft Editor - FastAPI Backend')
+    parser.add_argument('--dev', action='store_true', help='Development mode: auto-load API keys from .env')
+    parser.add_argument('--prod', action='store_true', help='Production mode: API keys provided by frontend (default)')
+    args = parser.parse_args()
+
+    # Default to production mode if neither flag is specified
+    is_dev_mode = args.dev and not args.prod
+
     print("\n" + "="*60)
     print("  WebGPU Minecraft Editor - FastAPI Backend")
     print("="*60)
-    print("API keys are provided by the frontend")
-    print("No environment API keys required")
+
+    if is_dev_mode:
+        print("Mode: DEVELOPMENT")
+        print("Loading API keys from .env file...")
+        load_env()
+        APP_CONFIG["mode"] = "dev"
+        APP_CONFIG["requires_api_key"] = False
+        if os.environ.get("OPENAI_API_KEY"):
+            print("✓ OPENAI_API_KEY loaded from .env")
+        else:
+            print("⚠ Warning: OPENAI_API_KEY not found in .env")
+    else:
+        print("Mode: PRODUCTION")
+        print("API keys will be provided by the frontend")
+        print("No environment API keys will be loaded")
+        APP_CONFIG["mode"] = "prod"
+        APP_CONFIG["requires_api_key"] = True
+
     print("="*60 + "\n")
 
     print("Starting FastAPI server on http://localhost:8000")
     print("API docs available at http://localhost:8000/docs\n")
 
     uvicorn.run(
-        "main:app",
+        app,  # Pass app object directly instead of string to preserve APP_CONFIG
         host="0.0.0.0",
         port=8000,
         reload=False,
