@@ -47,6 +47,7 @@
 
 <div class="app-container">
   <ResizableWindow
+    title="Block Controls"
     bind:x={sidebarX}
     bind:y={sidebarY}
     bind:width={sidebarWidth}
@@ -60,6 +61,7 @@
   </ResizableWindow>
 
   <ResizableWindow
+    title="Graphics Display"
     bind:x={canvasX}
     bind:y={canvasY}
     bind:width={canvasWidth}

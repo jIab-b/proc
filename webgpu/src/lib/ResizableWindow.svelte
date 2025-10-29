@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
 
+  export let title: string = 'Window'
   export let x: number = 0
   export let y: number = 0
   export let width: number = 400
@@ -11,7 +12,7 @@
   export let maxHeight: number = 1200
 
   let isDragging = false
-  let dragType: 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | null = null
+  let dragType: 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | 'move' | null = null
   let startX = 0
   let startY = 0
   let startWidth = 0
@@ -20,6 +21,18 @@
   let startTop = 0
 
   const HANDLE_SIZE = 6
+  const HEADER_HEIGHT = 32
+
+  function handleHeaderMouseDown(e: MouseEvent) {
+    isDragging = true
+    dragType = 'move'
+    startX = e.clientX
+    startY = e.clientY
+    startLeft = x
+    startTop = y
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'grabbing'
+  }
 
   function handleMouseDown(type: 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw') {
     return (e: MouseEvent) => {
@@ -39,6 +52,7 @@
     isDragging = false
     dragType = null
     document.body.style.userSelect = 'auto'
+    document.body.style.cursor = 'auto'
   }
 
   function handleMouseMove(e: MouseEvent) {
@@ -46,6 +60,12 @@
 
     const dx = e.clientX - startX
     const dy = e.clientY - startY
+
+    if (dragType === 'move') {
+      x = startLeft + dx
+      y = startTop + dy
+      return
+    }
 
     if (dragType.includes('e')) {
       width = Math.max(minWidth, Math.min(maxWidth, startWidth + dx))
@@ -98,6 +118,17 @@
   class="window"
   style="left: {x}px; top: {y}px; width: {width}px; height: {height}px;"
 >
+  <!-- Title Bar (Draggable) -->
+  <div
+    class="window-header"
+    on:mousedown={handleHeaderMouseDown}
+    role="button"
+    tabindex="0"
+    aria-label="Drag to move window"
+  >
+    <span class="window-title">{title}</span>
+  </div>
+
   <!-- Resize Handles -->
   <!-- Top -->
   <div
@@ -161,6 +192,29 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  .window-header {
+    height: 32px;
+    padding: 0 12px;
+    background: rgba(48, 66, 88, 0.6);
+    border-bottom: 1px solid rgba(210, 223, 244, 0.15);
+    display: flex;
+    align-items: center;
+    cursor: grab;
+    flex-shrink: 0;
+    user-select: none;
+  }
+
+  .window-header:active {
+    cursor: grabbing;
+  }
+
+  .window-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #d2dff4;
+    letter-spacing: 0.5px;
   }
 
   .window-content {
