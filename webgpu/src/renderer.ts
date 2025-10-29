@@ -724,16 +724,14 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
 
       if (mode === 'highlight' && (shape === 'ellipsoid' || shape === 'plane')) {
         // Convert client coordinates to canvas coordinates
-        // IMPORTANT: Use overlayCanvas rect if available, since nodes are drawn on overlay
-        const targetCanvas = overlayCanvas || canvas
-        const rect = targetCanvas.getBoundingClientRect()
+        // IMPORTANT: Use main canvas rect, not overlay, since internal resolution is based on main canvas size
+        const rect = canvas.getBoundingClientRect()
         const canvasX = ((ev.clientX - rect.left) / rect.width) * canvas.width
         const canvasY = ((ev.clientY - rect.top) / rect.height) * canvas.height
-        console.log('Coordinate conversion (using overlay):', {
+        console.log('Coordinate conversion:', {
           client: { x: ev.clientX, y: ev.clientY },
           rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
-          canvas: { x: canvasX, y: canvasY, width: canvas.width, height: canvas.height },
-          usingOverlay: !!overlayCanvas
+          canvas: { x: canvasX, y: canvasY, width: canvas.width, height: canvas.height }
         })
 
         const currentSelection = get(highlightSelectionStore)
@@ -1871,9 +1869,8 @@ Examples:
     const currentShape = get(highlightShape)
     if ((isCanvasEvent || isOverlayEvent) && mode === 'highlight' && (currentShape === 'ellipsoid' || currentShape === 'plane')) {
       // Convert client coordinates to canvas coordinates
-      // IMPORTANT: Use overlayCanvas rect if available, since nodes are drawn on overlay
-      const targetCanvas = overlayCanvas || canvas
-      const rect = targetCanvas.getBoundingClientRect()
+      // IMPORTANT: Use main canvas rect, not overlay, since internal resolution is based on main canvas size
+      const rect = canvas.getBoundingClientRect()
       const canvasX = ((ev.clientX - rect.left) / rect.width) * canvas.width
       const canvasY = ((ev.clientY - rect.top) / rect.height) * canvas.height
 
