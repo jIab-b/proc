@@ -2,8 +2,8 @@
 import { onMount } from 'svelte'
 import { get } from 'svelte/store'
 import { createRenderer } from './renderer'
-import { MapManager, CaptureSystem, DSLEngine, createWorldConfig, generateTerrain, type CameraSnapshot } from './engine'
-import { generateRegion, createTerrainGeneratorState } from './procedural/terrainGenerator'
+import { MapManager, CaptureSystem, DSLEngine, createWorldConfig, type CameraSnapshot } from './engine'
+import { WorldState } from './world'
   import {
     ChunkManager,
     selectedBlockType,
@@ -44,6 +44,7 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
   const chunk = new ChunkManager(worldConfig.dimensions)
   let worldScale = 2
   const chunkOriginOffset: Vec3 = [-chunk.size.x * worldScale / 2, 0, -chunk.size.z * worldScale / 2]
+  const world = new WorldState(chunk, { worldScale, chunkOriginOffset })
 
   let mapManager: MapManager
   let captureSystem: CaptureSystem
@@ -146,7 +147,7 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
   }
 
   onMount(async () => {
-    mapManager = new MapManager(chunk, worldScale)
+    mapManager = new MapManager(world)
     captureSystem = new CaptureSystem()
     dslEngine = new DSLEngine()
 
@@ -157,9 +158,7 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
           overlayCanvas: overlayCanvasEl,
           getSelectedBlock: () => ({ type: $selectedBlockType, custom: $selectedCustomBlock })
         },
-        chunk,
-        worldScale,
-        chunkOriginOffset
+        world
       )
 
       gpuHooks.set({
@@ -186,166 +185,25 @@ import { generateRegion, createTerrainGeneratorState } from './procedural/terrai
           const camera = renderer?.getCamera()
           return camera ? [...camera.position] as [number, number, number] : null
         },
-        getWorldScale: () => worldScale,
-        chunkToWorld: (chunkCoord: Vec3): Vec3 => [
-          chunkCoord[0] * worldScale + chunkOriginOffset[0],
-          chunkCoord[1] * worldScale + chunkOriginOffset[1],
-          chunkCoord[2] * worldScale + chunkOriginOffset[2]
-        ],
-        worldToChunk: (worldCoord: Vec3): Vec3 => [
-          (worldCoord[0] - chunkOriginOffset[0]) / worldScale,
-          (worldCoord[1] - chunkOriginOffset[1]) / worldScale,
-          (worldCoord[2] - chunkOriginOffset[2]) / worldScale
-        ],
-        generateTerrain: (params: TerrainGenerateParams) => {
-          console.log('=== GENERATE TERRAIN HOOK CALLED ===')
-          console.log('Params (WORLD coords):', params)
-          console.log('chunkOriginOffset:', chunkOriginOffset, 'worldScale:', worldScale)
-          console.log('Region min (WORLD):', params.region.min)
-          console.log('Region max (WORLD):', params.region.max)
-          console.log('Ellipsoid mask:', params.ellipsoidMask)
-
-          // Convert world coordinates to chunk coordinates
-          const worldToChunk = (worldCoord: Vec3): Vec3 => [
-            (worldCoord[0] - chunkOriginOffset[0]) / worldScale,
-            (worldCoord[1] - chunkOriginOffset[1]) / worldScale,
-            (worldCoord[2] - chunkOriginOffset[2]) / worldScale
+        getWorldScale: () => world.getWorldScale(),
+        chunkToWorld: (chunkCoord: Vec3): Vec3 => {
+          const scale = world.getWorldScale()
+          return [
+            chunkCoord[0] * scale + chunkOriginOffset[0],
+            chunkCoord[1] * scale + chunkOriginOffset[1],
+            chunkCoord[2] * scale + chunkOriginOffset[2]
           ]
-
-          const chunkMin = worldToChunk(params.region.min)
-          const chunkMax = worldToChunk(params.region.max)
-
-          console.log('After conversion to CHUNK coords:')
-          console.log('  chunkMin:', chunkMin)
-          console.log('  chunkMax:', chunkMax)
-
-          // Clamp to chunk bounds
-          const chunkRegion = {
-            min: [
-              Math.max(0, Math.floor(chunkMin[0])),
-              Math.max(0, Math.floor(chunkMin[1])),
-              Math.max(0, Math.floor(chunkMin[2]))
-            ] as [number, number, number],
-            max: [
-              Math.min(chunk.size.x - 1, Math.floor(chunkMax[0])),
-              Math.min(chunk.size.y - 1, Math.floor(chunkMax[1])),
-              Math.min(chunk.size.z - 1, Math.floor(chunkMax[2]))
-            ] as [number, number, number]
-          }
-
-          console.log('World region min:', params.region.min, 'max:', params.region.max)
-          console.log('World to chunk conversion:')
-          console.log('  chunkMin:', chunkMin)
-          console.log('  chunkMax:', chunkMax)
-          console.log('Converted to chunk coords (floored):', chunkRegion)
-          console.log('Chunk size:', chunk.size)
-          console.log('Region within bounds?',
-            chunkRegion.min[0] >= 0 && chunkRegion.max[0] < chunk.size.x &&
-            chunkRegion.min[1] >= 0 && chunkRegion.max[1] < chunk.size.y &&
-            chunkRegion.min[2] >= 0 && chunkRegion.max[2] < chunk.size.z
-          )
-          console.log('Bounds check details:')
-          console.log('  X: [', chunkRegion.min[0], ',', chunkRegion.max[0], '] vs chunk [0,', chunk.size.x - 1, ']')
-          console.log('  Y: [', chunkRegion.min[1], ',', chunkRegion.max[1], '] vs chunk [0,', chunk.size.y - 1, ']')
-          console.log('  Z: [', chunkRegion.min[2], ',', chunkRegion.max[2], '] vs chunk [0,', chunk.size.z - 1, ']')
-
-          const terrainState = createTerrainGeneratorState(params.profile, params.params)
-
-          // Helper function to check if a point is inside the ellipsoid
-          // Takes CHUNK coordinates and converts to WORLD coordinates for comparison
-          const isInsideEllipsoid = (chunkX: number, chunkY: number, chunkZ: number): boolean => {
-            if (!params.ellipsoidMask) return true
-
-            // Convert chunk coordinates to world coordinates
-            const worldX = chunkX * worldScale + chunkOriginOffset[0]
-            const worldY = chunkY * worldScale + chunkOriginOffset[1]
-            const worldZ = chunkZ * worldScale + chunkOriginOffset[2]
-
-            const mask = params.ellipsoidMask
-            const dx = (worldX - mask.center[0]) / mask.radiusX
-            const dy = (worldY - mask.center[1]) / mask.radiusY
-            const dz = (worldZ - mask.center[2]) / mask.radiusZ
-
-            return (dx * dx + dy * dy + dz * dz) <= 1
-          }
-
-          if (params.action === 'clear') {
-            console.log('Clearing region')
-            const min = chunkRegion.min
-            const max = chunkRegion.max
-            for (let x = min[0]; x <= max[0]; x++) {
-              for (let y = min[1]; y <= max[1]; y++) {
-                for (let z = min[2]; z <= max[2]; z++) {
-                  if (x >= 0 && x < chunk.size.x && y >= 0 && y < chunk.size.y && z >= 0 && z < chunk.size.z) {
-                    if (isInsideEllipsoid(x, y, z)) {
-                      chunk.setBlock(x, y, z, BlockType.Air)
-                    }
-                  }
-                }
-              }
-            }
-          } else {
-            console.log('Generating terrain in chunk region:', chunkRegion)
-
-            // Generate terrain with ellipsoid masking
-            if (params.ellipsoidMask) {
-              console.log('Using ellipsoid mask:', params.ellipsoidMask)
-
-              // Generate terrain only inside the ellipsoid using the procedural generator
-              const min = chunkRegion.min
-              const max = chunkRegion.max
-
-              console.log('Generating terrain in region:', { min, max })
-              console.log('Region size:', (max[0] - min[0] + 1), 'x', (max[1] - min[1] + 1), 'x', (max[2] - min[2] + 1))
-
-              // First, generate the full terrain region
-              console.log('Calling generateRegion...')
-              generateRegion(chunk, chunkRegion, terrainState)
-              console.log('generateRegion completed')
-
-              // Then, clear blocks outside the ellipsoid
-              let clearedCount = 0
-              for (let x = min[0]; x <= max[0]; x++) {
-                for (let y = min[1]; y <= max[1]; y++) {
-                  for (let z = min[2]; z <= max[2]; z++) {
-                    if (!isInsideEllipsoid(x, y, z)) {
-                      chunk.setBlock(x, y, z, BlockType.Air)
-                      clearedCount++
-                    }
-                  }
-                }
-              }
-              console.log('Cleared', clearedCount, 'blocks outside ellipsoid')
-            } else {
-              console.log('No ellipsoid mask, generating full region:', chunkRegion)
-              console.log('Region size:',
-                (chunkRegion.max[0] - chunkRegion.min[0] + 1), 'x',
-                (chunkRegion.max[1] - chunkRegion.min[1] + 1), 'x',
-                (chunkRegion.max[2] - chunkRegion.min[2] + 1))
-              generateRegion(chunk, chunkRegion, terrainState)
-              console.log('generateRegion completed')
-            }
-
-            // Count non-air blocks to verify terrain was generated
-            let nonAirCount = 0
-            for (let x = chunkRegion.min[0]; x <= chunkRegion.max[0]; x++) {
-              for (let y = chunkRegion.min[1]; y <= chunkRegion.max[1]; y++) {
-                for (let z = chunkRegion.min[2]; z <= chunkRegion.max[2]; z++) {
-                  if (x >= 0 && x < chunk.size.x && y >= 0 && y < chunk.size.y && z >= 0 && z < chunk.size.z) {
-                    const block = chunk.getBlock(x, y, z)
-                    if (block !== BlockType.Air) {
-                      nonAirCount++
-                    }
-                  }
-                }
-              }
-            }
-            console.log('Terrain generation complete - Non-air blocks in region:', nonAirCount)
-          }
-
-          console.log('Marking mesh dirty')
-          renderer?.markMeshDirty()
-          console.log('Done')
+        },
+        worldToChunk: (worldCoord: Vec3): Vec3 => {
+          const scale = world.getWorldScale()
+          return [
+            (worldCoord[0] - chunkOriginOffset[0]) / scale,
+            (worldCoord[1] - chunkOriginOffset[1]) / scale,
+            (worldCoord[2] - chunkOriginOffset[2]) / scale
+          ]
+        },
+        generateTerrain: (params: TerrainGenerateParams) => {
+          world.apply({ type: 'terrain_region', params, source: 'gpuHooks.generateTerrain' })
         }
       })
 

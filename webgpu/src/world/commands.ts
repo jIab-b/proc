@@ -1,0 +1,279 @@
+import type { TerrainGenerateParams } from '../core'
+import type { Vec3 } from '../core'
+import { BlockType } from '../core'
+
+export type VoxelEdit = {
+  position: Vec3
+  blockType: number
+}
+
+export type WorldCommand =
+  | { type: 'set_block'; edit: VoxelEdit; source?: string }
+  | { type: 'set_blocks'; edits: VoxelEdit[]; source?: string }
+  | { type: 'load_snapshot'; blocks: VoxelEdit[]; clear?: boolean; worldScale?: number; source?: string }
+  | { type: 'clear_all'; source?: string }
+  | { type: 'terrain_region'; params: TerrainGenerateParams; source?: string }
+
+export type ParseResult = { commands: WorldCommand[]; errors: string[] }
+
+const TOKEN_SPLIT = /\s+/
+
+function parseTokenAsInt(token: string, name: string, errors: string[]) {
+  const value = Number.parseInt(token, 10)
+  if (Number.isNaN(value)) {
+    errors.push(`Expected integer for ${name}, got "${token}"`)
+  }
+  return value
+}
+
+function parseTokenAsFloat(token: string, name: string, errors: string[]) {
+  const value = Number.parseFloat(token)
+  if (Number.isNaN(value)) {
+    errors.push(`Expected number for ${name}, got "${token}"`)
+  }
+  return value
+}
+
+export function parseWorldCommands(input: string): ParseResult {
+  const commands: WorldCommand[] = []
+  const errors: string[] = []
+  const text = input.trim()
+  if (!text) return { commands, errors }
+
+  const tryJson = () => {
+    try {
+      const parsed = JSON.parse(text)
+      if (Array.isArray(parsed)) {
+        parsed.forEach(cmd => commands.push(normalizeCommand(cmd)))
+      } else {
+        commands.push(normalizeCommand(parsed))
+      }
+    } catch (err) {
+      errors.push(`Failed to parse JSON DSL: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean)
+  const looksJson = text.startsWith('{') || text.startsWith('[')
+
+  if (looksJson) {
+    tryJson()
+  } else {
+    for (const line of lines) {
+      const [head, ...rest] = line.split(TOKEN_SPLIT).filter(Boolean)
+      if (!head) continue
+      switch (head.toLowerCase()) {
+        case 'set': {
+          if (rest.length < 4) {
+            errors.push(`set command requires 4 arguments, got "${line}"`)
+            break
+          }
+          const [xToken, yToken, zToken, typeToken] = rest
+          const position: Vec3 = [
+            parseTokenAsInt(xToken!, 'x', errors),
+            parseTokenAsInt(yToken!, 'y', errors),
+            parseTokenAsInt(zToken!, 'z', errors)
+          ]
+          const block = parseBlock(typeToken!, errors)
+          commands.push({
+            type: 'set_block',
+            edit: { position, blockType: block }
+          })
+          break
+        }
+        case 'remove': {
+          if (rest.length < 3) {
+            errors.push(`remove command requires 3 arguments, got "${line}"`)
+            break
+          }
+          const [xToken, yToken, zToken] = rest
+          const position: Vec3 = [
+            parseTokenAsInt(xToken!, 'x', errors),
+            parseTokenAsInt(yToken!, 'y', errors),
+            parseTokenAsInt(zToken!, 'z', errors)
+          ]
+          commands.push({
+            type: 'set_block',
+            edit: { position, blockType: BlockType.Air }
+          })
+          break
+        }
+        case 'terrain': {
+          if (rest.length < 14) {
+            errors.push(`terrain command requires 14 arguments, got "${line}"`)
+            break
+          }
+          const [
+            actionToken,
+            minX, minY, minZ,
+            maxX, maxY, maxZ,
+            profile,
+            seedToken,
+            amplitudeToken,
+            roughnessToken,
+            elevationToken,
+            selectionType,
+            ellipsoidFlag
+          ] = rest
+
+          const params: TerrainGenerateParams = {
+            action: actionToken as TerrainGenerateParams['action'],
+            region: {
+              min: [
+                parseTokenAsFloat(minX!, 'minX', errors),
+                parseTokenAsFloat(minY!, 'minY', errors),
+                parseTokenAsFloat(minZ!, 'minZ', errors)
+              ],
+              max: [
+                parseTokenAsFloat(maxX!, 'maxX', errors),
+                parseTokenAsFloat(maxY!, 'maxY', errors),
+                parseTokenAsFloat(maxZ!, 'maxZ', errors)
+              ]
+            },
+            profile: profile as TerrainGenerateParams['profile'],
+            selectionType: (selectionType as TerrainGenerateParams['selectionType']) ?? 'default',
+            params: {
+              seed: parseTokenAsInt(seedToken!, 'seed', errors),
+              amplitude: parseTokenAsFloat(amplitudeToken!, 'amplitude', errors),
+              roughness: parseTokenAsFloat(roughnessToken!, 'roughness', errors),
+              elevation: parseTokenAsFloat(elevationToken!, 'elevation', errors)
+            }
+          }
+
+          if (ellipsoidFlag?.toLowerCase() === 'ellipsoid') {
+            const next = rest.slice(14)
+            if (next.length >= 6) {
+              params.ellipsoidMask = {
+                center: [
+                  parseTokenAsFloat(next[0]!, 'ellipsoidCenterX', errors),
+                  parseTokenAsFloat(next[1]!, 'ellipsoidCenterY', errors),
+                  parseTokenAsFloat(next[2]!, 'ellipsoidCenterZ', errors)
+                ],
+                radiusX: parseTokenAsFloat(next[3]!, 'radiusX', errors),
+                radiusY: parseTokenAsFloat(next[4]!, 'radiusY', errors),
+                radiusZ: parseTokenAsFloat(next[5]!, 'radiusZ', errors)
+              }
+            } else {
+              errors.push('terrain ellipsoid flag provided without 6 parameters')
+            }
+          }
+
+          commands.push({
+            type: 'terrain_region',
+            params
+          })
+          break
+        }
+        default:
+          errors.push(`Unknown command "${head}"`)
+      }
+    }
+  }
+
+  return { commands, errors }
+}
+
+export function formatWorldCommand(command: WorldCommand): string {
+  switch (command.type) {
+    case 'set_block': {
+      const { position, blockType } = command.edit
+      return `set ${position.join(' ')} ${blockType}`
+    }
+    case 'set_blocks':
+      return JSON.stringify(command)
+    case 'load_snapshot':
+      return JSON.stringify(command)
+    case 'clear_all':
+      return 'clear_all'
+    case 'terrain_region': {
+      const { params } = command
+      const base = [
+        'terrain',
+        params.action,
+        ...params.region.min,
+        ...params.region.max,
+        params.profile,
+        params.params.seed,
+        params.params.amplitude,
+        params.params.roughness,
+        params.params.elevation,
+        params.selectionType
+      ]
+      if (params.ellipsoidMask) {
+        base.push(
+          'ellipsoid',
+          ...params.ellipsoidMask.center,
+          params.ellipsoidMask.radiusX,
+          params.ellipsoidMask.radiusY,
+          params.ellipsoidMask.radiusZ
+        )
+      }
+      return base.join(' ')
+    }
+    default:
+      return JSON.stringify(command)
+  }
+}
+
+function parseBlock(token: string, errors: string[]) {
+  if (!Number.isNaN(Number(token))) {
+    return Number(token)
+  }
+  const key = token.toUpperCase() as keyof typeof BlockType
+  if (BlockType[key] !== undefined) {
+    return BlockType[key]
+  }
+  errors.push(`Unknown block type "${token}"`)
+  return BlockType.Air
+}
+
+function normalizeCommand(input: any): WorldCommand {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Command must be an object')
+  }
+  if (input.type === 'set_block') {
+    return {
+      type: 'set_block',
+      edit: {
+        position: [...input.edit.position] as Vec3,
+        blockType: Number(input.edit.blockType)
+      },
+      source: input.source
+    }
+  }
+  if (input.type === 'set_blocks') {
+    return {
+      type: 'set_blocks',
+      edits: input.edits.map((e: any) => ({
+        position: [...e.position] as Vec3,
+        blockType: Number(e.blockType)
+      })),
+      source: input.source
+    }
+  }
+  if (input.type === 'clear_all') {
+    return { type: 'clear_all', source: input.source }
+  }
+  if (input.type === 'load_snapshot') {
+    return {
+      type: 'load_snapshot',
+      clear: Boolean(input.clear),
+      worldScale: typeof input.worldScale === 'number' ? input.worldScale : undefined,
+      blocks: Array.isArray(input.blocks)
+        ? input.blocks.map((b: any) => ({
+            position: [...b.position] as Vec3,
+            blockType: Number(b.blockType)
+          }))
+        : [],
+      source: input.source
+    }
+  }
+  if (input.type === 'terrain_region') {
+    return {
+      type: 'terrain_region',
+      params: input.params,
+      source: input.source
+    }
+  }
+  throw new Error(`Unsupported command type "${input.type}"`)
+}

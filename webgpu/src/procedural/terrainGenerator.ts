@@ -38,7 +38,7 @@ export function createTerrainGeneratorState(profile: TerrainProfile, overrides?:
   }
 }
 
-export function generateRegion(chunk: ChunkManager, region: TerrainRegion, state: TerrainGeneratorState) {
+export function generateRegion(chunk: ChunkManager, region: TerrainRegion, state: TerrainGeneratorState, floorHeightFn?: (x: number, z: number) => number) {
   const { profile, params } = state
   const { min, max } = normalizeRegion(region)
   const heights: number[][] = []
@@ -49,7 +49,10 @@ export function generateRegion(chunk: ChunkManager, region: TerrainRegion, state
     for (let z = min[2]; z <= max[2]; z++) {
       const globalX = x
       const globalZ = z
-      const height = sampleHeight(globalX, globalZ, profile, params, terrainSeed)
+      const baseHeight = sampleHeight(globalX, globalZ, profile, params, terrainSeed)
+      const floorHeight = floorHeightFn ? floorHeightFn(globalX, globalZ) : 0
+      // Terrain height is relative to the floor
+      const height = Math.max(0, baseHeight - floorHeight)
       row.push(height)
     }
     heights.push(row)
@@ -60,7 +63,8 @@ export function generateRegion(chunk: ChunkManager, region: TerrainRegion, state
     for (let zi = 0; zi < heights[xi]!.length; zi++) {
       const worldX = min[0] + xi
       const worldZ = min[2] + zi
-      const columnHeight = clamp(Math.floor(heights[xi]![zi]!), 0, sy - 1)
+      const floorHeight = floorHeightFn ? floorHeightFn(worldX, worldZ) : 0
+      const columnHeight = clamp(Math.floor(floorHeight + heights[xi]![zi]!), 0, sy - 1)
 
       for (let y = 0; y < sy; y++) {
         const globalY = y

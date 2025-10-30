@@ -1,13 +1,10 @@
 // Consolidated WebGPU Engine Module
-// Combines: terrain generation, map management, camera capture, DSL engine
+// Combines: map management, camera capture, DSL engine
 
-import type { ChunkManager, BlockType } from './core'
+import type { BlockType } from './core'
 import { API_BASE_URL } from './core'
-import { createTerrainGeneratorState, generateRegion, type TerrainProfile, type TerrainParams } from './procedural/terrainGenerator'
-
-// ============================================================================
-// TERRAIN GENERATION ()
-// ============================================================================
+import type { TerrainGenerateParams, Vec3 } from './core'
+import { WorldState } from './world'
 
 export type WorldConfig = {
   seed: number
@@ -15,59 +12,7 @@ export type WorldConfig = {
 }
 
 export function createWorldConfig(seed: number = Date.now()): WorldConfig {
-  // Increased from 64x48x64 to 256x128x256 to support larger terrain generation
-  // This allows generating terrain across a much larger area
   return { seed, dimensions: { x: 256, y: 128, z: 256 } }
-}
-
-export function generateTerrain(chunk: ChunkManager, config: WorldConfig, BlockType: any) {
-  const { x: sx, y: sy, z: sz } = chunk.size
-  const baseFreq = 1 / 32
-  const minHeight = Math.floor(sy * 0.2)
-  const maxHeight = Math.floor(sy * 0.6)
-  const heightRange = maxHeight - minHeight
-
-  for (let x = 0; x < sx; x++) {
-    for (let z = 0; z < sz; z++) {
-      const elevation = fbm(x * baseFreq, z * baseFreq, config.seed, 4, 2.0, 0.5)
-      const height = Math.floor(minHeight + ((elevation + 1) / 2) * heightRange)
-      for (let y = 0; y < sy; y++) {
-        if (y > height) chunk.setBlock(x, y, z, BlockType.Air)
-        else if (y === height) chunk.setBlock(x, y, z, BlockType.Grass)
-        else if (y >= height - 3) chunk.setBlock(x, y, z, BlockType.Dirt)
-        else chunk.setBlock(x, y, z, BlockType.Stone)
-      }
-    }
-  }
-}
-
-function fbm(x: number, z: number, seed: number, octaves: number, lacunarity: number, gain: number) {
-  let freq = 1, amp = 1, sum = 0, max = 0
-  for (let i = 0; i < octaves; i++) {
-    sum += noise2D(x * freq, z * freq, seed + i * 131) * amp
-    max += amp
-    freq *= lacunarity
-    amp *= gain
-  }
-  return max > 0 ? sum / max : 0
-}
-
-function noise2D(x: number, z: number, seed: number) {
-  const xi = Math.floor(x), zi = Math.floor(z)
-  const xf = x - xi, zf = z - zi
-  const u = xf * xf * (3 - 2 * xf), v = zf * zf * (3 - 2 * zf)
-  const h00 = hash(xi, zi, seed), h10 = hash(xi + 1, zi, seed)
-  const h01 = hash(xi, zi + 1, seed), h11 = hash(xi + 1, zi + 1, seed)
-  return (h00 * (1 - u) + h10 * u) * (1 - v) + (h01 * (1 - u) + h11 * u) * v
-}
-
-function hash(x: number, z: number, seed: number) {
-  let h = seed >>> 0
-  h ^= Math.imul(0x27d4eb2d, x)
-  h = (h ^ (h >>> 15)) >>> 0
-  h ^= Math.imul(0x165667b1, z)
-  h = (h ^ (h >>> 13)) >>> 0
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296
 }
 
 // ============================================================================
@@ -77,15 +22,15 @@ function hash(x: number, z: number, seed: number) {
 export type BlockPosition = [number, number, number]
 
 export class MapManager {
-  private chunk: ChunkManager
+  private chunk: ReturnType<WorldState['getChunk']>
   private worldScale: number
   private captureSessionId: string
   activeSequence: number | null = null
   isDirty = false
 
-  constructor(chunk: ChunkManager, worldScale: number) {
-    this.chunk = chunk
-    this.worldScale = worldScale
+  constructor(private world: WorldState) {
+    this.chunk = this.world.getChunk()
+    this.worldScale = this.world.getWorldScale()
     this.captureSessionId = this.generateId()
   }
 
@@ -102,7 +47,7 @@ export class MapManager {
     const payload = {
       sequence: this.activeSequence,
       captureId: this.captureSessionId,
-      worldScale: this.worldScale,
+      worldScale: this.world.getWorldScale(),
       worldConfig,
       blocks: placements,
       customBlocks: this.serializeCustomBlocks(customBlocks)
@@ -124,16 +69,23 @@ export class MapManager {
     if (!res.ok) throw new Error(`Load failed: ${res.status}`)
     const data = await res.json()
 
-    if (data.worldScale) this.worldScale = data.worldScale
-    this.clearChunk(BlockType)
+    if (data.worldScale) {
+      this.worldScale = data.worldScale
+      this.world.setWorldScale(data.worldScale)
+    }
+    this.world.apply({ type: 'clear_all', source: 'map.load' })
 
-    const blocks = data.blocks || []
-    for (const b of blocks) {
-      const [x, y, z] = b.position
+    const blocks = (data.blocks || []).flatMap((b: any) => {
       const type = BlockType[b.blockType as keyof typeof BlockType]
-      if (type !== undefined && this.inBounds([x, y, z])) {
-        this.chunk.setBlock(x, y, z, type)
-      }
+      const position = b.position as Vec3
+      if (!this.inBounds(position)) return []
+      return [{
+        position: [...position] as Vec3,
+        blockType: type ?? BlockType.Air
+      }]
+    })
+    if (blocks.length) {
+      this.world.apply({ type: 'set_blocks', edits: blocks, source: 'map.load' })
     }
 
     this.activeSequence = sequence
@@ -142,16 +94,23 @@ export class MapManager {
 
   async loadFromFile(jsonContent: string, BlockType: any) {
     const data = JSON.parse(jsonContent)
-    if (data.worldScale) this.worldScale = data.worldScale
-    this.clearChunk(BlockType)
+    if (data.worldScale) {
+      this.worldScale = data.worldScale
+      this.world.setWorldScale(data.worldScale)
+    }
+    this.world.apply({ type: 'clear_all', source: 'map.loadFromFile' })
 
-    const blocks = data.blocks || []
-    for (const b of blocks) {
-      const [x, y, z] = b.position
+    const blocks = (data.blocks || []).flatMap((b: any) => {
       const type = BlockType[b.blockType as keyof typeof BlockType]
-      if (type !== undefined && this.inBounds([x, y, z])) {
-        this.chunk.setBlock(x, y, z, type)
-      }
+      const position = b.position as Vec3
+      if (!this.inBounds(position)) return []
+      return [{
+        position: [...position] as Vec3,
+        blockType: type ?? BlockType.Air
+      }]
+    })
+    if (blocks.length) {
+      this.world.apply({ type: 'set_blocks', edits: blocks, source: 'map.loadFromFile' })
     }
 
     this.activeSequence = null
@@ -164,7 +123,7 @@ export class MapManager {
       this.activeSequence = null
       return blocks
     } else if (BlockType) {
-      this.clearChunk(BlockType)
+      this.world.apply({ type: 'clear_all', source: 'map.createNew' })
       this.activeSequence = null
       return []
     }
@@ -175,7 +134,7 @@ export class MapManager {
     try {
       const res = await fetch(`${API_BASE_URL}/api/maps`)
       if (!res.ok) {
-        generateTerrain(this.chunk, worldConfig, BlockType)
+        this.generateDefaultTerrain(worldConfig)
         return null
       }
       const data = await res.json()
@@ -183,23 +142,39 @@ export class MapManager {
       if (maps.length > 0) {
         return await this.load(maps[0].sequence, BlockType)
       }
-      generateTerrain(this.chunk, worldConfig, BlockType)
+      this.generateDefaultTerrain(worldConfig)
       return null
     } catch {
-      generateTerrain(this.chunk, worldConfig, BlockType)
+      this.generateDefaultTerrain(worldConfig)
       return null
     }
   }
 
-  private clearChunk(BlockType: any) {
+  private generateDefaultTerrain(worldConfig: WorldConfig) {
+    const origin = this.world.getChunkOriginOffset()
+    const scale = this.world.getWorldScale()
     const { x: sx, y: sy, z: sz } = this.chunk.size
-    for (let y = 0; y < sy; y++)
-      for (let z = 0; z < sz; z++)
-        for (let x = 0; x < sx; x++)
-          this.chunk.setBlock(x, y, z, BlockType.Air)
+    const max: Vec3 = [
+      origin[0] + (sx - 1) * scale,
+      origin[1] + (sy - 1) * scale,
+      origin[2] + (sz - 1) * scale
+    ]
+    const params: TerrainGenerateParams = {
+      action: 'generate',
+      region: { min: origin, max },
+      profile: 'rolling_hills',
+      selectionType: 'default',
+      params: {
+        seed: worldConfig.seed,
+        amplitude: 10,
+        roughness: 2.4,
+        elevation: 0.35
+      }
+    }
+    this.world.apply({ type: 'terrain_region', params, source: 'map.defaultTerrain' })
   }
 
-  private inBounds([x, y, z]: BlockPosition) {
+  private inBounds([x, y, z]: Vec3) {
     const { x: sx, y: sy, z: sz } = this.chunk.size
     return x >= 0 && y >= 0 && z >= 0 && x < sx && y < sy && z < sz
   }
@@ -237,7 +212,6 @@ export class MapManager {
 // CAMERA CAPTURE SYSTEM
 // ============================================================================
 
-type Vec3 = [number, number, number]
 type Mat4 = Float32Array
 
 export type CameraSnapshot = {

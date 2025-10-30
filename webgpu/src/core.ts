@@ -82,6 +82,7 @@ export interface TerrainGenerateParams {
   action: 'generate' | 'preview' | 'clear'
   region: { min: [number, number, number]; max: [number, number, number] }
   profile: 'rolling_hills' | 'mountain' | 'hybrid'
+  selectionType: 'ellipsoid' | 'plane' | 'default'
   params: {
     seed: number
     amplitude: number

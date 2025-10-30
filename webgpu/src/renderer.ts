@@ -8,7 +8,6 @@ import {
   createPerspective,
   lookAt,
   multiplyMat4,
-  ChunkManager,
   BlockType,
   buildChunkMesh,
   setBlockTextureIndices,
@@ -34,6 +33,7 @@ import {
 } from './core'
 import type { CameraSnapshot } from './engine'
 import { openaiApiKey } from './stores'
+import { WorldState } from './world'
 
 export interface RendererOptions {
   canvas: HTMLCanvasElement
@@ -74,7 +74,10 @@ function projectToScreen(point: Vec3, viewProj: Mat4, width: number, height: num
   return [(ndcX * 0.5 + 0.5) * width, (-ndcY * 0.5 + 0.5) * height]
 }
 
-export async function createRenderer(opts: RendererOptions, chunk: ChunkManager, worldScale: number, chunkOriginOffset: Vec3) {
+export async function createRenderer(opts: RendererOptions, world: WorldState) {
+  const chunk = world.getChunk()
+  let worldScale = world.getWorldScale()
+  let chunkOriginOffset = world.getChunkOriginOffset()
   const { canvas, getSelectedBlock } = opts
   const overlayCanvas = opts.overlayCanvas ?? null
   const overlayCtx = overlayCanvas?.getContext('2d') || null
@@ -270,6 +273,11 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
   let latestCamera: CameraSnapshot | null = null
   let highlightSelection: HighlightSelection | null = null
   let overlayViews: Array<{ position: Vec3; id: string }> = []
+  const stopWorld = world.onChange(() => {
+    worldScale = world.getWorldScale()
+    chunkOriginOffset = world.getChunkOriginOffset()
+    meshDirty = true
+  })
 
   function chunkToWorld(pos: Vec3): Vec3 {
     return [
@@ -996,8 +1004,11 @@ export async function createRenderer(opts: RendererOptions, chunk: ChunkManager,
             const placePos = hit.previous
             if (isInsideChunk(placePos) && chunk.getBlock(placePos[0], placePos[1], placePos[2]) === BlockType.Air) {
               const selected = getSelectedBlock()
-              chunk.setBlock(placePos[0], placePos[1], placePos[2], selected.type)
-              meshDirty = true
+              world.apply({
+                type: 'set_block',
+                edit: { position: [placePos[0], placePos[1], placePos[2]] as Vec3, blockType: selected.type },
+                source: 'renderer.placeBlock'
+              })
               console.log('Block placed at', placePos)
             }
           } else if (mode === 'highlight') {
@@ -1691,10 +1702,6 @@ Examples:
       const params = JSON.parse(llmResponse)
       console.log('[LLM] Parsed params:', params)
 
-      // Now use the gpuHooks.generateTerrain with the current selection
-      // This will use the ellipsoid/plane you created
-      const { generateRegion, createTerrainGeneratorState } = await import('./procedural/terrainGenerator')
-
       // Get world coordinates from the current selection
       const worldCenter = chunkToWorld([
         currentSelection.center[0] + 0.5,
@@ -1753,62 +1760,23 @@ Examples:
       console.log('[LLM] Region:', region)
       console.log('[LLM] Ellipsoid mask:', ellipsoidMask)
 
-      // Convert world coordinates back to chunk coordinates for terrain generation
-      const chunkMin = worldToChunk(region.min)
-      const chunkMax = worldToChunk(region.max)
-
-      const chunkRegion = {
-        min: [
-          Math.max(0, Math.floor(chunkMin[0])),
-          Math.max(0, Math.floor(chunkMin[1])),
-          Math.max(0, Math.floor(chunkMin[2]))
-        ] as Vec3,
-        max: [
-          Math.min(chunk.size.x - 1, Math.floor(chunkMax[0])),
-          Math.min(chunk.size.y - 1, Math.floor(chunkMax[1])),
-          Math.min(chunk.size.z - 1, Math.floor(chunkMax[2]))
-        ] as Vec3
-      }
-
-      console.log('[LLM] Chunk region:', chunkRegion)
-
-      const terrainState = createTerrainGeneratorState(params.profile, {
-        seed: Math.floor(Math.random() * 1000000),
-        amplitude: params.amplitude,
-        roughness: params.roughness,
-        elevation: params.elevation
+      world.apply({
+        type: 'terrain_region',
+        params: {
+          action: 'generate',
+          region,
+          profile: params.profile,
+          selectionType: currentSelection.shape === 'plane' ? 'plane' : 'ellipsoid',
+          params: {
+            seed: Math.floor(Math.random() * 1000000),
+            amplitude: params.amplitude,
+            roughness: params.roughness,
+            elevation: params.elevation
+          },
+          ellipsoidMask: ellipsoidMask ?? undefined
+        },
+        source: 'renderer.llmTerrain'
       })
-
-      generateRegion(chunk, chunkRegion, terrainState)
-
-      // Handle ellipsoid masking if needed
-      if (ellipsoidMask) {
-        const isInsideEllipsoid = (chunkX: number, chunkY: number, chunkZ: number): boolean => {
-          const worldX = chunkX * worldScale + chunkOriginOffset[0]
-          const worldY = chunkY * worldScale + chunkOriginOffset[1]
-          const worldZ = chunkZ * worldScale + chunkOriginOffset[2]
-
-          const dx = (worldX - ellipsoidMask.center[0]) / ellipsoidMask.radiusX
-          const dy = (worldY - ellipsoidMask.center[1]) / ellipsoidMask.radiusY
-          const dz = (worldZ - ellipsoidMask.center[2]) / ellipsoidMask.radiusZ
-
-          return (dx * dx + dy * dy + dz * dz) <= 1
-        }
-
-        // Clear blocks outside ellipsoid
-        for (let x = chunkRegion.min[0]; x <= chunkRegion.max[0]; x++) {
-          for (let y = chunkRegion.min[1]; y <= chunkRegion.max[1]; y++) {
-            for (let z = chunkRegion.min[2]; z <= chunkRegion.max[2]; z++) {
-              if (!isInsideEllipsoid(x, y, z)) {
-                chunk.setBlock(x, y, z, 0) // BlockType.Air
-              }
-            }
-          }
-        }
-      }
-
-      console.log('[LLM] Marking mesh dirty')
-      meshDirty = true
 
       alert(`Terrain generated with ${params.profile} profile!`)
     } catch (error) {
@@ -1818,7 +1786,7 @@ Examples:
   }
 
   // Helper: execute terrain-dsl command
-  async function executeTerrainCommand(command: string, chunkManager: ChunkManager) {
+  async function executeTerrainCommand(command: string) {
     // Remove "generate " prefix if present
     const cleanCommand = command.replace(/^generate\s+/, '').trim()
     const args = cleanCommand.split(/\s+/)
@@ -1848,36 +1816,41 @@ Examples:
       params: { seed, amplitude, roughness, elevation }
     })
 
-    // Import and execute terrain generation
-    try {
-      const { generateRegion, createTerrainGeneratorState } = await import('./procedural/terrainGenerator')
+    const chunkSize = 32
+    const minX = cx1 * chunkSize
+    const minZ = cz1 * chunkSize
+    const maxX = (cx2 + 1) * chunkSize - 1
+    const maxZ = (cz2 + 1) * chunkSize - 1
 
-      // Convert chunk coordinates to block coordinates
-      const chunkSize = 32 // Standard chunk size
-      const minX = cx1 * chunkSize
-      const minZ = cz1 * chunkSize
-      const maxX = (cx2 + 1) * chunkSize - 1
-      const maxZ = (cz2 + 1) * chunkSize - 1
-
-      const region = {
-        min: [minX, 0, minZ] as Vec3,
-        max: [maxX, chunkSize - 1, maxZ] as Vec3
-      }
-
-      const state = createTerrainGeneratorState(profile, {
-        seed,
-        amplitude,
-        roughness,
-        elevation
-      })
-
-      generateRegion(chunkManager, region, state)
-      console.log('[Terrain] Generation complete!')
-      alert(`Terrain generated successfully!\nRegion: [${cx1},${cz1}] to [${cx2},${cz2}]\nProfile: ${profile}`)
-    } catch (error) {
-      console.error('[Terrain] Execution error:', error)
-      throw error
+    const regionChunk = {
+      min: [minX, 0, minZ] as Vec3,
+      max: [maxX, chunkSize - 1, maxZ] as Vec3
     }
+
+    const regionWorld = {
+      min: chunkToWorld(regionChunk.min),
+      max: chunkToWorld(regionChunk.max)
+    }
+
+    world.apply({
+      type: 'terrain_region',
+      params: {
+        action: 'generate',
+        region: regionWorld,
+        profile,
+        selectionType: 'default',
+        params: {
+          seed: seed ?? Math.floor(Math.random() * 1000000),
+          amplitude: amplitude ?? 10,
+          roughness: roughness ?? 2.4,
+          elevation: elevation ?? 0.35
+        }
+      },
+      source: 'renderer.terrainDsl'
+    })
+
+    console.log('[Terrain] Generation command dispatched!')
+    alert(`Terrain generation requested.\nRegion: [${cx1},${cz1}] to [${cx2},${cz2}]\nProfile: ${profile}`)
   }
 
   // Helper: check if a click is near an ellipsoid or plane node
@@ -2104,14 +2077,20 @@ Examples:
 
     if (mode === 'block') {
       if (ev.button === 0) { // Left click - remove block
-        chunk.setBlock(hit.block[0], hit.block[1], hit.block[2], BlockType.Air)
-        meshDirty = true
+        world.apply({
+          type: 'set_block',
+          edit: { position: [hit.block[0], hit.block[1], hit.block[2]] as Vec3, blockType: BlockType.Air },
+          source: 'renderer.playerRemove'
+        })
       } else if (ev.button === 2) { // Right click - place block
         const placePos = hit.previous
         if (isInsideChunk(placePos) && chunk.getBlock(placePos[0], placePos[1], placePos[2]) === BlockType.Air) {
           const selected = getSelectedBlock()
-          chunk.setBlock(placePos[0], placePos[1], placePos[2], selected.type)
-          meshDirty = true
+          world.apply({
+            type: 'set_block',
+            edit: { position: [placePos[0], placePos[1], placePos[2]] as Vec3, blockType: selected.type },
+            source: 'renderer.playerPlace'
+          })
         }
       }
     } else if (mode === 'highlight') {
@@ -2617,6 +2596,7 @@ Examples:
     },
     destroy: () => {
       if (rafHandle !== null) cancelAnimationFrame(rafHandle)
+      stopWorld()
     }
   }
 }

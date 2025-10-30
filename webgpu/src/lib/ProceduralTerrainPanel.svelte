@@ -33,7 +33,7 @@
 
     // Check if there's a highlight selection (ellipsoid or plane)
     if ($highlightSelection && $highlightSelection.shape === 'ellipsoid') {
-      // Use ellipsoid bounds for terrain generation
+      // Use ellipsoid as floor for terrain generation - generate above ellipsoid surface
       // highlightSelection.center is in CHUNK coordinates, need to convert to WORLD coordinates
       const chunkCenter = $highlightSelection.center
       const worldCenter = $gpuHooks.chunkToWorld?.(chunkCenter) || chunkCenter
@@ -48,20 +48,24 @@
       const worldRy = ry * worldScale
       const worldRz = rz * worldScale
 
+      // Get camera position to determine max Y
+      const cameraPos = $gpuHooks.getCameraPosition?.()
+      const maxY = cameraPos ? cameraPos[1] + 32 : worldCenter[1] + 64
+
       region = {
         min: [
           Math.floor(worldCenter[0] - worldRx),
-          Math.floor(worldCenter[1] - worldRy),
+          Math.floor(worldCenter[1] - worldRy),  // Start from ellipsoid bottom for proper bounds
           Math.floor(worldCenter[2] - worldRz)
         ] as [number, number, number],
         max: [
           Math.floor(worldCenter[0] + worldRx),
-          Math.floor(worldCenter[1] + worldRy),
+          Math.floor(maxY),  // Generate upwards to max height
           Math.floor(worldCenter[2] + worldRz)
         ] as [number, number, number]
       }
     } else if ($highlightSelection && $highlightSelection.shape === 'plane') {
-      // Use plane for terrain base generation
+      // Use plane for terrain base generation - plane becomes the floor
       const chunkCenter = $highlightSelection.center
       const worldCenter = $gpuHooks.chunkToWorld?.(chunkCenter) || chunkCenter
       const worldScale = $gpuHooks.getWorldScale?.() || 2
@@ -77,12 +81,12 @@
       region = {
         min: [
           Math.floor(worldCenter[0] - worldSizeX),
-          Math.floor(worldCenter[1]),  // Base Y from plane
+          Math.floor(worldCenter[1]),  // Base Y from plane (plane is the floor)
           Math.floor(worldCenter[2] - worldSizeZ)
         ] as [number, number, number],
         max: [
           Math.floor(worldCenter[0] + worldSizeX),
-          Math.floor(maxY),  // Generate upwards
+          Math.floor(maxY),  // Generate upwards from plane
           Math.floor(worldCenter[2] + worldSizeZ)
         ] as [number, number, number]
       }
@@ -105,6 +109,7 @@
       action,
       region,
       profile: $terrainProfile,
+      selectionType: $highlightSelection?.shape || 'default',
       params: {
         seed: $terrainSeed,
         amplitude: $terrainAmplitude,
