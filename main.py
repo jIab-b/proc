@@ -611,6 +611,19 @@ async def get_config():
     }
 
 
+@app.get("/api/dev/openai-key")
+async def get_dev_openai_key():
+    """Get OpenAI API key in dev mode only (for auto-loading in frontend)"""
+    if APP_CONFIG["mode"] != "dev":
+        raise HTTPException(status_code=403, detail="Only available in dev mode")
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=404, detail="OPENAI_API_KEY not found in environment")
+
+    return {"apiKey": api_key}
+
+
 @app.post("/shutdown")
 async def shutdown():
     """Shutdown the server"""

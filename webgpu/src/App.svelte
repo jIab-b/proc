@@ -30,8 +30,34 @@
           mode: config.mode,
           requiresApiKey: config.requiresApiKey
         })
-        showApiKeyModal = config.requiresApiKey
         console.log('[App] Backend mode:', config.mode, 'Requires API key:', config.requiresApiKey)
+
+        // In dev mode, try to auto-load API key from backend
+        if (config.mode === 'dev') {
+          try {
+            const keyResponse = await fetch('http://localhost:8000/api/dev/openai-key')
+            if (keyResponse.ok) {
+              const keyData = await keyResponse.json()
+              if (keyData.apiKey) {
+                openaiApiKey.set(keyData.apiKey)
+                console.log('[App] Auto-loaded API key from backend in dev mode')
+                showApiKeyModal = false
+              } else {
+                console.warn('[App] Dev mode but no API key in response')
+                showApiKeyModal = true
+              }
+            } else {
+              console.warn('[App] Failed to fetch API key in dev mode:', keyResponse.status)
+              showApiKeyModal = true
+            }
+          } catch (keyError) {
+            console.warn('[App] Could not auto-load API key in dev mode:', keyError)
+            showApiKeyModal = true
+          }
+        } else {
+          // Prod mode: always require API key from user
+          showApiKeyModal = config.requiresApiKey
+        }
       }
     } catch (error) {
       console.error('[App] Failed to fetch backend config:', error)
