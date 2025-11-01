@@ -4,7 +4,7 @@
   import Canvas from './Canvas.svelte'
   import ApiKeyModal from './ApiKeyModal.svelte'
   import ResizableWindow from './lib/ResizableWindow.svelte'
-  import { openaiApiKey, backendConfig } from './stores'
+  import { openaiApiKey, backendConfig } from './core'
 
   let showApiKeyModal = true
 

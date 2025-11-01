@@ -1,11 +1,8 @@
-import type { TerrainGenerateParams } from '../core'
-import type { Vec3 } from '../core'
+import type { TerrainGenerateParams, Vec3 } from '../core'
 import { BlockType } from '../core'
+import type { VoxelEdit } from '../dsl/commands'
 
-export type VoxelEdit = {
-  position: Vec3
-  blockType: number
-}
+export type { VoxelEdit }
 
 export type WorldCommand =
   | { type: 'set_block'; edit: VoxelEdit; source?: string }

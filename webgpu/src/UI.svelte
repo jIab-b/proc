@@ -4,9 +4,9 @@
     selectedBlockType, selectedCustomBlock, customBlocks, selectedFace, texturePrompt,
     availableBlocks, blockPalette, drawIsometricBlock, fetchTileBitmap,
     TEXTURES_ENDPOINT, GENERATE_TILE_ENDPOINT, BLOCKS_ENDPOINT, blockFaceOrder, TILE_BASE_URL, gpuHooks,
+    openaiApiKey,
     BlockType, type CustomBlock, type FaceTileInfo, type BlockFaceKey
   } from './core'
-  import { openaiApiKey } from './stores'
   import ProceduralTerrainPanel from './lib/ProceduralTerrainPanel.svelte'
   import CameraModeToggle from './lib/CameraModeToggle.svelte'
 

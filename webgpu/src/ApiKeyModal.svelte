@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { openaiApiKey } from './stores'
+  import { openaiApiKey } from './core'
 
   let keyInput = ''
   let showModal = true

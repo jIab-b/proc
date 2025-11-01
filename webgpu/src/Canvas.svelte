@@ -1,9 +1,14 @@
 <script lang="ts">
 import { onMount } from 'svelte'
 import { get } from 'svelte/store'
-import { createRenderer } from './renderer'
 import { MapManager, CaptureSystem, DSLEngine, createWorldConfig, type CameraSnapshot } from './engine'
 import { WorldState } from './world'
+import { WorldEngine } from './engine/worldEngine'
+import { createWebGPUBackend } from './render/webgpuBackend'
+import type { RenderBackend } from './render/renderBackend'
+import { createInputController } from './input/inputController'
+import type { InputController } from './input/inputController'
+import { withVersion } from './dsl/commands'
   import {
     ChunkManager,
     selectedBlockType,
@@ -49,9 +54,10 @@ import { WorldState } from './world'
   let mapManager: MapManager
   let captureSystem: CaptureSystem
   let dslEngine: DSLEngine
-  let renderer: any = null
+  let renderBackend: RenderBackend | null = null
+  let worldEngine: WorldEngine | null = null
+  let inputController: InputController | null = null
   let isInGame = false
-  let pointerActive = false
 
   async function fetchMaps() {
     try {
@@ -101,8 +107,8 @@ import { WorldState } from './world'
     closeContextMenu()
     try {
       const { blocks } = await mapManager.load(sequence, BlockType)
-      renderer?.markMeshDirty()
-      renderer?.focusCameraOnBlocks(blocks)
+      renderBackend?.markWorldDirty()
+      renderBackend?.focusCameraOnBlocks(blocks)
       console.log(`Loaded map ${sequence}`)
     } catch (err) {
       console.error('Load failed:', err)
@@ -114,8 +120,8 @@ import { WorldState } from './world'
     closeContextMenu()
     try {
       const blocks = await mapManager.createNew(copyFrom, BlockType)
-      renderer?.markMeshDirty()
-      renderer?.focusCameraOnBlocks(blocks)
+      renderBackend?.markWorldDirty()
+      renderBackend?.focusCameraOnBlocks(blocks)
       console.log('Created new map')
     } catch (err) {
       console.error('Create failed:', err)
@@ -135,8 +141,8 @@ import { WorldState } from './world'
     try {
       const contents = await file.text()
       const { blocks } = await mapManager.loadFromFile(contents, BlockType)
-      renderer?.markMeshDirty()
-      renderer?.focusCameraOnBlocks(blocks)
+      renderBackend?.markWorldDirty()
+      renderBackend?.focusCameraOnBlocks(blocks)
       console.log('Loaded from file')
       input.value = ''
     } catch (err) {
@@ -152,14 +158,20 @@ import { WorldState } from './world'
     dslEngine = new DSLEngine()
 
     try {
-      renderer = await createRenderer(
-        {
-          canvas: canvasEl,
-          overlayCanvas: overlayCanvasEl,
-          getSelectedBlock: () => ({ type: $selectedBlockType, custom: $selectedCustomBlock })
-        },
-        world
-      )
+      const backend = createWebGPUBackend()
+      const engineInstance = new WorldEngine({ world, backend })
+      const controller = createInputController(engineInstance)
+
+      await backend.init({
+        canvas: canvasEl,
+        overlayCanvas: overlayCanvasEl,
+        getSelectedBlock: () => ({ type: $selectedBlockType, custom: $selectedCustomBlock }),
+        world,
+        dispatchCommand: (command) => controller.dispatch(command)
+      })
+      renderBackend = backend
+      worldEngine = engineInstance
+      inputController = controller
 
       gpuHooks.set({
         requestFaceBitmaps: async (tiles) => {
@@ -179,10 +191,10 @@ import { WorldState } from './world'
           return bitmaps
         },
         uploadFaceBitmapsToGPU: (bitmaps, customBlock) => {
-          renderer?.applyCustomBlockTextures(bitmaps, customBlock, $customBlocksStore)
+          renderBackend?.applyCustomBlockTextures(bitmaps, customBlock, $customBlocksStore)
         },
         getCameraPosition: () => {
-          const camera = renderer?.getCamera()
+          const camera = renderBackend?.getCameraSnapshot()
           return camera ? [...camera.position] as [number, number, number] : null
         },
         getWorldScale: () => world.getWorldScale(),
@@ -203,21 +215,25 @@ import { WorldState } from './world'
           ]
         },
         generateTerrain: (params: TerrainGenerateParams) => {
-          world.apply({ type: 'terrain_region', params, source: 'gpuHooks.generateTerrain' })
+          if (worldEngine) {
+            worldEngine.apply(withVersion({ type: 'terrain_region', params, source: 'gpuHooks.generateTerrain' }))
+          } else {
+            world.apply({ type: 'terrain_region', params, source: 'gpuHooks.generateTerrain' })
+          }
         }
       })
 
       const loadedData = await mapManager.loadFirstAvailable(BlockType, worldConfig)
-      renderer.markMeshDirty()
+      renderBackend?.markWorldDirty()
       // Focus camera on loaded blocks, or reset to default if terrain was generated
       if (loadedData && loadedData.blocks) {
-        renderer.focusCameraOnBlocks(loadedData.blocks)
+        renderBackend?.focusCameraOnBlocks(loadedData.blocks)
       } else {
         // For generated terrain, focus on the center of the chunk
         const centerX = Math.floor(chunk.size.x / 2)
         const centerY = Math.floor(chunk.size.y / 2)
         const centerZ = Math.floor(chunk.size.z / 2)
-        renderer.focusCameraOnBlocks([{ position: [centerX, centerY, centerZ] }])
+        renderBackend?.focusCameraOnBlocks([{ position: [centerX, centerY, centerZ] }])
       }
 
       await fetchMaps()
@@ -225,14 +241,16 @@ import { WorldState } from './world'
       document.addEventListener('click', closeContextMenu)
       const handlePointerLock = () => {
         isInGame = document.pointerLockElement === canvasEl
-        pointerActive = isInGame
       }
       document.addEventListener('pointerlockchange', handlePointerLock)
 
-      highlightSelection.subscribe(sel => renderer?.setHighlightSelection(sel))
-
       return () => {
-        renderer?.destroy()
+        renderBackend?.dispose()
+        renderBackend = null
+        inputController?.dispose()
+        inputController = null
+        worldEngine?.dispose()
+        worldEngine = null
         document.removeEventListener('click', closeContextMenu)
         document.removeEventListener('pointerlockchange', handlePointerLock)
       }

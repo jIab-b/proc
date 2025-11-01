@@ -5,9 +5,11 @@
     terrainSeed,
     terrainAmplitude,
     terrainRoughness,
-    terrainElevation
-  } from '../stores'
-  import { gpuHooks, API_BASE_URL, highlightSelection } from '../core'
+    terrainElevation,
+    gpuHooks,
+    API_BASE_URL,
+    highlightSelection
+  } from '../core'
 
   import { writable } from 'svelte/store'
 
@@ -390,4 +392,3 @@
     align-items: center;
   }
 </style>
-

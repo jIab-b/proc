@@ -24,21 +24,24 @@ import {
   ellipsoidSelectedNode,
   highlightSelection as highlightSelectionStore,
   cameraMode as cameraModeStore,
+  openaiApiKey,
   type CustomBlock,
   type Vec3,
   type Mat4,
   type BlockFaceKey,
   type HighlightSelection,
-  type EllipsoidNode
+  type EllipsoidNode,
+  type TerrainGenerateParams
 } from './core'
 import type { CameraSnapshot } from './engine'
-import { openaiApiKey } from './stores'
 import { WorldState } from './world'
+import { withVersion, type DSLCommand, type VoxelEdit } from './dsl/commands'
 
 export interface RendererOptions {
   canvas: HTMLCanvasElement
   overlayCanvas?: HTMLCanvasElement | null
   getSelectedBlock: () => { type: BlockType; custom: CustomBlock | null }
+  dispatchCommand?: (command: DSLCommand) => void
 }
 
 const MAX_CUSTOM_BLOCKS = 8
@@ -81,6 +84,76 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
   const { canvas, getSelectedBlock } = opts
   const overlayCanvas = opts.overlayCanvas ?? null
   const overlayCtx = overlayCanvas?.getContext('2d') || null
+  const dispatchCommand = opts.dispatchCommand ?? null
+
+  function cloneSelection(selection: HighlightSelection): HighlightSelection {
+    const copy: HighlightSelection = {
+      center: [...selection.center] as [number, number, number],
+      radius: selection.radius,
+      shape: selection.shape
+    }
+    if (selection.radiusX !== undefined) copy.radiusX = selection.radiusX
+    if (selection.radiusY !== undefined) copy.radiusY = selection.radiusY
+    if (selection.radiusZ !== undefined) copy.radiusZ = selection.radiusZ
+    if (selection.planeSizeX !== undefined) copy.planeSizeX = selection.planeSizeX
+    if (selection.planeSizeZ !== undefined) copy.planeSizeZ = selection.planeSizeZ
+    return copy
+  }
+
+  function cloneEdits(edits: VoxelEdit[]): VoxelEdit[] {
+    return edits.map(edit => ({
+      position: [...edit.position] as Vec3,
+      blockType: edit.blockType
+    }))
+  }
+
+  function emitSetBlock(edit: VoxelEdit, source: string) {
+    const payload: VoxelEdit = {
+      position: [...edit.position] as Vec3,
+      blockType: edit.blockType
+    }
+    if (dispatchCommand) {
+      dispatchCommand(withVersion({ type: 'set_block', edit: payload, source }))
+    } else {
+      world.apply({ type: 'set_block', edit: payload, source })
+    }
+  }
+
+  function emitSetBlocks(edits: VoxelEdit[], source: string) {
+    if (!edits.length) return
+    const payload = cloneEdits(edits)
+    if (dispatchCommand) {
+      dispatchCommand(withVersion({ type: 'set_blocks', edits: payload, source }))
+    } else {
+      world.apply({ type: 'set_blocks', edits: payload, source })
+    }
+  }
+
+  function emitTerrainRegion(params: TerrainGenerateParams, source: string) {
+    const payload: TerrainGenerateParams = JSON.parse(JSON.stringify(params))
+    if (dispatchCommand) {
+      dispatchCommand(withVersion({ type: 'terrain_region', params: payload, source }))
+    } else {
+      world.apply({ type: 'terrain_region', params: payload, source })
+    }
+  }
+
+  function emitHighlight(selection: HighlightSelection, source: string) {
+    const payload = cloneSelection(selection)
+    if (dispatchCommand) {
+      dispatchCommand(withVersion({ type: 'highlight_set', selection: payload, source }))
+    } else {
+      highlightSelectionStore.set(payload)
+    }
+  }
+
+  function clearHighlight(source: string) {
+    if (dispatchCommand) {
+      dispatchCommand(withVersion({ type: 'highlight_clear', source }))
+    } else {
+      highlightSelectionStore.set(null)
+    }
+  }
 
   if (!('gpu' in navigator)) throw new Error('WebGPU not supported')
   const gpu = (navigator as any).gpu
@@ -897,7 +970,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           ellipsoidSelectedNode.set(null)
           ellipsoidEditAxis.set(null)
           centerNodeSelected = false
-          highlightSelectionStore.set(selection)
+          emitHighlight(selection, 'renderer.highlight.create')
           ellipsoidMovementActive = true
           ellipsoidNodeAdjustActive = false
           ellipsoidCenterDragActive = false
@@ -1004,11 +1077,10 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
             const placePos = hit.previous
             if (isInsideChunk(placePos) && chunk.getBlock(placePos[0], placePos[1], placePos[2]) === BlockType.Air) {
               const selected = getSelectedBlock()
-              world.apply({
-                type: 'set_block',
-                edit: { position: [placePos[0], placePos[1], placePos[2]] as Vec3, blockType: selected.type },
-                source: 'renderer.placeBlock'
-              })
+              emitSetBlock(
+                { position: [placePos[0], placePos[1], placePos[2]] as Vec3, blockType: selected.type },
+                'renderer.placeBlock'
+              )
               console.log('Block placed at', placePos)
             }
           } else if (mode === 'highlight') {
@@ -1029,7 +1101,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
               ellipsoidSelectedNode.set(null)
             }
 
-            highlightSelectionStore.set(selection)
+            emitHighlight(selection, 'renderer.highlight.setOverview')
             console.log('Highlight selection set:', selection)
           }
         } else {
@@ -1190,47 +1262,27 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           // '+x'/'-x' nodes control X dimension, '+z'/'-z' nodes control Z dimension
           if (selectedNode === '+x' || selectedNode === '-x') {
             planeSizeX.set(newRadius)
-            highlightSelectionStore.update(sel => {
-              if (sel && sel.shape === 'plane') {
-                return { ...sel, planeSizeX: newRadius }
-              }
-              return sel
-            })
+            const updated: HighlightSelection = { ...currentSelection, planeSizeX: newRadius }
+            emitHighlight(updated, 'renderer.highlight.plane.resizeX')
           } else if (selectedNode === '+z' || selectedNode === '-z') {
             planeSizeZ.set(newRadius)
-            highlightSelectionStore.update(sel => {
-              if (sel && sel.shape === 'plane') {
-                return { ...sel, planeSizeZ: newRadius }
-              }
-              return sel
-            })
+            const updated: HighlightSelection = { ...currentSelection, planeSizeZ: newRadius }
+            emitHighlight(updated, 'renderer.highlight.plane.resizeZ')
           }
         } else if (currentSelection && currentSelection.shape === 'ellipsoid') {
           const axis = selectedNode[1] as 'x' | 'y' | 'z'
           if (axis === 'x') {
             ellipsoidRadiusX.set(newRadius)
-            highlightSelectionStore.update(sel => {
-              if (sel && sel.shape === 'ellipsoid') {
-                return { ...sel, radiusX: newRadius }
-              }
-              return sel
-            })
+            const updated: HighlightSelection = { ...currentSelection, radiusX: newRadius }
+            emitHighlight(updated, 'renderer.highlight.ellipsoid.resizeX')
           } else if (axis === 'y') {
             ellipsoidRadiusY.set(newRadius)
-            highlightSelectionStore.update(sel => {
-              if (sel && sel.shape === 'ellipsoid') {
-                return { ...sel, radiusY: newRadius }
-              }
-              return sel
-            })
+            const updated: HighlightSelection = { ...currentSelection, radiusY: newRadius }
+            emitHighlight(updated, 'renderer.highlight.ellipsoid.resizeY')
           } else if (axis === 'z') {
             ellipsoidRadiusZ.set(newRadius)
-            highlightSelectionStore.update(sel => {
-              if (sel && sel.shape === 'ellipsoid') {
-                return { ...sel, radiusZ: newRadius }
-              }
-              return sel
-            })
+            const updated: HighlightSelection = { ...currentSelection, radiusZ: newRadius }
+            emitHighlight(updated, 'renderer.highlight.ellipsoid.resizeZ')
           }
         }
 
@@ -1318,12 +1370,8 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           currentSelection.center[2] + forward[2] * movement
         ]
 
-        highlightSelectionStore.update(sel => {
-          if (sel && sel.shape === 'ellipsoid') {
-            return { ...sel, center: newCenter }
-          }
-          return sel
-        })
+        const updated: HighlightSelection = { ...currentSelection, center: newCenter }
+        emitHighlight(updated, 'renderer.highlight.translateCenter')
       }
       return
     }
@@ -1760,23 +1808,21 @@ Examples:
       console.log('[LLM] Region:', region)
       console.log('[LLM] Ellipsoid mask:', ellipsoidMask)
 
-      world.apply({
-        type: 'terrain_region',
+      const terrainParams: TerrainGenerateParams = {
+        action: 'generate',
+        region,
+        profile: params.profile,
+        selectionType: currentSelection.shape === 'plane' ? 'plane' : 'ellipsoid',
         params: {
-          action: 'generate',
-          region,
-          profile: params.profile,
-          selectionType: currentSelection.shape === 'plane' ? 'plane' : 'ellipsoid',
-          params: {
-            seed: Math.floor(Math.random() * 1000000),
-            amplitude: params.amplitude,
-            roughness: params.roughness,
-            elevation: params.elevation
-          },
-          ellipsoidMask: ellipsoidMask ?? undefined
+          seed: Math.floor(Math.random() * 1000000),
+          amplitude: params.amplitude,
+          roughness: params.roughness,
+          elevation: params.elevation
         },
-        source: 'renderer.llmTerrain'
-      })
+        ellipsoidMask: ellipsoidMask ?? undefined
+      }
+
+      emitTerrainRegion(terrainParams, 'renderer.llmTerrain')
 
       alert(`Terrain generated with ${params.profile} profile!`)
     } catch (error) {
@@ -1832,22 +1878,20 @@ Examples:
       max: chunkToWorld(regionChunk.max)
     }
 
-    world.apply({
-      type: 'terrain_region',
+    const terrainParams: TerrainGenerateParams = {
+      action: 'generate',
+      region: regionWorld,
+      profile,
+      selectionType: 'default',
       params: {
-        action: 'generate',
-        region: regionWorld,
-        profile,
-        selectionType: 'default',
-        params: {
-          seed: seed ?? Math.floor(Math.random() * 1000000),
-          amplitude: amplitude ?? 10,
-          roughness: roughness ?? 2.4,
-          elevation: elevation ?? 0.35
-        }
-      },
-      source: 'renderer.terrainDsl'
-    })
+        seed: seed ?? Math.floor(Math.random() * 1000000),
+        amplitude: amplitude ?? 10,
+        roughness: roughness ?? 2.4,
+        elevation: elevation ?? 0.35
+      }
+    }
+
+    emitTerrainRegion(terrainParams, 'renderer.terrainDsl')
 
     console.log('[Terrain] Generation command dispatched!')
     alert(`Terrain generation requested.\nRegion: [${cx1},${cz1}] to [${cx2},${cz2}]\nProfile: ${profile}`)
@@ -1985,7 +2029,7 @@ Examples:
           ellipsoidSelectedNode.set(null)
           ellipsoidEditAxis.set(null)
           centerNodeSelected = false
-          highlightSelectionStore.set(selection)
+          emitHighlight(selection, 'renderer.highlight.create')
           ellipsoidMovementActive = true
           ellipsoidNodeAdjustActive = false
           ellipsoidCenterDragActive = false
@@ -2077,20 +2121,18 @@ Examples:
 
     if (mode === 'block') {
       if (ev.button === 0) { // Left click - remove block
-        world.apply({
-          type: 'set_block',
-          edit: { position: [hit.block[0], hit.block[1], hit.block[2]] as Vec3, blockType: BlockType.Air },
-          source: 'renderer.playerRemove'
-        })
+        emitSetBlock(
+          { position: [hit.block[0], hit.block[1], hit.block[2]] as Vec3, blockType: BlockType.Air },
+          'renderer.playerRemove'
+        )
       } else if (ev.button === 2) { // Right click - place block
         const placePos = hit.previous
         if (isInsideChunk(placePos) && chunk.getBlock(placePos[0], placePos[1], placePos[2]) === BlockType.Air) {
           const selected = getSelectedBlock()
-          world.apply({
-            type: 'set_block',
-            edit: { position: [placePos[0], placePos[1], placePos[2]] as Vec3, blockType: selected.type },
-            source: 'renderer.playerPlace'
-          })
+          emitSetBlock(
+            { position: [placePos[0], placePos[1], placePos[2]] as Vec3, blockType: selected.type },
+            'renderer.playerPlace'
+          )
         }
       }
     } else if (mode === 'highlight') {
@@ -2110,7 +2152,7 @@ Examples:
         ellipsoidSelectedNode.set(null) // Reset node selection
       }
 
-      highlightSelectionStore.set(selection)
+      emitHighlight(selection, 'renderer.highlight.player')
     }
   })
 
@@ -2350,17 +2392,13 @@ Examples:
         const deltaY = position[1] - lastCameraPos[1]
         const sensitivity = 0.5
 
-        highlightSelectionStore.update(sel => {
-          if (sel && sel.shape === 'plane') {
-            const nextCenter: Vec3 = [
-              sel.center[0],
-              sel.center[1] + deltaY * sensitivity / worldScale,
-              sel.center[2]
-            ]
-            return { ...sel, center: nextCenter }
-          }
-          return sel
-        })
+        const nextCenter: Vec3 = [
+          currentSelection.center[0],
+          currentSelection.center[1] + deltaY * sensitivity / worldScale,
+          currentSelection.center[2]
+        ]
+        const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
+        emitHighlight(updated, 'renderer.highlight.plane.dragCenter')
 
         lastCameraPos = [...position] as Vec3
       } else if (currentSelection && currentSelection.shape === 'ellipsoid') {
@@ -2369,17 +2407,13 @@ Examples:
         const deltaZ = position[2] - lastCameraPos[2]
         const sensitivity = 0.5
 
-        highlightSelectionStore.update(sel => {
-          if (sel && sel.shape === 'ellipsoid') {
-            const nextCenter: Vec3 = [
-              sel.center[0] + deltaX * sensitivity / worldScale,
-              sel.center[1] + deltaY * sensitivity / worldScale,
-              sel.center[2] + deltaZ * sensitivity / worldScale
-            ]
-            return { ...sel, center: nextCenter }
-          }
-          return sel
-        })
+        const nextCenter: Vec3 = [
+          currentSelection.center[0] + deltaX * sensitivity / worldScale,
+          currentSelection.center[1] + deltaY * sensitivity / worldScale,
+          currentSelection.center[2] + deltaZ * sensitivity / worldScale
+        ]
+        const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
+        emitHighlight(updated, 'renderer.highlight.ellipsoid.dragCenter')
 
         lastCameraPos = [...position] as Vec3
       }
@@ -2403,12 +2437,8 @@ Examples:
           ellipsoidRadiusX.set(newRadius)
 
           // Update selection
-          highlightSelectionStore.update(sel => {
-            if (sel && sel.shape === 'ellipsoid') {
-              return { ...sel, radiusX: newRadius }
-            }
-            return sel
-          })
+          const updated: HighlightSelection = { ...currentSelection, radiusX: newRadius }
+          emitHighlight(updated, 'renderer.highlight.ellipsoid.axisX')
         } else if (editAxis === 'y') {
           // Editing Y radius: use Y camera movement
           const currentRadius = get(ellipsoidRadiusY)
@@ -2416,12 +2446,8 @@ Examples:
           ellipsoidRadiusY.set(newRadius)
 
           // Update selection
-          highlightSelectionStore.update(sel => {
-            if (sel && sel.shape === 'ellipsoid') {
-              return { ...sel, radiusY: newRadius }
-            }
-            return sel
-          })
+          const updated: HighlightSelection = { ...currentSelection, radiusY: newRadius }
+          emitHighlight(updated, 'renderer.highlight.ellipsoid.axisY')
         } else if (editAxis === 'z') {
           // Editing Z radius: use Z camera movement
           const currentRadius = get(ellipsoidRadiusZ)
@@ -2429,12 +2455,8 @@ Examples:
           ellipsoidRadiusZ.set(newRadius)
 
           // Update selection
-          highlightSelectionStore.update(sel => {
-            if (sel && sel.shape === 'ellipsoid') {
-              return { ...sel, radiusZ: newRadius }
-            }
-            return sel
-          })
+          const updated: HighlightSelection = { ...currentSelection, radiusZ: newRadius }
+          emitHighlight(updated, 'renderer.highlight.ellipsoid.axisZ')
         }
 
         // Update last camera position for next frame

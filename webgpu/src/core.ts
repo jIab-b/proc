@@ -13,6 +13,16 @@ export const GENERATE_TILE_ENDPOINT = `${API_BASE_URL}/api/generate-tile`
 export const BLOCKS_ENDPOINT = `${API_BASE_URL}/api/blocks`
 export const TILE_BASE_URL = `${API_BASE_URL}/textures`
 
+export const backendConfig: Writable<{
+  mode: 'dev' | 'prod'
+  requiresApiKey: boolean
+}> = writable({
+  mode: 'prod',
+  requiresApiKey: true
+})
+
+export const openaiApiKey: Writable<string | null> = writable(null)
+
 // ============================================================================
 // BLOCK TYPES & PALETTE
 // ============================================================================
