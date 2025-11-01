@@ -1,6 +1,7 @@
 import type { TerrainGenerateParams, Vec3 } from '../core'
 import { BlockType } from '../core'
-import type { VoxelEdit } from '../dsl/commands'
+import type { DSLCommand, VoxelEdit } from '../dsl/commands'
+import { createCommandEmitter } from '../dsl/commandEmitter'
 
 export type { VoxelEdit }
 
@@ -40,11 +41,11 @@ export function parseWorldCommands(input: string): ParseResult {
   const tryJson = () => {
     try {
       const parsed = JSON.parse(text)
-      if (Array.isArray(parsed)) {
-        parsed.forEach(cmd => commands.push(normalizeCommand(cmd)))
-      } else {
-        commands.push(normalizeCommand(parsed))
-      }
+      const array = Array.isArray(parsed) ? parsed : [parsed]
+      array.forEach((cmd) => {
+        const normalized = normalizeCommand(cmd)
+        if (normalized) commands.push(normalized)
+      })
     } catch (err) {
       errors.push(`Failed to parse JSON DSL: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -224,10 +225,35 @@ function parseBlock(token: string, errors: string[]) {
   return BlockType.Air
 }
 
-function normalizeCommand(input: any): WorldCommand {
+function normalizeCommand(input: any): WorldCommand | null {
   if (!input || typeof input !== 'object') {
-    throw new Error('Command must be an object')
+    return null
   }
+
+  if (typeof input.v === 'number') {
+    const cmd = input as DSLCommand
+    switch (cmd.type) {
+      case 'set_block':
+        return { type: 'set_block', edit: cmd.edit, source: cmd.source }
+      case 'set_blocks':
+        return { type: 'set_blocks', edits: cmd.edits, source: cmd.source }
+      case 'clear_all':
+        return { type: 'clear_all', source: cmd.source }
+      case 'load_snapshot':
+        return {
+          type: 'load_snapshot',
+          blocks: cmd.blocks,
+          worldScale: cmd.worldScale,
+          clear: cmd.clear,
+          source: cmd.source
+        }
+      case 'terrain_region':
+        return { type: 'terrain_region', params: cmd.params, source: cmd.source }
+      default:
+        return null
+    }
+  }
+
   if (input.type === 'set_block') {
     return {
       type: 'set_block',
@@ -272,5 +298,5 @@ function normalizeCommand(input: any): WorldCommand {
       source: input.source
     }
   }
-  throw new Error(`Unsupported command type "${input.type}"`)
+  return null
 }

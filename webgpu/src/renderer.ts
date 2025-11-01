@@ -35,7 +35,8 @@ import {
 } from './core'
 import type { CameraSnapshot } from './engine'
 import { WorldState } from './world'
-import { withVersion, type DSLCommand, type VoxelEdit } from './dsl/commands'
+import type { DSLCommand } from './dsl/commands'
+import { createCommandEmitter } from './dsl/commandEmitter'
 
 export interface RendererOptions {
   canvas: HTMLCanvasElement
@@ -86,74 +87,19 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
   const overlayCtx = overlayCanvas?.getContext('2d') || null
   const dispatchCommand = opts.dispatchCommand ?? null
 
-  function cloneSelection(selection: HighlightSelection): HighlightSelection {
-    const copy: HighlightSelection = {
-      center: [...selection.center] as [number, number, number],
-      radius: selection.radius,
-      shape: selection.shape
-    }
-    if (selection.radiusX !== undefined) copy.radiusX = selection.radiusX
-    if (selection.radiusY !== undefined) copy.radiusY = selection.radiusY
-    if (selection.radiusZ !== undefined) copy.radiusZ = selection.radiusZ
-    if (selection.planeSizeX !== undefined) copy.planeSizeX = selection.planeSizeX
-    if (selection.planeSizeZ !== undefined) copy.planeSizeZ = selection.planeSizeZ
-    return copy
-  }
-
-  function cloneEdits(edits: VoxelEdit[]): VoxelEdit[] {
-    return edits.map(edit => ({
-      position: [...edit.position] as Vec3,
-      blockType: edit.blockType
-    }))
-  }
-
-  function emitSetBlock(edit: VoxelEdit, source: string) {
-    const payload: VoxelEdit = {
-      position: [...edit.position] as Vec3,
-      blockType: edit.blockType
-    }
-    if (dispatchCommand) {
-      dispatchCommand(withVersion({ type: 'set_block', edit: payload, source }))
-    } else {
-      world.apply({ type: 'set_block', edit: payload, source })
-    }
-  }
-
-  function emitSetBlocks(edits: VoxelEdit[], source: string) {
-    if (!edits.length) return
-    const payload = cloneEdits(edits)
-    if (dispatchCommand) {
-      dispatchCommand(withVersion({ type: 'set_blocks', edits: payload, source }))
-    } else {
-      world.apply({ type: 'set_blocks', edits: payload, source })
-    }
-  }
-
-  function emitTerrainRegion(params: TerrainGenerateParams, source: string) {
-    const payload: TerrainGenerateParams = JSON.parse(JSON.stringify(params))
-    if (dispatchCommand) {
-      dispatchCommand(withVersion({ type: 'terrain_region', params: payload, source }))
-    } else {
-      world.apply({ type: 'terrain_region', params: payload, source })
-    }
-  }
-
-  function emitHighlight(selection: HighlightSelection, source: string) {
-    const payload = cloneSelection(selection)
-    if (dispatchCommand) {
-      dispatchCommand(withVersion({ type: 'highlight_set', selection: payload, source }))
-    } else {
-      highlightSelectionStore.set(payload)
-    }
-  }
-
-  function clearHighlight(source: string) {
-    if (dispatchCommand) {
-      dispatchCommand(withVersion({ type: 'highlight_clear', source }))
-    } else {
-      highlightSelectionStore.set(null)
-    }
-  }
+  const {
+    setBlock: emitSetBlock,
+    setBlocks: emitSetBlocks,
+    terrainRegion: emitTerrainRegion,
+    highlight: emitHighlight,
+    clearHighlight
+  } = createCommandEmitter(
+    {
+      world,
+      fallbackHighlightSet: selection => highlightSelectionStore.set(selection)
+    },
+    dispatchCommand ?? undefined
+  )
 
   if (!('gpu' in navigator)) throw new Error('WebGPU not supported')
   const gpu = (navigator as any).gpu

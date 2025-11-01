@@ -8,6 +8,7 @@ import { createWebGPUBackend } from './render/webgpuBackend'
 import type { RenderBackend } from './render/renderBackend'
 import { createInputController } from './input/inputController'
 import type { InputController } from './input/inputController'
+import CanvasContextMenu from './lib/CanvasContextMenu.svelte'
 import { withVersion } from './dsl/commands'
   import {
     ChunkManager,
@@ -41,8 +42,6 @@ import { withVersion } from './dsl/commands'
   let showContextMenu = false
   let contextMenuX = 0
   let contextMenuY = 0
-  let showLoadSubmenu = false
-  let showNewMapSubmenu = false
   let fileInputRef: HTMLInputElement | null = null
 
   const worldConfig = createWorldConfig(Math.floor(Math.random() * 1000000))
@@ -82,14 +81,10 @@ import { withVersion } from './dsl/commands'
     contextMenuX = event.clientX
     contextMenuY = event.clientY
     showContextMenu = true
-    showLoadSubmenu = false
-    showNewMapSubmenu = false
   }
 
   function closeContextMenu() {
     showContextMenu = false
-    showLoadSubmenu = false
-    showNewMapSubmenu = false
   }
 
   async function handleSaveMap() {
@@ -272,92 +267,17 @@ import { withVersion } from './dsl/commands'
 
 <input type="file" accept=".json" bind:this={fileInputRef} on:change={handleFileChange} style="display: none;" />
 
-{#if showContextMenu}
-  <div class="context-menu" style="left: {contextMenuX}px; top: {contextMenuY}px;" on:click|stopPropagation>
-    <button class="context-menu-item" on:click={handleSaveMap}>Save Map</button>
-    <button class="context-menu-item" on:click={() => { showLoadSubmenu = !showLoadSubmenu; showNewMapSubmenu = false; fetchMaps(); }}>
-      Load Map {showLoadSubmenu ? '▼' : '▶'}
-    </button>
-    {#if showLoadSubmenu}
-      <div class="submenu">
-        {#if availableMaps.length === 0}
-          <div class="submenu-item disabled">No maps available</div>
-        {:else}
-          {#each availableMaps as map}
-            <button class="submenu-item" on:click={() => handleLoadMap(map.sequence)}>
-              Map {map.sequence} ({map.blockCount} blocks)
-            </button>
-          {/each}
-        {/if}
-      </div>
-    {/if}
-    <button class="context-menu-item" on:click={() => { showNewMapSubmenu = !showNewMapSubmenu; showLoadSubmenu = false; fetchMaps(); }}>
-      New Map {showNewMapSubmenu ? '▼' : '▶'}
-    </button>
-    {#if showNewMapSubmenu}
-      <div class="submenu">
-        <button class="submenu-item" on:click={() => handleNewMap()}>Create Empty Map</button>
-        {#if availableMaps.length > 0}
-          <div class="submenu-divider"></div>
-          <div class="submenu-label">Copy From:</div>
-          {#each availableMaps as map}
-            <button class="submenu-item" on:click={() => handleNewMap(map.sequence)}>
-              Map {map.sequence} ({map.blockCount} blocks)
-            </button>
-          {/each}
-        {/if}
-      </div>
-    {/if}
-    <button class="context-menu-item" on:click={handleLoadFromFile}>Load From File</button>
-    <div class="context-divider"></div>
-    <div class="context-section">
-      <label>Interaction Mode</label>
-      <select bind:value={$interactionMode}>
-        <option value="block">Block Placement</option>
-        <option value="highlight">Highlight Select</option>
-      </select>
-    </div>
-    {#if $interactionMode === 'highlight'}
-      <div class="context-section">
-        <label>Highlight Shape</label>
-        <select bind:value={$highlightShape}>
-          <option value="cube">Cube</option>
-          <option value="sphere">Sphere</option>
-          <option value="ellipsoid">Ellipsoid</option>
-          <option value="plane">Plane (Terrain Base)</option>
-        </select>
-      </div>
-      {#if $highlightShape === 'ellipsoid'}
-        <div class="context-section">
-          <label>Radius X: {$ellipsoidRadiusX}</label>
-          <input type="range" min="1" max="32" step="0.5" bind:value={$ellipsoidRadiusX} />
-        </div>
-        <div class="context-section">
-          <label>Radius Y: {$ellipsoidRadiusY}</label>
-          <input type="range" min="1" max="32" step="0.5" bind:value={$ellipsoidRadiusY} />
-        </div>
-        <div class="context-section">
-          <label>Radius Z: {$ellipsoidRadiusZ}</label>
-          <input type="range" min="1" max="32" step="0.5" bind:value={$ellipsoidRadiusZ} />
-        </div>
-      {:else if $highlightShape === 'plane'}
-        <div class="context-section">
-          <label>Plane Size X: {$planeSizeX}</label>
-          <input type="range" min="4" max="32" step="1" bind:value={$planeSizeX} />
-        </div>
-        <div class="context-section">
-          <label>Plane Size Z: {$planeSizeZ}</label>
-          <input type="range" min="4" max="32" step="1" bind:value={$planeSizeZ} />
-        </div>
-      {:else}
-        <div class="context-section">
-          <label>Radius: {$highlightRadius}</label>
-          <input type="range" min="1" max="16" step="1" bind:value={$highlightRadius} />
-        </div>
-      {/if}
-    {/if}
-  </div>
-{/if}
+<CanvasContextMenu
+  visible={showContextMenu}
+  x={contextMenuX}
+  y={contextMenuY}
+  {availableMaps}
+  on:save={handleSaveMap}
+  on:load={(event) => handleLoadMap(event.detail.sequence)}
+  on:new={(event) => handleNewMap(event.detail?.copyFrom)}
+  on:loadFile={handleLoadFromFile}
+  on:refreshMaps={fetchMaps}
+/>
 
 <style>
   .canvas-container {
@@ -401,111 +321,4 @@ import { withVersion } from './dsl/commands'
     background: transparent;
   }
 
-  .context-menu {
-    position: fixed;
-    background: rgba(20, 30, 45, 0.98);
-    border: 1px solid rgba(210, 223, 244, 0.3);
-    border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-    padding: 4px;
-    min-width: clamp(160px, 15vw, 180px);
-    z-index: 1000;
-    backdrop-filter: blur(8px);
-  }
-
-  .context-menu-item {
-    display: block;
-    width: 100%;
-    background: transparent;
-    border: none;
-    color: #e3ebf7;
-    padding: clamp(6px, 1.5vw, 8px) clamp(10px, 2vw, 12px);
-    text-align: left;
-    cursor: pointer;
-    font-size: clamp(11px, 2.5vw, 13px);
-    border-radius: 4px;
-    transition: background 0.15s;
-  }
-
-  .context-menu-item:hover {
-    background: rgba(48, 66, 88, 0.6);
-  }
-
-  .submenu {
-    margin-left: clamp(6px, 1.5vw, 8px);
-    margin-top: clamp(2px, 0.5vw, 4px);
-    padding-left: clamp(6px, 1.5vw, 8px);
-    border-left: 2px solid rgba(210, 223, 244, 0.2);
-  }
-
-  .submenu-item {
-    display: block;
-    width: 100%;
-    background: transparent;
-    border: none;
-    color: #c8d5e8;
-    padding: clamp(4px, 1vw, 6px) clamp(8px, 2vw, 12px);
-    text-align: left;
-    cursor: pointer;
-    font-size: clamp(10px, 2.2vw, 12px);
-    border-radius: 4px;
-    transition: background 0.15s;
-  }
-
-  .submenu-item:hover:not(.disabled) {
-    background: rgba(48, 66, 88, 0.4);
-  }
-
-  .submenu-item.disabled {
-    color: #6b7785;
-    cursor: default;
-  }
-
-  .submenu-divider {
-    height: 1px;
-    background: rgba(210, 223, 244, 0.2);
-    margin: 4px 0;
-  }
-
-  .submenu-label {
-    color: #8a98ab;
-    padding: clamp(2px, 0.5vw, 4px) clamp(8px, 2vw, 12px);
-    font-size: clamp(9px, 2vw, 11px);
-    font-weight: 500;
-    text-transform: uppercase;
-  }
-
-  .context-divider {
-    height: 1px;
-    background: rgba(210, 223, 244, 0.2);
-    margin: clamp(6px, 1.5vw, 8px) 0;
-  }
-
-  .context-section {
-    padding: clamp(2px, 0.5vw, 4px) clamp(6px, 1.5vw, 8px) clamp(4px, 1vw, 6px);
-    display: flex;
-    flex-direction: column;
-    gap: clamp(2px, 0.5vw, 4px);
-  }
-
-  .context-section label {
-    font-size: clamp(9px, 2vw, 11px);
-    text-transform: uppercase;
-    color: #8fa0b8;
-  }
-
-  .context-section select,
-  .context-section input[type='range'] {
-    width: 100%;
-    background: rgba(34, 50, 68, 0.6);
-    border: 1px solid rgba(190, 210, 230, 0.25);
-    border-radius: 4px;
-    padding: clamp(4px, 1vw, 6px);
-    color: #e3ebf7;
-    font-size: clamp(10px, 2.2vw, 12px);
-  }
-
-  .context-section input[type='range'] {
-    padding: 0;
-  }
 </style>
