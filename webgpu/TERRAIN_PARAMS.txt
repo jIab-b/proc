@@ -1,0 +1,120 @@
+=== TERRAIN GENERATION PARAMETERS ===
+
+LLM: Generate numeric parameter values within valid ranges. No hardcoded profile names.
+
+PARAMETERS
+
+amplitude: number
+  Range: [8.0, 18.0]
+  Effect: Vertical height scale of terrain features
+  Guideline: 8=gentle rolling, 14=moderate peaks, 18=dramatic mountains
+
+roughness: number
+  Range: [2.2, 2.8]
+  Effect: Detail frequency (Perlin noise lacunarity)
+  Guideline: 2.2=smooth flowing, 2.4=balanced, 2.8=jagged craggy
+
+elevation: number
+  Range: [0.35, 0.50]
+  Effect: Base height multiplier
+  Guideline: 0.35=low start (more flat), 0.42=medium, 0.50=high start (less flat)
+
+seed: integer | undefined
+  Effect: Randomness control for noise function
+  Guideline: Same seed + params = reproducible. Different seed = different layout.
+
+selectionType: 'default' | 'plane' | 'ellipsoid'
+  'default': Terrain fills entire rectangular region uniformly
+  'plane': Terrain grows upward from flat Y-level base (params.region.min[1])
+  'ellipsoid': Terrain constrained to 3D ellipsoid volume (requires ellipsoidMask)
+
+COMMAND SCHEMA
+
+{
+  "type": "terrain_region",
+  "params": {
+    "action": "generate" | "preview" | "clear",
+    "region": {
+      "min": [number, number, number],
+      "max": [number, number, number]
+    },
+    "selectionType": "default" | "plane" | "ellipsoid",
+    "params": {
+      "amplitude": 8.0-18.0,
+      "roughness": 2.2-2.8,
+      "elevation": 0.35-0.50,
+      "seed": integer (optional, if omitted will be undefined)
+    },
+    "ellipsoidMask": {
+      "center": [x, y, z],
+      "radiusX": number,
+      "radiusY": number,
+      "radiusZ": number
+    }
+  }
+}
+
+NOTE: ellipsoidMask is REQUIRED if selectionType='ellipsoid', OMIT otherwise
+
+EXAMPLES
+
+Example 1: Gentle rolling hills (default cubic region)
+{
+  "type": "terrain_region",
+  "params": {
+    "action": "generate",
+    "region": {"min": [0, 0, 0], "max": [31, 31, 31]},
+    "selectionType": "default",
+    "params": {
+      "amplitude": 9.0,
+      "roughness": 2.2,
+      "elevation": 0.36,
+      "seed": 42
+    }
+  }
+}
+
+Example 2: Craggy mountain on plane island
+{
+  "type": "terrain_region",
+  "params": {
+    "action": "generate",
+    "region": {"min": [0, 0, 0], "max": [31, 31, 31]},
+    "selectionType": "plane",
+    "params": {
+      "amplitude": 17.0,
+      "roughness": 2.7,
+      "elevation": 0.48,
+      "seed": 123
+    }
+  }
+}
+
+Example 3: Dome-shaped hill (ellipsoid)
+{
+  "type": "terrain_region",
+  "params": {
+    "action": "generate",
+    "region": {"min": [0, 0, 0], "max": [31, 31, 31]},
+    "selectionType": "ellipsoid",
+    "params": {
+      "amplitude": 12.0,
+      "roughness": 2.4,
+      "elevation": 0.42,
+      "seed": 999
+    },
+    "ellipsoidMask": {
+      "center": [15.5, 10.0, 15.5],
+      "radiusX": 8.0,
+      "radiusY": 6.0,
+      "radiusZ": 8.0
+    }
+  }
+}
+
+VALIDATION
+
+amplitude must be >= 8.0 and <= 18.0
+roughness must be >= 2.2 and <= 2.8
+elevation must be >= 0.35 and <= 0.50
+seed must be an integer or undefined

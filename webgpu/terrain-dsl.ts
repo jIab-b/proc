@@ -10,7 +10,7 @@
  *   node terrain-dsl.ts <command> [args...]
  *
  * Commands:
- *   generate <cx1> <cz1> <cx2> <cz2> <profile> [seed] [amplitude] [roughness] [elevation]
+ *   generate <cx1> <cz1> <cx2> <cz2> <amplitude> <roughness> <elevation> [seed]
  *   list
  *   stats
  *   clear
@@ -18,7 +18,7 @@
  *
  * Example:
  *   # Generate a 10x10 chunk region (320x320 blocks)
- *   node terrain-dsl.ts generate 0 0 9 9 rolling_hills 1337 10 2.4 0.35
+ *   node terrain-dsl.ts generate 0 0 9 9 10 2.4 0.35 1337
  */
 
 import { ChunkGrid } from './src/chunkGrid'
@@ -29,7 +29,6 @@ import {
   type GridRegion,
   type GridTerrainParams
 } from './src/procedural/gridTerrainGenerator'
-import type { TerrainProfile } from './src/procedural/terrainGenerator'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as dotenv from 'dotenv'
@@ -60,11 +59,11 @@ interface CommandResult {
  * Generate terrain in a grid region
  */
 function cmdGenerate(args: string[]): CommandResult {
-  if (args.length < 5) {
+  if (args.length < 7) {
     return {
       success: false,
       command: 'generate',
-      error: 'Usage: generate <cx1> <cz1> <cx2> <cz2> <profile> [seed] [amplitude] [roughness] [elevation]'
+      error: 'Usage: generate <cx1> <cz1> <cx2> <cz2> <amplitude> <roughness> <elevation> [seed]'
     }
   }
 
@@ -72,13 +71,30 @@ function cmdGenerate(args: string[]): CommandResult {
   const cz1 = parseInt(args[1]!)
   const cx2 = parseInt(args[2]!)
   const cz2 = parseInt(args[3]!)
-  const profile = args[4] as TerrainProfile
+  const amplitude = parseFloat(args[4]!)
+  const roughness = parseFloat(args[5]!)
+  const elevation = parseFloat(args[6]!)
+  const seed = args[7] ? parseInt(args[7]) : undefined
 
-  if (!['rolling_hills', 'mountain', 'hybrid'].includes(profile)) {
+  if (amplitude < 8 || amplitude > 18) {
     return {
       success: false,
       command: 'generate',
-      error: `Invalid profile: ${profile}. Must be one of: rolling_hills, mountain, hybrid`
+      error: `amplitude ${amplitude} out of range [8, 18]`
+    }
+  }
+  if (roughness < 2.2 || roughness > 2.8) {
+    return {
+      success: false,
+      command: 'generate',
+      error: `roughness ${roughness} out of range [2.2, 2.8]`
+    }
+  }
+  if (elevation < 0.35 || elevation > 0.50) {
+    return {
+      success: false,
+      command: 'generate',
+      error: `elevation ${elevation} out of range [0.35, 0.50]`
     }
   }
 
@@ -88,11 +104,10 @@ function cmdGenerate(args: string[]): CommandResult {
   }
 
   const params: GridTerrainParams = {
-    profile,
-    seed: args[5] ? parseInt(args[5]) : undefined,
-    amplitude: args[6] ? parseFloat(args[6]) : undefined,
-    roughness: args[7] ? parseFloat(args[7]) : undefined,
-    elevation: args[8] ? parseFloat(args[8]) : undefined
+    amplitude,
+    roughness,
+    elevation,
+    seed
   }
 
   const startTime = Date.now()
@@ -111,7 +126,6 @@ function cmdGenerate(args: string[]): CommandResult {
           dimensions: dims
         },
         params: {
-          profile,
           seed: params.seed,
           amplitude: params.amplitude,
           roughness: params.roughness,
@@ -187,20 +201,19 @@ Terrain DSL - LLM-accessible CLI for large-scale terrain generation
 
 COMMANDS:
 
-  generate <cx1> <cz1> <cx2> <cz2> <profile> [seed] [amplitude] [roughness] [elevation]
+  generate <cx1> <cz1> <cx2> <cz2> <amplitude> <roughness> <elevation> [seed]
     Generate terrain in a grid region from chunk (cx1,cz1) to (cx2,cz2)
 
     Arguments:
       cx1, cz1     - Starting chunk coordinates
       cx2, cz2     - Ending chunk coordinates
-      profile      - Terrain profile: rolling_hills, mountain, or hybrid
+      amplitude    - Height amplitude (float, 8-18)
+      roughness    - Terrain roughness/detail (float, 2.2-2.8)
+      elevation    - Base elevation (float, 0.35-0.50)
       seed         - Optional: Random seed (integer)
-      amplitude    - Optional: Height amplitude (float, 8-18)
-      roughness    - Optional: Terrain roughness (float, 2.2-2.8)
-      elevation    - Optional: Base elevation (float, 0.35-0.5)
 
     Example: Generate a 10x10 chunk region (320x320 blocks)
-      generate 0 0 9 9 rolling_hills 1337 10 2.4 0.35
+      generate 0 0 9 9 10 2.4 0.35 1337
 
   list
     List all currently loaded chunks
@@ -226,14 +239,14 @@ OUTPUT:
 
 EXAMPLES:
 
-  # Generate a small region (5x5 chunks = 160x160 blocks)
-  node terrain-dsl.ts generate 0 0 4 4 rolling_hills
+  # Generate a small region (5x5 chunks = 160x160 blocks) with gentle terrain
+  node terrain-dsl.ts generate 0 0 4 4 9.0 2.2 0.36
 
-  # Generate a large region (50x50 chunks = 1600x1600 blocks)
-  node terrain-dsl.ts generate 0 0 49 49 mountain 7331 18 2.8 0.5
+  # Generate a large region (50x50 chunks = 1600x1600 blocks) with dramatic terrain
+  node terrain-dsl.ts generate 0 0 49 49 17.0 2.7 0.48 7331
 
-  # Generate with custom seed
-  node terrain-dsl.ts generate -10 -10 10 10 hybrid 42
+  # Generate with custom seed (same params, different layout)
+  node terrain-dsl.ts generate -10 -10 10 10 12.0 2.4 0.42 42
 
   # List all chunks
   node terrain-dsl.ts list

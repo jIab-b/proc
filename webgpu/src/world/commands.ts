@@ -97,21 +97,20 @@ export function parseWorldCommands(input: string): ParseResult {
           break
         }
         case 'terrain': {
-          if (rest.length < 14) {
-            errors.push(`terrain command requires 14 arguments, got "${line}"`)
+          if (rest.length < 10) {
+            errors.push(`terrain command requires 10+ arguments, got "${line}"`)
             break
           }
           const [
             actionToken,
             minX, minY, minZ,
             maxX, maxY, maxZ,
-            profile,
-            seedToken,
             amplitudeToken,
             roughnessToken,
             elevationToken,
-            selectionType,
-            ellipsoidFlag
+            seedToken,
+            selectionTypeToken,
+            ...ellipsoidTokens
           ] = rest
 
           const params: TerrainGenerateParams = {
@@ -128,31 +127,25 @@ export function parseWorldCommands(input: string): ParseResult {
                 parseTokenAsFloat(maxZ!, 'maxZ', errors)
               ]
             },
-            profile: profile as TerrainGenerateParams['profile'],
-            selectionType: (selectionType as TerrainGenerateParams['selectionType']) ?? 'default',
+            selectionType: (selectionTypeToken as TerrainGenerateParams['selectionType']) ?? 'default',
             params: {
-              seed: parseTokenAsInt(seedToken!, 'seed', errors),
               amplitude: parseTokenAsFloat(amplitudeToken!, 'amplitude', errors),
               roughness: parseTokenAsFloat(roughnessToken!, 'roughness', errors),
-              elevation: parseTokenAsFloat(elevationToken!, 'elevation', errors)
+              elevation: parseTokenAsFloat(elevationToken!, 'elevation', errors),
+              seed: seedToken ? parseTokenAsInt(seedToken, 'seed', errors) : undefined
             }
           }
 
-          if (ellipsoidFlag?.toLowerCase() === 'ellipsoid') {
-            const next = rest.slice(14)
-            if (next.length >= 6) {
-              params.ellipsoidMask = {
-                center: [
-                  parseTokenAsFloat(next[0]!, 'ellipsoidCenterX', errors),
-                  parseTokenAsFloat(next[1]!, 'ellipsoidCenterY', errors),
-                  parseTokenAsFloat(next[2]!, 'ellipsoidCenterZ', errors)
-                ],
-                radiusX: parseTokenAsFloat(next[3]!, 'radiusX', errors),
-                radiusY: parseTokenAsFloat(next[4]!, 'radiusY', errors),
-                radiusZ: parseTokenAsFloat(next[5]!, 'radiusZ', errors)
-              }
-            } else {
-              errors.push('terrain ellipsoid flag provided without 6 parameters')
+          if (ellipsoidTokens[0]?.toLowerCase() === 'ellipsoid' && ellipsoidTokens.length >= 6) {
+            params.ellipsoidMask = {
+              center: [
+                parseTokenAsFloat(ellipsoidTokens[1]!, 'ellipsoidCenterX', errors),
+                parseTokenAsFloat(ellipsoidTokens[2]!, 'ellipsoidCenterY', errors),
+                parseTokenAsFloat(ellipsoidTokens[3]!, 'ellipsoidCenterZ', errors)
+              ],
+              radiusX: parseTokenAsFloat(ellipsoidTokens[4]!, 'radiusX', errors),
+              radiusY: parseTokenAsFloat(ellipsoidTokens[5]!, 'radiusY', errors),
+              radiusZ: parseTokenAsFloat(ellipsoidTokens[6]!, 'radiusZ', errors)
             }
           }
 
@@ -190,13 +183,16 @@ export function formatWorldCommand(command: WorldCommand): string {
         params.action,
         ...params.region.min,
         ...params.region.max,
-        params.profile,
-        params.params.seed,
         params.params.amplitude,
         params.params.roughness,
-        params.params.elevation,
-        params.selectionType
+        params.params.elevation
       ]
+      if (params.params.seed !== undefined) {
+        base.push(params.params.seed)
+      }
+      if (params.selectionType !== 'default') {
+        base.push(params.selectionType)
+      }
       if (params.ellipsoidMask) {
         base.push(
           'ellipsoid',
