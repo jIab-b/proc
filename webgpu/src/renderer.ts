@@ -20,6 +20,7 @@ import {
   ellipsoidRadiusZ,
   planeSizeX,
   planeSizeZ,
+  planeHeight,
   ellipsoidEditAxis,
   ellipsoidSelectedNode,
   highlightSelection as highlightSelectionStore,
@@ -884,6 +885,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           } else if (shape === 'plane') {
             selection.planeSizeX = get(planeSizeX)
             selection.planeSizeZ = get(planeSizeZ)
+            selection.planeHeight = get(planeHeight)
           }
           ellipsoidSelectedNode.set(null)
           ellipsoidEditAxis.set(null)
@@ -1719,15 +1721,16 @@ VALIDATION RULES (MUST follow exactly):
       } else if (currentSelection.shape === 'plane') {
         const sizeX = (currentSelection.planeSizeX ?? 8) * worldScale
         const sizeZ = (currentSelection.planeSizeZ ?? 8) * worldScale
+        const height = (currentSelection.planeHeight ?? 64) * worldScale
         region = {
           min: [
             Math.floor(worldCenter[0] - sizeX),
-            Math.floor(worldCenter[1]),
+            Math.floor(worldCenter[1] - height / 2),
             Math.floor(worldCenter[2] - sizeZ)
           ],
           max: [
             Math.floor(worldCenter[0] + sizeX),
-            Math.floor(worldCenter[1] + 64),
+            Math.floor(worldCenter[1] + height / 2),
             Math.floor(worldCenter[2] + sizeZ)
           ]
         }
@@ -1935,6 +1938,7 @@ VALIDATION RULES (MUST follow exactly):
           } else if (shape === 'plane') {
             selection.planeSizeX = get(planeSizeX)
             selection.planeSizeZ = get(planeSizeZ)
+            selection.planeHeight = get(planeHeight)
           }
           ellipsoidSelectedNode.set(null)
           ellipsoidEditAxis.set(null)
