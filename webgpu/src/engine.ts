@@ -162,7 +162,6 @@ export class MapManager {
     const params: TerrainGenerateParams = {
       action: 'generate',
       region: { min: origin, max },
-      profile: 'rolling_hills',
       selectionType: 'default',
       params: {
         seed: worldConfig.seed,

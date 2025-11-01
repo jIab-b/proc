@@ -130,7 +130,12 @@ export class WorldState {
       return { success: false, message: 'Region outside chunk bounds' }
     }
 
-    const terrainState = createTerrainGeneratorState(params.profile, params.params)
+    const terrainState = createTerrainGeneratorState({
+      amplitude: params.params.amplitude,
+      roughness: params.params.roughness,
+      elevation: params.params.elevation,
+      seed: params.params.seed ?? Math.floor(Math.random() * 1000000)
+    })
 
     if (params.action === 'clear') {
       this.clearRegion(chunkRegion, params, source)

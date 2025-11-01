@@ -356,7 +356,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         }
       }
       if (nextLayer === null) {
-        console.warn(`Max ${MAX_CUSTOM_BLOCKS} custom blocks reached`)
         return
       }
       customBlock.textureLayer = nextLayer
@@ -779,14 +778,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         orbitTarget[2] - overviewPos[2]
       ])
 
-      console.log('=== OVERVIEW CLICK ===')
-      console.log('Button:', ev.button === 0 ? 'LEFT' : ev.button === 1 ? 'MIDDLE' : 'RIGHT')
-      console.log('Click position:', { clientX: ev.clientX, clientY: ev.clientY })
-      console.log('Canvas size:', { width: canvas.width, height: canvas.height })
-      console.log('Mode:', mode, 'Shape:', shape)
-      console.log('Camera pos:', overviewPos)
-      console.log('Camera forward:', overviewForward)
-      console.log('Orbit target:', orbitTarget)
 
       if (mode === 'highlight' && (shape === 'ellipsoid' || shape === 'plane')) {
         // Convert client coordinates to canvas coordinates
@@ -794,11 +785,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         const rect = canvas.getBoundingClientRect()
         const canvasX = ((ev.clientX - rect.left) / rect.width) * canvas.width
         const canvasY = ((ev.clientY - rect.top) / rect.height) * canvas.height
-        console.log('Coordinate conversion:', {
-          client: { x: ev.clientX, y: ev.clientY },
-          rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
-          canvas: { x: canvasX, y: canvasY, width: canvas.width, height: canvas.height }
-        })
 
         const currentSelection = get(highlightSelectionStore)
         let clickedNode: EllipsoidNode = null
@@ -816,15 +802,10 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           ])
           const isVisible = latestCamera && projectToScreen(centerWorld, latestCamera.viewProjectionMatrix, canvas.width, canvas.height) !== null
 
-          console.log('Current ellipsoid:', currentSelection.center, 'radii:', { rx, ry, rz })
-          console.log('⚠️  Ellipsoid visible:', isVisible, '- Center world pos:', centerWorld)
 
           clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, rx, ry, rz, 'ellipsoid')
-          console.log('Clicked node:', clickedNode)
-          console.log('Activated nodes:', Array.from(activatedNodes))
 
           if (!isVisible) {
-            console.warn('⚠️  ELLIPSOID IS OFF-SCREEN! Pan camera to position:', currentSelection.center)
           }
         } else if (currentSelection && currentSelection.shape === 'plane') {
           const sizeX = currentSelection.planeSizeX ?? 8
@@ -838,16 +819,11 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           ])
           const isVisible = latestCamera && projectToScreen(centerWorld, latestCamera.viewProjectionMatrix, canvas.width, canvas.height) !== null
 
-          console.log('Current plane:', currentSelection.center, 'sizeX:', sizeX, 'sizeZ:', sizeZ)
-          console.log('⚠️  Plane visible:', isVisible, '- Center world pos:', centerWorld)
 
           // Pass max(sizeX, sizeZ) as a general size parameter for click detection
           clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, sizeX, 0, sizeZ, 'plane')
-          console.log('Clicked node:', clickedNode)
-          console.log('Activated nodes:', Array.from(activatedNodes))
 
           if (!isVisible) {
-            console.warn('⚠️  PLANE IS OFF-SCREEN! Pan camera to position:', currentSelection.center)
           }
         }
 
@@ -880,7 +856,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           }
 
           const hit = raycast(overviewPos, rayDir)
-          console.log(`${shape} mode right-click raycast:`, hit)
 
           let centerPos: Vec3
           if (hit) {
@@ -894,7 +869,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
             ]
             const chunkPos = worldToChunk(worldPos)
             centerPos = [Math.floor(chunkPos[0]), Math.floor(chunkPos[1]), Math.floor(chunkPos[2])]
-            console.log(`No raycast hit - creating ${shape} at click position (CHUNK coords):`, centerPos)
           }
 
           const radius = get(highlightRadius)
@@ -907,11 +881,9 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
             selection.radiusX = get(ellipsoidRadiusX)
             selection.radiusY = get(ellipsoidRadiusY)
             selection.radiusZ = get(ellipsoidRadiusZ)
-            console.log('Ellipsoid created at (CHUNK coords):', centerPos, 'with radii:', selection.radiusX, selection.radiusY, selection.radiusZ)
           } else if (shape === 'plane') {
             selection.planeSizeX = get(planeSizeX)
             selection.planeSizeZ = get(planeSizeZ)
-            console.log('Plane created at (CHUNK coords):', centerPos, 'with sizes:', selection.planeSizeX, 'x', selection.planeSizeZ)
           }
           ellipsoidSelectedNode.set(null)
           ellipsoidEditAxis.set(null)
@@ -927,10 +899,8 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         }
 
         if (ev.button === 0 && currentSelection && currentSelection.shape === 'ellipsoid') {
-          console.log('LEFT CLICK with existing ellipsoid, clickedNode:', clickedNode)
 
           if (clickedNode === 'center') {
-            console.log('>>> Activating CENTER DRAG mode')
             ev.preventDefault()
             ellipsoidCenterDragActive = true
             centerNodeSelected = true
@@ -945,7 +915,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
 
           // Left-click on axis node: activate mouse-controlled scaling
           if (clickedNode) {
-            console.log(`>>> Activating NODE ${clickedNode} for mouse-controlled scaling`)
             ev.preventDefault()
             ellipsoidNodeAdjustActive = true
             ellipsoidSelectedNode.set(clickedNode)
@@ -963,11 +932,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
             else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
             else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
 
-            console.log('Node activation state:', {
-              selectedNode: clickedNode,
-              startPos: { x: nodeEditStartX, y: nodeEditStartY },
-              startRadius: nodeEditStartRadius
-            })
             ev.stopPropagation()
             return
           }
@@ -977,10 +941,8 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           const ry = currentSelection.radiusY ?? currentSelection.radius
           const rz = currentSelection.radiusZ ?? currentSelection.radius
 
-          console.log('Checking ellipse rings with canvas coords:', canvasX, canvasY)
 
           if (isNearEllipseRing(canvasX, canvasY, center, rx, ry, 'xy')) {
-            console.log('>>> Clicked on XY ring (Z axis)')
             ellipsoidEditAxis.set('z')
             ellipsoidSelectedNode.set(null)
             centerNodeSelected = false
@@ -989,7 +951,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
             return
           }
           if (isNearEllipseRing(canvasX, canvasY, center, rx, rz, 'xz')) {
-            console.log('>>> Clicked on XZ ring (Y axis)')
             ellipsoidEditAxis.set('y')
             ellipsoidSelectedNode.set(null)
             centerNodeSelected = false
@@ -998,7 +959,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
             return
           }
           if (isNearEllipseRing(canvasX, canvasY, center, ry, rz, 'yz')) {
-            console.log('>>> Clicked on YZ ring (X axis)')
             ellipsoidEditAxis.set('x')
             ellipsoidSelectedNode.set(null)
             centerNodeSelected = false
@@ -1015,7 +975,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         ev.stopPropagation()
 
         const hit = raycast(overviewPos, overviewForward)
-        console.log('Raycast hit:', hit)
 
         if (hit) {
           if (mode === 'block') {
@@ -1027,7 +986,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
                 { position: [placePos[0], placePos[1], placePos[2]] as Vec3, blockType: selected.type },
                 'renderer.placeBlock'
               )
-              console.log('Block placed at', placePos)
             }
           } else if (mode === 'highlight') {
             // Right click in highlight mode - set highlight selection
@@ -1048,16 +1006,13 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
             }
 
             emitHighlight(selection, 'renderer.highlight.setOverview')
-            console.log('Highlight selection set:', selection)
           }
         } else {
-          console.log('No raycast hit')
         }
         return
       }
 
       // Left and middle mouse for dragging
-      console.log('>>> Entering drag mode, button:', ev.button)
       isDragging = true
       dragButton = ev.button
       lastMouseX = ev.clientX
@@ -1076,7 +1031,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
     if (ev.button === 2) {
       if (ellipsoidMovementActive) {
         ellipsoidMovementActive = false
-        console.log('Ellipsoid movement mode deactivated')
       }
     }
 
@@ -1086,7 +1040,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         ellipsoidNodeAdjustActive = false
         ellipsoidSelectedNode.set(null)
         lastCameraPos = null
-        console.log('Node adjustment deactivated - node will remain red')
       }
       if (ellipsoidCenterDragActive) {
         ellipsoidCenterDragActive = false
@@ -1406,7 +1359,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         const overviewPos = getCameraWorldPosition()
         lastCameraPos = [...overviewPos] as Vec3
 
-        console.log('Context menu: Starting CENTER DRAG mode')
       } else {
         // Side nodes: use node adjust mode for resizing
         ellipsoidSelectedNode.set(node)
@@ -1436,7 +1388,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
         }
 
-        console.log('Context menu: Starting move mode for node', node)
       }
     }
 
@@ -1618,10 +1569,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
 
   // Helper: generate terrain using OpenAI LLM
   async function generateTerrainWithLLM(description: string) {
-    console.log('=== OPENAI API CALL TRIGGERED ===')
-    console.log('[LLM] Description:', description)
-    console.trace('Call stack:')
-
     // Check if there's a current ellipsoid/plane selection
     const currentSelection = get(highlightSelectionStore)
     if (!currentSelection) {
@@ -1631,32 +1578,71 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
 
     const apiKey = get(openaiApiKey)
     if (!apiKey) {
-      console.error('[LLM] No API key found')
       throw new Error('OpenAI API key not found. Please enter your API key in the modal.')
     }
 
-    console.log('[LLM] Generating terrain for description:', description)
-    console.log('[LLM] Using selection:', currentSelection)
+    // Use TERRAIN_PARAMS specification directly as system prompt
+    const systemPrompt = `=== TERRAIN GENERATION PARAMETERS ===
 
-    // Prepare the prompt for the LLM
-    const systemPrompt = `You are a terrain generation assistant. Based on the user's description, respond with ONLY a JSON object (no explanation, no markdown) with these fields:
+LLM: Generate numeric parameter values within valid ranges. No hardcoded profile names.
 
+PARAMETERS
+
+amplitude: number
+  Range: [8.0, 18.0]
+  Effect: Vertical height scale of terrain features
+  Guideline: 8=gentle rolling, 14=moderate peaks, 18=dramatic mountains
+
+roughness: number
+  Range: [2.2, 2.8]
+  Effect: Detail frequency (Perlin noise lacunarity)
+  Guideline: 2.2=smooth flowing, 2.4=balanced, 2.8=jagged craggy
+
+elevation: number
+  Range: [0.35, 0.50]
+  Effect: Base height multiplier
+  Guideline: 0.35=low start (more flat), 0.42=medium, 0.50=high start (less flat)
+
+seed: integer | undefined
+  Effect: Randomness control for noise function
+  Guideline: Same seed + params = reproducible. Different seed = different layout.
+
+RESPOND WITH ONLY VALID JSON (no markdown, no explanation):
 {
-  "profile": "rolling_hills" | "mountain" | "hybrid",
-  "amplitude": number (8-18, controls terrain height variation),
-  "roughness": number (2.0-3.0, controls terrain detail/jaggedness),
-  "elevation": number (0.3-0.6, controls base height)
+  "amplitude": number (8.0-18.0),
+  "roughness": number (2.2-2.8),
+  "elevation": number (0.35-0.50),
+  "seed": integer or omit for random
 }
 
-Guidelines:
-- rolling_hills: gentle, smooth terrain (amplitude: 8-12, roughness: 2.0-2.4)
-- mountain: dramatic peaks and valleys (amplitude: 14-18, roughness: 2.6-3.0)
-- hybrid: mix of both (amplitude: 10-14, roughness: 2.2-2.6)
+BEHAVIOR CONTROL:
+- amplitude < 11: gentle blending, subtle terrain features
+- amplitude 11-16: balanced mixing of terrain elements
+- amplitude >= 16: dramatic blending, pronounced peaks and valleys
 
-Examples:
-- "gentle rolling hills" → {"profile": "rolling_hills", "amplitude": 10, "roughness": 2.2, "elevation": 0.4}
-- "dramatic mountains" → {"profile": "mountain", "amplitude": 16, "roughness": 2.8, "elevation": 0.45}
-- "varied landscape" → {"profile": "hybrid", "amplitude": 12, "roughness": 2.5, "elevation": 0.42}`
+- roughness < 2.4: smooth, flowing, gentle transitions
+- roughness 2.4-2.6: balanced detail and smoothness
+- roughness > 2.6: jagged, craggy, detailed texture
+
+- elevation < 0.40: more flat areas, gentle slopes
+- elevation 0.40-0.45: balanced height distribution
+- elevation > 0.45: higher starting point, steeper slopes
+
+EXAMPLES:
+Example 1 - Gentle rolling hills:
+{"amplitude": 9.0, "roughness": 2.2, "elevation": 0.36}
+
+Example 2 - Dramatic mountains:
+{"amplitude": 17.0, "roughness": 2.7, "elevation": 0.48}
+
+Example 3 - Alpine tundra:
+{"amplitude": 16.0, "roughness": 2.7, "elevation": 0.46}
+
+VALIDATION RULES (MUST follow exactly):
+- amplitude must be >= 8.0 and <= 18.0
+- roughness must be >= 2.2 and <= 2.8
+- elevation must be >= 0.35 and <= 0.50
+- seed must be an integer or omitted`
 
     const userPrompt = `Terrain description: ${description}`
 
@@ -1750,17 +1736,14 @@ Examples:
         throw new Error('LLM generation requires an ellipsoid or plane selection')
       }
 
-      console.log('[LLM] Generating terrain with params:', params)
-      console.log('[LLM] Region:', region)
-      console.log('[LLM] Ellipsoid mask:', ellipsoidMask)
+      console.log('[LLM] Response:', JSON.stringify({ llmResponse, parsedParams: params }, null, 2))
 
       const terrainParams: TerrainGenerateParams = {
         action: 'generate',
         region,
-        profile: params.profile,
         selectionType: currentSelection.shape === 'plane' ? 'plane' : 'ellipsoid',
         params: {
-          seed: Math.floor(Math.random() * 1000000),
+          seed: params.seed !== undefined ? params.seed : Math.floor(Math.random() * 1000000),
           amplitude: params.amplitude,
           roughness: params.roughness,
           elevation: params.elevation
@@ -1770,7 +1753,7 @@ Examples:
 
       emitTerrainRegion(terrainParams, 'renderer.llmTerrain')
 
-      alert(`Terrain generated with ${params.profile} profile!`)
+      alert('Terrain generated!')
     } catch (error) {
       console.error('[LLM] Error:', error)
       throw error
@@ -1802,12 +1785,6 @@ Examples:
     const roughness = args[7] ? parseFloat(args[7]) : undefined
     const elevation = args[8] ? parseFloat(args[8]) : undefined
 
-    console.log('[Terrain] Executing command:', {
-      region: { cx1, cz1, cx2, cz2 },
-      profile,
-      params: { seed, amplitude, roughness, elevation }
-    })
-
     const chunkSize = 32
     const minX = cx1 * chunkSize
     const minZ = cz1 * chunkSize
@@ -1827,7 +1804,6 @@ Examples:
     const terrainParams: TerrainGenerateParams = {
       action: 'generate',
       region: regionWorld,
-      profile,
       selectionType: 'default',
       params: {
         seed: seed ?? Math.floor(Math.random() * 1000000),
@@ -1839,8 +1815,7 @@ Examples:
 
     emitTerrainRegion(terrainParams, 'renderer.terrainDsl')
 
-    console.log('[Terrain] Generation command dispatched!')
-    alert(`Terrain generation requested.\nRegion: [${cx1},${cz1}] to [${cx2},${cz2}]\nProfile: ${profile}`)
+    alert(`Terrain generation requested.\nRegion: [${cx1},${cz1}] to [${cx2},${cz2}]`)
   }
 
   // Helper: check if a click is near an ellipsoid or plane node
@@ -1849,18 +1824,12 @@ Examples:
     const baseCenter: Vec3 = [center[0] + halfStep, center[1] + halfStep, center[2] + halfStep]
     const threshold = 20 // pixels - increased for easier clicking
 
-    console.log('getClickedNode called:', { clickX, clickY, center, rx, ry, rz, shape })
-    console.log('Canvas dimensions:', { width: canvas.width, height: canvas.height })
-    console.log('Canvas client rect:', canvas.getBoundingClientRect())
 
     // Check center node first for easier selection
     const centerScreen = projectToScreen(chunkToWorld(baseCenter), latestCamera!.viewProjectionMatrix, canvas.width, canvas.height)
-    console.log('Center node screen pos:', centerScreen)
     if (centerScreen) {
       const centerDist = Math.hypot(centerScreen[0] - clickX, centerScreen[1] - clickY)
-      console.log('Center node distance:', centerDist, 'threshold:', threshold)
       if (centerDist < threshold) {
-        console.log('>>> CENTER NODE CLICKED')
         return 'center'
       }
     }
@@ -1891,22 +1860,17 @@ Examples:
       ]
     }
 
-    console.log('Checking nodes:')
     for (const node of nodes) {
       const screen = projectToScreen(chunkToWorld(node.pos), latestCamera!.viewProjectionMatrix, canvas.width, canvas.height)
       if (screen) {
         const dist = Math.hypot(screen[0] - clickX, screen[1] - clickY)
-        console.log(`  ${node.id}: screen=${screen[0].toFixed(1)},${screen[1].toFixed(1)} dist=${dist.toFixed(1)} threshold=${threshold}`)
         if (dist < threshold) {
-          console.log(`>>> NODE ${node.id} CLICKED`)
           return node.id
         }
       } else {
-        console.log(`  ${node.id}: not visible (off screen)`)
       }
     }
 
-    console.log('>>> NO NODE CLICKED')
     return null
   }
 
@@ -2487,7 +2451,6 @@ Examples:
       ev.preventDefault()
       const newMode = cameraMode === 'player' ? 'overview' : 'player'
       cameraModeStore.set(newMode)
-      console.log(`Camera mode: ${newMode}`)
       return
     }
 
@@ -2522,7 +2485,6 @@ Examples:
       } else {
         paused = true
       }
-      console.log(`Camera mode: ${cameraMode}`)
     },
     markMeshDirty: () => { meshDirty = true },
     applyCustomBlockTextures,
