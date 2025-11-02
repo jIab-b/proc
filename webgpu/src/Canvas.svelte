@@ -317,6 +317,7 @@ import { withVersion } from './dsl/commands'
   async function handleSaveCurrentView() {
     const imgs = await captureRGBNormalDepth()
     if (!imgs) return
+    const cam = renderBackend?.getCameraSnapshot()
     clientViewCounter += 1
     localStorage.setItem('client_view_counter', String(clientViewCounter))
     const idx = String(clientViewCounter).padStart(3, '0')
@@ -326,6 +327,28 @@ import { withVersion } from './dsl/commands'
       { name: `${base}_normal.png`, data: imgs.normalBase64 },
       { name: `${base}_depth.png`, data: imgs.depthBase64 }
     ]
+    if (cam) {
+      const meta = {
+        id: base,
+        capturedAt: new Date().toISOString(),
+        position: cam.position,
+        forward: cam.forward,
+        up: cam.up,
+        right: cam.right,
+        intrinsics: {
+          fovYDegrees: (cam.fovYRadians * 180) / Math.PI,
+          aspect: cam.aspect,
+          near: cam.near,
+          far: cam.far
+        },
+        viewMatrix: Array.from(cam.viewMatrix as any),
+        projectionMatrix: Array.from(cam.projectionMatrix as any),
+        viewProjectionMatrix: Array.from(cam.viewProjectionMatrix as any)
+      }
+      const metaBlob = new Blob([JSON.stringify(meta, null, 2)], { type: 'application/json' })
+      const metaUrl = URL.createObjectURL(metaBlob)
+      files.push({ name: `${base}_meta.json`, data: metaUrl })
+    }
     try {
       const picker: any = (window as any).showDirectoryPicker
       if (picker) {

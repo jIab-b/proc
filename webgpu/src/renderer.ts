@@ -174,10 +174,12 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
     entries: [
       { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
-      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } }
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }
     ]
   })
 
+  const cameraParamsBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
   let renderBindGroup: GPUBindGroup
   const refreshRenderBindGroup = () => {
     renderBindGroup = device.createBindGroup({
@@ -185,7 +187,8 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
       entries: [
         { binding: 0, resource: { buffer: cameraBuffer } },
         { binding: 1, resource: tileSampler },
-        { binding: 2, resource: tileArrayView }
+        { binding: 2, resource: tileArrayView },
+        { binding: 3, resource: { buffer: cameraParamsBuffer } }
       ]
     })
   }
@@ -2391,6 +2394,8 @@ VALIDATION RULES (MUST follow exactly):
 
     const viewProj = multiplyMat4(proj, view)
     device.queue.writeBuffer(cameraBuffer, 0, viewProj)
+    const camParams = new Float32Array([near, far, 0, 0])
+    device.queue.writeBuffer(cameraParamsBuffer, 0, camParams)
 
     latestCamera = {
       position,

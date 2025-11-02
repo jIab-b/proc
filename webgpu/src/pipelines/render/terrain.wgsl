@@ -2,6 +2,7 @@ struct Camera { viewProj : mat4x4<f32> }
 @group(0) @binding(0) var<uniform> uCamera : Camera;
 @group(0) @binding(1) var uAtlasSampler : sampler;
 @group(0) @binding(2) var uTileTextures : texture_2d_array<f32>;
+@group(0) @binding(3) var<uniform> uCamParams : vec2<f32>; // near, far
 
 struct VSIn {
   @location(0) position : vec3<f32>,
@@ -60,7 +61,12 @@ fn fs_main(in_ : VSOut) -> FSOut {
   var outv : FSOut;
   outv.color = vec4<f32>(litColor, surfaceAlpha);
   outv.normalOut = vec4<f32>(n * 0.5 + 0.5, 1.0);
-  let d = in_.position.z;
-  outv.depthOut = vec4<f32>(d, d, d, 1.0);
+  let near = uCamParams.x;
+  let far = uCamParams.y;
+  let z = clamp(in_.position.z, 0.0, 1.0);
+  let z_ndc = z * 2.0 - 1.0;
+  let linear = (2.0 * near * far) / (far + near - z_ndc * (far - near));
+  let depth01 = clamp(linear / far, 0.0, 1.0);
+  outv.depthOut = vec4<f32>(depth01, depth01, depth01, 1.0);
   return outv;
 }
