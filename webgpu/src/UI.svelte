@@ -7,7 +7,6 @@
     openaiApiKey,
     BlockType, type CustomBlock, type FaceTileInfo, type BlockFaceKey
   } from './core'
-  import ProceduralTerrainPanel from './lib/ProceduralTerrainPanel.svelte'
   import CameraModeToggle from './lib/CameraModeToggle.svelte'
 
   // Block Grid State
@@ -360,7 +359,6 @@
     </div>
   </div>
 
-  <ProceduralTerrainPanel />
 </div>
 
 <style>

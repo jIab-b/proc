@@ -43,6 +43,7 @@ import { withVersion } from './dsl/commands'
   let contextMenuX = 0
   let contextMenuY = 0
   let fileInputRef: HTMLInputElement | null = null
+  let clientViewCounter = Number(localStorage.getItem('client_view_counter') || '0')
 
   const worldConfig = createWorldConfig(Math.floor(Math.random() * 1000000))
   const chunk = new ChunkManager(worldConfig.dimensions)
@@ -233,6 +234,33 @@ import { withVersion } from './dsl/commands'
 
       await fetchMaps()
 
+      ;(window as any).wgpuCaptureOnce = async () => {
+        const b: any = renderBackend
+        if (!b) return null
+        if (b.renderRGBNormalDepth) return await b.renderRGBNormalDepth()
+        if (b.renderer?.renderRGBNormalDepth) return await b.renderer.renderRGBNormalDepth()
+        return null
+      }
+
+      ;(window as any).wgpuCaptureView = () => {
+        const cam = renderBackend?.getCameraSnapshot()
+        if (cam) captureSystem.capture(cam)
+      }
+
+      ;(window as any).wgpuExportDataset = async () => {
+        const b: any = renderBackend
+        if (!b) return null
+        const fn = async (snap: any) => {
+          if (b.renderSnapshotRGBNormalDepth) return await b.renderSnapshotRGBNormalDepth(snap)
+          if (b.renderer?.renderSnapshotRGBNormalDepth) return await b.renderer.renderSnapshotRGBNormalDepth(snap)
+          if (b.renderRGBNormalDepth) return await b.renderRGBNormalDepth()
+          if (b.renderer?.renderRGBNormalDepth) return await b.renderer.renderRGBNormalDepth()
+          return { rgbBase64: '', normalBase64: '', depthBase64: '' }
+        }
+        const dev: GPUDevice = (b.renderer?.device || b.device)
+        return await captureSystem.exportDataset(dev, fn as any, canvasEl.width, canvasEl.height)
+      }
+
       document.addEventListener('click', closeContextMenu)
       const handlePointerLock = () => {
         isInGame = document.pointerLockElement === canvasEl
@@ -254,6 +282,62 @@ import { withVersion } from './dsl/commands'
       alert(`WebGPU init failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
     }
   })
+
+  async function captureRGBNormalDepth() {
+    const b: any = renderBackend
+    if (!b) return null
+    const snap = b.getCameraSnapshot?.()
+    if (snap && (b.renderSnapshotRGBNormalDepth || b.renderer?.renderSnapshotRGBNormalDepth)) {
+      return await (b.renderSnapshotRGBNormalDepth?.(snap) || b.renderer.renderSnapshotRGBNormalDepth(snap))
+    }
+    if (b.renderRGBNormalDepth || b.renderer?.renderRGBNormalDepth) {
+      return await (b.renderRGBNormalDepth?.() || b.renderer.renderRGBNormalDepth())
+    }
+    return null
+  }
+
+  async function saveFileViaFS(dir: any, name: string, dataUrl: string) {
+    const res = await fetch(dataUrl)
+    const blob = await res.blob()
+    const fh = await dir.getFileHandle(name, { create: true })
+    const w = await fh.createWritable()
+    await w.write(blob)
+    await w.close()
+  }
+
+  function downloadFallback(name: string, dataUrl: string) {
+    const a = document.createElement('a')
+    a.href = dataUrl
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  }
+
+  async function handleSaveCurrentView() {
+    const imgs = await captureRGBNormalDepth()
+    if (!imgs) return
+    clientViewCounter += 1
+    localStorage.setItem('client_view_counter', String(clientViewCounter))
+    const idx = String(clientViewCounter).padStart(3, '0')
+    const base = `view_${idx}`
+    const files = [
+      { name: `${base}_rgb.png`, data: imgs.rgbBase64 },
+      { name: `${base}_normal.png`, data: imgs.normalBase64 },
+      { name: `${base}_depth.png`, data: imgs.depthBase64 }
+    ]
+    try {
+      const picker: any = (window as any).showDirectoryPicker
+      if (picker) {
+        const root = await (window as any).showDirectoryPicker()
+        const clientDir = await root.getDirectoryHandle('client_views', { create: true })
+        for (const f of files) await saveFileViaFS(clientDir, f.name, f.data)
+        alert(`Saved 3 files to client_views/ as ${base}_*.png`)
+        return
+      }
+    } catch {}
+    for (const f of files) downloadFallback(`client_views_${f.name}`, f.data)
+  }
 </script>
 
 <svelte:window on:contextmenu={handleContextMenu} />
@@ -277,6 +361,7 @@ import { withVersion } from './dsl/commands'
   on:new={(event) => handleNewMap(event.detail?.copyFrom)}
   on:loadFile={handleLoadFromFile}
   on:refreshMaps={fetchMaps}
+  on:saveView={handleSaveCurrentView}
 />
 
 <style>

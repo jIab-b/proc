@@ -274,7 +274,7 @@ export class CaptureSystem {
     return this.exporting
   }
 
-  async exportDataset(device: GPUDevice, renderFn: (snapshot: CameraSnapshot) => Promise<string>, width: number, height: number) {
+  async exportDataset(device: GPUDevice, renderFn: (snapshot: CameraSnapshot) => Promise<{ rgbBase64: string; normalBase64: string; depthBase64: string }>, width: number, height: number) {
     if (this.exporting || this.views.length === 0) return null
 
     this.exporting = true
@@ -292,7 +292,7 @@ export class CaptureSystem {
 
       for (let i = 0; i < this.views.length; i++) {
         const view = this.views[i]!
-        const rgbBase64 = await renderFn(view.snapshot)
+        const imgs = await renderFn(view.snapshot)
         payload.views.push({
           id: view.id,
           index: i,
@@ -310,9 +310,9 @@ export class CaptureSystem {
           viewMatrix: Array.from(view.snapshot.viewMatrix),
           projectionMatrix: Array.from(view.snapshot.projectionMatrix),
           viewProjectionMatrix: Array.from(view.snapshot.viewProjectionMatrix),
-          rgbBase64,
-          depthBase64: null,
-          normalBase64: null
+          rgbBase64: imgs.rgbBase64,
+          depthBase64: imgs.depthBase64,
+          normalBase64: imgs.normalBase64
         })
       }
 

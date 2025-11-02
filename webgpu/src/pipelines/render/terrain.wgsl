@@ -19,6 +19,12 @@ struct VSOut {
   @location(3) textureIndex : f32
 }
 
+struct FSOut {
+  @location(0) color : vec4<f32>,
+  @location(1) normalOut : vec4<f32>,
+  @location(2) depthOut : vec4<f32>
+}
+
 @vertex
 fn vs_main(in_ : VSIn) -> VSOut {
   var out : VSOut;
@@ -31,7 +37,7 @@ fn vs_main(in_ : VSIn) -> VSOut {
 }
 
 @fragment
-fn fs_main(in_ : VSOut) -> @location(0) vec4<f32> {
+fn fs_main(in_ : VSOut) -> FSOut {
   let sunDir = normalize(vec3<f32>(-0.4, -0.85, -0.5));
   let sunColor = vec3<f32>(1.0, 0.97, 0.9);
   let n = normalize(in_.normal);
@@ -51,5 +57,10 @@ fn fs_main(in_ : VSOut) -> @location(0) vec4<f32> {
     surfaceColor = in_.color * (1.0 - surfaceAlpha) + sampleColor.rgb * surfaceAlpha;
   }
   let litColor = surfaceColor * (ambient + diffuse);
-  return vec4<f32>(litColor, surfaceAlpha);
+  var outv : FSOut;
+  outv.color = vec4<f32>(litColor, surfaceAlpha);
+  outv.normalOut = vec4<f32>(n * 0.5 + 0.5, 1.0);
+  let d = in_.position.z;
+  outv.depthOut = vec4<f32>(d, d, d, 1.0);
+  return outv;
 }

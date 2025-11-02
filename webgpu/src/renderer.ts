@@ -124,6 +124,17 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
     usage: GPUTextureUsage.RENDER_ATTACHMENT
   })
 
+  let normalTexture = device.createTexture({
+    size: { width: canvas.width || 1, height: canvas.height || 1, depthOrArrayLayers: 1 },
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+  })
+  let depthColorTexture = device.createTexture({
+    size: { width: canvas.width || 1, height: canvas.height || 1, depthOrArrayLayers: 1 },
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+  })
+
   function resize() {
     const rect = canvas.getBoundingClientRect()
     const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1))
@@ -135,6 +146,10 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
     context.configure({ device, format, alphaMode: 'opaque' })
     depthTexture.destroy()
     depthTexture = device.createTexture({ size: { width, height, depthOrArrayLayers: 1 }, format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT })
+    normalTexture.destroy()
+    normalTexture = device.createTexture({ size: { width, height, depthOrArrayLayers: 1 }, format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC })
+    depthColorTexture.destroy()
+    depthColorTexture = device.createTexture({ size: { width, height, depthOrArrayLayers: 1 }, format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC })
     if (overlayCanvas) {
       overlayCanvas.width = width
       overlayCanvas.height = height
@@ -198,7 +213,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         ]
       }]
     },
-    fragment: { module: shaderModule, entryPoint: 'fs_main', targets: [{ format }] },
+    fragment: { module: shaderModule, entryPoint: 'fs_main', targets: [{ format }, { format: 'rgba8unorm' }, { format: 'rgba8unorm' }] },
     primitive: { topology: 'triangle-list', cullMode: 'back' },
     depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' }
   })
@@ -248,21 +263,17 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
     fragment: {
       module: planeShaderModule,
       entryPoint: 'fs_main',
-      targets: [{
-        format,
-        blend: {
-          color: {
-            srcFactor: 'src-alpha',
-            dstFactor: 'one-minus-src-alpha',
-            operation: 'add'
-          },
-          alpha: {
-            srcFactor: 'one',
-            dstFactor: 'one-minus-src-alpha',
-            operation: 'add'
+      targets: [
+        {
+          format,
+          blend: {
+            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }
           }
-        }
-      }]
+        },
+        { format: 'rgba8unorm' },
+        { format: 'rgba8unorm' }
+      ]
     },
     primitive: { topology: 'triangle-list', cullMode: 'none' },
     depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' }
@@ -2410,7 +2421,11 @@ VALIDATION RULES (MUST follow exactly):
     const colorView = context.getCurrentTexture().createView()
     const depthView = depthTexture.createView()
     const pass = encoder.beginRenderPass({
-      colorAttachments: [{ view: colorView, clearValue: { r: 0.53, g: 0.81, b: 0.92, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+      colorAttachments: [
+        { view: colorView, clearValue: { r: 0.53, g: 0.81, b: 0.92, a: 1 }, loadOp: 'clear', storeOp: 'store' },
+        { view: normalTexture.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' },
+        { view: depthColorTexture.createView(), clearValue: { r: 1, g: 1, b: 1, a: 1 }, loadOp: 'clear', storeOp: 'store' }
+      ],
       depthStencilAttachment: { view: depthView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' }
     })
     if (vertexBuffer && vertexCount > 0) {
@@ -2471,6 +2486,75 @@ VALIDATION RULES (MUST follow exactly):
 
   rafHandle = requestAnimationFrame(frame)
 
+  async function readRGBA8TextureToBase64(tex: GPUTexture, w: number, h: number) {
+    const bpp = 4
+    const bytesPerRow = Math.ceil((w * bpp) / 256) * 256
+    const size = bytesPerRow * h
+    const buffer = device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })
+    const encoder = device.createCommandEncoder()
+    encoder.copyTextureToBuffer({ texture: tex }, { buffer, bytesPerRow }, { width: w, height: h, depthOrArrayLayers: 1 })
+    device.queue.submit([encoder.finish()])
+    await buffer.mapAsync(1)
+    const mapped = new Uint8Array(buffer.getMappedRange())
+    const row = w * bpp
+    const pixels = new Uint8ClampedArray(w * h * 4)
+    for (let y = 0; y < h; y++) {
+      const srcOff = y * bytesPerRow
+      const dstOff = y * row
+      pixels.set(mapped.subarray(srcOff, srcOff + row), dstOff)
+    }
+    buffer.unmap()
+    const c = document.createElement('canvas')
+    c.width = w
+    c.height = h
+    const ctx = c.getContext('2d')!
+    const img = new ImageData(pixels, w, h)
+    ctx.putImageData(img, 0, 0)
+    return c.toDataURL('image/png')
+  }
+
+  async function renderRGBNormalDepth() {
+    await device.queue.onSubmittedWorkDone()
+    const w = canvas.width || 1
+    const h = canvas.height || 1
+    const rgbBase64 = (canvas as HTMLCanvasElement).toDataURL('image/png')
+    const normalBase64 = await readRGBA8TextureToBase64(normalTexture, w, h)
+    const depthBase64 = await readRGBA8TextureToBase64(depthColorTexture, w, h)
+    return { rgbBase64, normalBase64, depthBase64 }
+  }
+
+  async function renderSnapshotRGBNormalDepth(snapshot: CameraSnapshot) {
+    const prev = latestCamera?.viewProjectionMatrix ? new Float32Array(latestCamera.viewProjectionMatrix) : null
+    device.queue.writeBuffer(cameraBuffer, 0, snapshot.viewProjectionMatrix)
+    const encoder = device.createCommandEncoder()
+    const colorView = context.getCurrentTexture().createView()
+    const depthView = depthTexture.createView()
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: colorView, clearValue: { r: 0.53, g: 0.81, b: 0.92, a: 1 }, loadOp: 'clear', storeOp: 'store' },
+        { view: normalTexture.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' },
+        { view: depthColorTexture.createView(), clearValue: { r: 1, g: 1, b: 1, a: 1 }, loadOp: 'clear', storeOp: 'store' }
+      ],
+      depthStencilAttachment: { view: depthView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' }
+    })
+    if (vertexBuffer && vertexCount > 0) {
+      pass.setPipeline(pipeline)
+      pass.setBindGroup(0, renderBindGroup)
+      pass.setVertexBuffer(0, vertexBuffer)
+      pass.draw(vertexCount, 1, 0, 0)
+    }
+    pass.end()
+    device.queue.submit([encoder.finish()])
+    await device.queue.onSubmittedWorkDone()
+    const w = canvas.width || 1
+    const h = canvas.height || 1
+    const rgbBase64 = (canvas as HTMLCanvasElement).toDataURL('image/png')
+    const normalBase64 = await readRGBA8TextureToBase64(normalTexture, w, h)
+    const depthBase64 = await readRGBA8TextureToBase64(depthColorTexture, w, h)
+    if (prev) device.queue.writeBuffer(cameraBuffer, 0, prev)
+    return { rgbBase64, normalBase64, depthBase64 }
+  }
+
   return {
     device,
     getCamera: () => latestCamera,
@@ -2528,6 +2612,8 @@ VALIDATION RULES (MUST follow exactly):
 
       meshDirty = true
     },
+    renderRGBNormalDepth,
+    renderSnapshotRGBNormalDepth,
     destroy: () => {
       if (rafHandle !== null) cancelAnimationFrame(rafHandle)
       stopWorld()

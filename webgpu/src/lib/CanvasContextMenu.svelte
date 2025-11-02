@@ -17,6 +17,7 @@
     new: { copyFrom?: number }
     loadFile: void
     refreshMaps: void
+    saveView: void
   }>()
 
   export let visible = false
@@ -90,55 +91,9 @@
 
     <button class="context-menu-item" on:click={() => dispatch('loadFile')}>Load From File</button>
 
-    <div class="context-divider"></div>
-    <div class="context-section">
-      <label>Interaction Mode</label>
-      <select bind:value={$interactionMode}>
-        <option value="block">Block Placement</option>
-        <option value="highlight">Highlight Select</option>
-      </select>
-    </div>
+    <button class="context-menu-item" on:click={() => dispatch('saveView')}>Save Current View</button>
 
-    {#if $interactionMode === 'highlight'}
-      <div class="context-section">
-        <label>Highlight Shape</label>
-        <select bind:value={$highlightShape}>
-          <option value="cube">Cube</option>
-          <option value="sphere">Sphere</option>
-          <option value="ellipsoid">Ellipsoid</option>
-          <option value="plane">Plane (Terrain Base)</option>
-        </select>
-      </div>
-
-      {#if $highlightShape === 'ellipsoid'}
-        <div class="context-section">
-          <label>Radius X: {$ellipsoidRadiusX}</label>
-          <input type="range" min="1" max="32" step="0.5" bind:value={$ellipsoidRadiusX} />
-        </div>
-        <div class="context-section">
-          <label>Radius Y: {$ellipsoidRadiusY}</label>
-          <input type="range" min="1" max="32" step="0.5" bind:value={$ellipsoidRadiusY} />
-        </div>
-        <div class="context-section">
-          <label>Radius Z: {$ellipsoidRadiusZ}</label>
-          <input type="range" min="1" max="32" step="0.5" bind:value={$ellipsoidRadiusZ} />
-        </div>
-      {:else if $highlightShape === 'plane'}
-        <div class="context-section">
-          <label>Plane Size X: {$planeSizeX}</label>
-          <input type="range" min="4" max="32" step="1" bind:value={$planeSizeX} />
-        </div>
-        <div class="context-section">
-          <label>Plane Size Z: {$planeSizeZ}</label>
-          <input type="range" min="4" max="32" step="1" bind:value={$planeSizeZ} />
-        </div>
-      {:else}
-        <div class="context-section">
-          <label>Radius: {$highlightRadius}</label>
-          <input type="range" min="1" max="16" step="1" bind:value={$highlightRadius} />
-        </div>
-      {/if}
-    {/if}
+    
   </div>
 {/if}
 
