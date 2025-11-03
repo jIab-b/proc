@@ -319,13 +319,30 @@ def train(args):
                 save_rgb(save_path, rgb[0])
                 types = torch.argmax(mat_logits, dim=-1)
                 present = (a_mixed > args.occ_cull_thresh)
-                types = torch.where(present, types, torch.zeros_like(types))
-                nz = torch.nonzero(types != 0, as_tuple=False)
+                types_masked = torch.where(present, types, torch.zeros_like(types))
+                nz = torch.nonzero(types_masked != 0, as_tuple=False)
+                blocks: list
                 if nz.numel() > 0:
-                    tvals = types[nz[:, 0], nz[:, 1], nz[:, 2]].unsqueeze(1)
+                    tvals = types_masked[nz[:, 0], nz[:, 1], nz[:, 2]].unsqueeze(1)
                     blocks = torch.cat([nz, tvals], dim=1).cpu().tolist()
                 else:
                     blocks = []
+                    if args.export_force_nonempty:
+                        flat = a_mixed.reshape(-1)
+                        k = int(max(1, args.export_topk))
+                        k = min(k, flat.numel())
+                        vals, idxs = torch.topk(flat, k, largest=True)
+                        xi = (idxs // (grid[1] * grid[2])).to(torch.long)
+                        yi = ((idxs // grid[2]) % grid[1]).to(torch.long)
+                        zi = (idxs % grid[2]).to(torch.long)
+                        tsel = types[xi, yi, zi].unsqueeze(1)
+                        keep = (tsel.squeeze(1) != 0)
+                        xi, yi, zi, tsel = xi[keep], yi[keep], zi[keep], tsel[keep]
+                        blocks = torch.stack([xi, yi, zi], dim=1)
+                        if blocks.numel() > 0:
+                            blocks = torch.cat([blocks, tsel], dim=1).cpu().tolist()
+                        else:
+                            blocks = []
                 j = {
                     "size": [int(grid[0]), int(grid[1]), int(grid[2])],
                     "blocks": blocks,
@@ -352,6 +369,8 @@ def build_argparser():
     p.add_argument("--alpha_start", type=float, default=0.0)
     p.add_argument("--alpha_end", type=float, default=1.0)
     p.add_argument("--occ_cull_thresh", type=float, default=0.05)
+    p.add_argument("--export_force_nonempty", action="store_true")
+    p.add_argument("--export_topk", type=int, default=512)
     p.add_argument("--occ_reg", type=float, default=1e-3)
     p.add_argument("--tv_reg", type=float, default=2e-3)
     p.add_argument("--dist_weight", type=float, default=0.0)

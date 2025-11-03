@@ -209,12 +209,12 @@ def sync_outputs(local_dir: str = "./out_local"):
     gpu=GPU,
     timeout=86400,
 )
-def run_smoke_remote() -> str:
+def run_smoke_remote(script: str = "run_smoke") -> str:
     import os, subprocess
     from pathlib import Path
     os.chdir("/workspace")
     Path("/workspace/out_local").mkdir(parents=True, exist_ok=True)
-    cmd = "source /workspace/venv/bin/activate && export HF_HUB_OFFLINE=1 && python -m model_stuff.run_smoke"
+    cmd = f"source /workspace/venv/bin/activate && export HF_HUB_OFFLINE=1 && python -m model_stuff.{script}"
     print("Running:", cmd)
     subprocess.run(cmd, shell=True, check=True, executable="/bin/bash")
     return "/workspace/out_local"
@@ -241,9 +241,15 @@ def prefetch_hf_models() -> str:
 
 
 @app.local_entrypoint()
-def run_smoke():
+def run_model():
+    
+
+    script = "run_quick"
+
     _sync_workspace_dirs(["model_stuff", "third_party"])
     path = prefetch_hf_models.remote()
     print(f"HF cached at {path}")
-    run_smoke_remote.remote()
+    run_smoke_remote.remote(script)
     sync_outputs(local_dir="./out_local")
+
+

@@ -25,6 +25,8 @@ def main():
     args.alpha_start = 0.0
     args.alpha_end = 1.0
     args.occ_cull_thresh = 0.05
+    args.export_force_nonempty = True
+    args.export_topk = 256
     args.occ_reg = 1e-3
     args.tv_reg = 2e-3
     args.cam_radius_scale = 2.0
