@@ -1,11 +1,8 @@
-# modal_app.py
-import os, signal, subprocess, json, shutil
-import tempfile
+import os, subprocess, shutil
 from pathlib import Path
-from datetime import datetime
 from typing import Optional, List
 import modal
-from modal import Image, Volume, gpu
+from modal import Image, Volume
 import argparse
 import zipfile
 import io
@@ -62,7 +59,7 @@ MODEL_REPOS = [
 ]
 
 MODEL_ROOT = Path("/workspace/models")
-DEFAULT_SYNC_DIRS = ["model_stuff", "datasets", "maps", "third_party"]
+DEFAULT_SYNC_DIRS = ["model_stuff", "third_party"]
 
 def compute_hashes(dir_path: str) -> dict:
     if not os.path.exists(dir_path):
@@ -83,62 +80,6 @@ GPU      = {"L4": "L4", "L40S": "L40S", "A100": "A100-40GB", "H100": "H100"}.get
 
 
 
-
-
-
-@app.function(
-    image=image,
-    volumes={"/workspace": splats_wspace},
-    gpu=GPU,
-)
-def run_sdxl_lightning_infer(
-    prompt: str = "A girl smiling",
-    num_inference_steps: int = 4,
-    guidance_scale: float = 0,
-    output_filename: str = "output.png"
-) -> str:
-    """Run SDXL Lightning inference with 4-step UNet and save output to /workspace/out_local."""
-    import sys
-    sys.path.insert(0, "/workspace/model_stuff")
-    from infer import sdxl_lightning_infer
-
-    return sdxl_lightning_infer(
-        prompt=prompt,
-        num_inference_steps=num_inference_steps,
-        guidance_scale=guidance_scale,
-        output_filename=output_filename,
-        output_dir="/workspace/out_local"
-    )
-
-
-@app.local_entrypoint()
-def run_infer(
-    prompt: str = "A girl smiling",
-    num_inference_steps: int = 4,
-    guidance_scale: float = 0,
-    output_filename: str = "output.png",
-    local_dir: str = "./out_local"
-):
-    """Run SDXL Lightning inference on Modal and sync outputs to local directory."""
-    print(f"Starting SDXL Lightning inference with prompt: '{prompt}'")
-
-    # Upload model_stuff to Modal workspace
-    print("Uploading model_stuff to workspace...")
-    sync_workspace(["model_stuff"])
-
-    # Run inference on Modal
-    result = run_sdxl_lightning_infer.remote(
-        prompt=prompt,
-        num_inference_steps=num_inference_steps,
-        guidance_scale=guidance_scale,
-        output_filename=output_filename
-    )
-    print(f"Inference completed: {result}")
-
-    # Sync outputs to local directory
-    print(f"Syncing outputs to {local_dir}...")
-    sync_outputs(local_dir=local_dir)
-    print("Done!")
 
 
 def _sync_workspace_dirs(dirs_to_sync):
@@ -262,79 +203,47 @@ def sync_outputs(local_dir: str = "./out_local"):
     print(f"Downloaded to {local_path}")
 
 
-# --- SDS training on Modal (minimal) ---
-
 @app.function(
     image=image,
     volumes={"/workspace": splats_wspace},
     gpu=GPU,
     timeout=86400,
 )
-def run_sds_train(train_args: List[str]) -> str:
-    """
-    Minimal SDS training runner:
-    - Creates venv in /workspace/venv
-    - Installs requirements.txt with uv
-    - Installs local third_party/nvdiffrast
-    - Runs `python -m model_stuff.train_sds_final ...`
-    - Returns the timestamped run directory path
-    """
-    import os, subprocess, sys, shlex
+def run_smoke_remote() -> str:
+    import os, subprocess
     from pathlib import Path
+    os.chdir("/workspace")
+    Path("/workspace/out_local").mkdir(parents=True, exist_ok=True)
+    cmd = "source /workspace/venv/bin/activate && export HF_HUB_OFFLINE=1 && python -m model_stuff.run_smoke"
+    print("Running:", cmd)
+    subprocess.run(cmd, shell=True, check=True, executable="/bin/bash")
+    return "/workspace/out_local"
 
+
+@app.function(
+    image=image,
+    volumes={"/workspace": splats_wspace},
+    timeout=86400,
+)
+def prefetch_hf_models() -> str:
+    import os
+    from huggingface_hub import snapshot_download
     os.environ.setdefault("HF_HOME", "/workspace/hf")
     os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/workspace/hf")
     Path("/workspace/hf").mkdir(parents=True, exist_ok=True)
-    Path("/workspace/out_local").mkdir(parents=True, exist_ok=True)
-
-    # Change to workspace and run training with venv activated
-    os.chdir("/workspace")
-    quoted_args = ' '.join(shlex.quote(arg) for arg in train_args)
-    cmd = f"source /workspace/venv/bin/activate && python -m model_stuff.train_sds_final {quoted_args}"
-    print("Running:", cmd)
-    subprocess.run(cmd, shell=True, check=True, executable="/bin/bash")
-
-    # Identify latest timestamped run dir to return
-    runs = sorted(Path("/workspace/out_local/sds_training").glob("*/"), key=lambda p: p.name)
-    return str(runs[-1]) if runs else "/workspace/out_local/sds_training"
+    for repo, alias in MODEL_REPOS:
+        target = f"/workspace/hf/{alias}"
+        Path(target).mkdir(parents=True, exist_ok=True)
+        print(f"Prefetching {repo} -> {target}")
+        snapshot_download(repo_id=repo, local_dir=target, local_dir_use_symlinks=False)
+    splats_wspace.commit()
+    return "/workspace/hf"
 
 
 @app.local_entrypoint()
-def run_train(
-    prompt: str = "a stone tower",
-    dataset_id: int = 1,
-    init_mode: str = "ground_plane",
-    preset: str = "small",
-    steps: int = 60,
-    image_every: int = 5,
-    save_map_every: int = 20,
-    train_h: int = 160,
-    train_w: int = 160,
-    max_blocks: int = 20000,
-    local_dir: str = "./out_local",
-):
-    """Sync code, run SDS training on Modal, then sync out_local locally."""
-    # Sync essentials, including third_party (nvdiffrast)
-    sync_workspace(["model_stuff"])
-
-    # Build train args list (ASCII hyphens only)
-    args = [
-        "--prompt", prompt,
-        "--dataset_id", str(dataset_id),
-        "--init_mode", init_mode,
-        "--preset", preset,
-        "--steps", str(steps),
-        "--image_every", str(image_every),
-        "--save_map_every", str(save_map_every),
-        "--train_h", str(train_h),
-        "--train_w", str(train_w),
-        "--max_blocks", str(max_blocks),
-        "--output_dir", "/workspace/out_local/sds_training",
-    ]
-
-    run_dir = run_sds_train.remote(args)
-    print(f"Remote run dir: {run_dir}")
-
-    # Sync out_local back to local filesystem
-    sync_outputs(local_dir=local_dir)
-    print("Training outputs synced.")
+def run_smoke():
+    _sync_workspace_dirs(["model_stuff", "third_party"])
+    path = prefetch_hf_models.remote()
+    print(f"HF cached at {path}")
+    run_smoke_remote.remote()
+    sync_outputs(local_dir="./out_local")
