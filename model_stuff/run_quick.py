@@ -34,6 +34,7 @@ def main():
     args.world_scale = 2.0
     args.save_every = 100
     args.log_every = 20
+    args.preview_every = 50
     args.out_dir = "./out_local/dreamcraft_quick"
     args.device = None
     args.seed = 42

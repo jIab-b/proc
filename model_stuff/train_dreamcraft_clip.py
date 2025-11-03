@@ -66,6 +66,11 @@ class DreamCraftImplicitModel(nn.Module):
         self.air_mlp = MLP(in_dim, 1, hidden_dim=hidden_dim, depth=depth)
         self.solid_mlp = MLP(in_dim, self.num_materials, hidden_dim=hidden_dim, depth=depth)
         self.register_buffer("coord_grid", self._make_coord_grid(self.grid_size, device), persistent=False)
+        with torch.no_grad():
+            if isinstance(self.air_mlp.net[-1], nn.Linear):
+                nn.init.constant_(self.air_mlp.net[-1].bias, -1.0)
+            if isinstance(self.solid_mlp.net[-1], nn.Linear):
+                nn.init.zeros_(self.solid_mlp.net[-1].bias)
 
         with torch.no_grad():
             # Bias air logits toward empty space initially.
@@ -208,26 +213,27 @@ class SDXLSDS:
         noise_uncond, noise_text = noise_pred.chunk(2, dim=0)
         noise_guided = noise_uncond + self.guidance_scale * (noise_text - noise_uncond)
         noise_guided = noise_guided.detach()
-        grad = noise_guided - noise
-        grad = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
-        grad_norm = torch.linalg.norm(grad.float())
+        raw_grad = noise_guided - noise
+        raw_grad = torch.nan_to_num(raw_grad, nan=0.0, posinf=0.0, neginf=0.0)
+        raw_norm = torch.linalg.norm(raw_grad.float())
         stats = {
-            "grad_norm": float(grad_norm.cpu()) if torch.isfinite(grad_norm) else float("nan"),
+            "grad_raw_norm": float(raw_norm.cpu()) if torch.isfinite(raw_norm) else float("nan"),
             "grad_scale": self.grad_scale,
             "clipped": False,
             "normalized": bool(self.normalize_grad),
-            "skipped": False,
+            "applied": False,
         }
-        if not torch.isfinite(grad_norm) or grad_norm.item() < 1e-6:
-            stats["skipped"] = True
+        if not torch.isfinite(raw_norm) or raw_norm.item() < 1e-12:
             return stats
+        grad = raw_grad
         if self.normalize_grad:
-            grad = grad / grad_norm.clamp(min=1e-6)
+            grad = grad / raw_norm.clamp(min=1e-6)
         if self.grad_clip is not None and self.grad_clip > 0.0:
             grad = torch.clamp(grad, -self.grad_clip, self.grad_clip)
             stats["clipped"] = True
         grad = grad * self.grad_scale
         xt.backward(gradient=grad, retain_graph=False)
+        stats["applied"] = True
         return stats
 
 
@@ -310,6 +316,27 @@ def save_rgb(path, rgb_chw):
         Image.fromarray(arr).save(path)
     except Exception as e:
         torch.save(rgb_chw.cpu(), str(path) + ".pt")
+
+
+def save_slice(path, volume, axis=1):
+    try:
+        from PIL import Image
+        vol = volume.detach().cpu()
+        axes = {0, 1, 2}
+        if axis not in axes:
+            axis = 1
+        idx = vol.shape[axis] // 2
+        if axis == 0:
+            slice_ = vol[idx, :, :]
+        elif axis == 1:
+            slice_ = vol[:, idx, :]
+        else:
+            slice_ = vol[:, :, idx]
+        slice_ = slice_.clamp(0.0, 1.0).numpy()
+        slice_img = (slice_ * 255.0).astype("uint8")
+        Image.fromarray(slice_img).save(path)
+    except Exception:
+        torch.save(volume.cpu(), str(path) + ".pt")
 
 
 def load_adjacency_patterns(config_path: str, materials: int, device: torch.device) -> List[AdjacencyPattern]:
@@ -434,6 +461,10 @@ def train(args):
             clip_text_feat = clip_text_feat / clip_text_feat.norm(dim=-1, keepdim=True)
 
     opt = torch.optim.Adam([{"params": model.parameters(), "lr": args.lr}])
+
+    preview_dir = out_dir / "previews"
+    if args.preview_every > 0:
+        preview_dir.mkdir(parents=True, exist_ok=True)
 
     log_path = out_dir / "log.txt"
     with log_path.open("w", encoding="utf-8") as log_file:
@@ -605,6 +636,10 @@ def train(args):
 
             opt.step()
 
+            if args.preview_every > 0 and (step % args.preview_every == 0 or step == 1):
+                save_rgb(preview_dir / f"step_{step:05d}_rgb.png", rgb[0])
+                save_slice(preview_dir / f"step_{step:05d}_occ.png", a_mixed)
+
             if step % args.log_every == 0 or step == 1:
                 print(
                     f"step {step}/{args.steps} "
@@ -613,6 +648,7 @@ def train(args):
                     f"tv={step_record['tv']:.4f} "
                     f"dist={step_record['dist_loss']:.4f} "
                     f"adj={step_record['adj_loss']:.4f} "
+                    f"clip={step_record['clip_loss']:.4f} "
                     f"alpha_air={alpha_air:.2f} "
                     f"alpha_solid={alpha_solid:.2f}"
                 )
@@ -701,7 +737,7 @@ def build_argparser():
     p.add_argument("--air_alpha_end", type=float, default=None)
     p.add_argument("--solid_alpha_start", type=float, default=None)
     p.add_argument("--solid_alpha_end", type=float, default=None)
-    p.add_argument("--occ_cull_thresh", type=float, default=0.2)
+    p.add_argument("--occ_cull_thresh", type=float, default=0.05)
     p.add_argument("--export_force_nonempty", action="store_true")
     p.add_argument("--export_topk", type=int, default=512)
     p.add_argument("--occ_reg", type=float, default=1e-3)
@@ -715,6 +751,7 @@ def build_argparser():
     p.add_argument("--world_scale", type=float, default=2.0)
     p.add_argument("--save_every", type=int, default=20)
     p.add_argument("--log_every", type=int, default=10)
+    p.add_argument("--preview_every", type=int, default=10)
     p.add_argument("--out_dir", type=str, default="./out_local/dreamcraft_sdxl")
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--seed", type=int, default=42)

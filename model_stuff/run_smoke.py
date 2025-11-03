@@ -36,6 +36,7 @@ def main():
     args.world_scale = 2.0
     args.save_every = 60
     args.log_every = 10
+    args.preview_every = 10
     args.out_dir = "./out_local/dreamcraft_smoke"
     args.device = None
     args.seed = 42
