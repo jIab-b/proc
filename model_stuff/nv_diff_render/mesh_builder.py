@@ -153,6 +153,7 @@ def build_mesh_from_grid(
     hard_assignment: bool = False,
     occupancy_probs: Optional[torch.Tensor] = None,
     palette: Optional[torch.Tensor] = None,
+    material_probs: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Build mesh from dense voxel grid.
@@ -190,7 +191,9 @@ def build_mesh_from_grid(
             }
         )
 
-    if hard_assignment:
+    if material_probs is not None:
+        mat_probs_full = material_probs.to(device=device, dtype=torch.float32)
+    elif hard_assignment:
         mat_probs_full = F.gumbel_softmax(material_logits, tau=temperature, hard=True, dim=-1)
     else:
         mat_probs_full = F.softmax(material_logits / temperature, dim=-1)

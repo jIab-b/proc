@@ -56,6 +56,7 @@ image = (
 MODEL_REPOS = [
     ("stabilityai/stable-diffusion-xl-base-1.0", "sdxl-base"),
     ("stabilityai/stable-diffusion-xl-refiner-1.0", "sdxl-refiner"),
+    ("laion/CLIP-ViT-B-32-laion2B-s34B-b79K", "openclip-vit-b-32"),
 ]
 
 MODEL_ROOT = Path("/workspace/models")
@@ -240,16 +241,27 @@ def prefetch_hf_models() -> str:
     return "/workspace/hf"
 
 
+@app.function(
+    image=image,
+    volumes={"/workspace": splats_wspace},
+    timeout=86400,
+)
+def clear_out():
+    import os, subprocess
+    os.chdir("/workspace")
+    if os.path.exists("/workspace/out_local"):
+        shutil.rmtree("/workspace/out_local")
+    os.makedirs("/workspace/out_local", exist_ok=True)
+    
+
 @app.local_entrypoint()
 def run_model():
     
 
-    script = "run_quick"
-
-    _sync_workspace_dirs(["model_stuff", "third_party"])
+    script = "run_smoke"
+    #script = "run_quick"
+    _sync_workspace_dirs(["model_stuff"])
     path = prefetch_hf_models.remote()
     print(f"HF cached at {path}")
     run_smoke_remote.remote(script)
     sync_outputs(local_dir="./out_local")
-
-

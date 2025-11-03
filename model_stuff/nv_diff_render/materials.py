@@ -9,9 +9,16 @@ References:
 import torch
 from typing import List, Tuple
 
+from ..palette import (
+    BLOCK_NAMES,
+    NAME_TO_BLOCK,
+    get_default_densities,
+    get_palette_tensor,
+)
+
 
 # Material names matching frontend BlockType enum
-MATERIALS = ["Air", "Grass", "Dirt", "Stone", "Plank", "Snow", "Sand", "Water"]
+MATERIALS = [BLOCK_NAMES[i] for i in range(len(BLOCK_NAMES))]
 
 
 class FaceIndex:
@@ -81,91 +88,28 @@ FACE_INDICES = [0, 1, 2, 0, 2, 3]
 
 def get_material_palette() -> torch.Tensor:
     """
-    Get material color palette matching chunks.ts:163-200.
-
-    Returns:
-        Tensor of shape (M, 3, 3) where:
-            - M = 8 materials
-            - First dim = material index
-            - Second dim = face type (0=top, 1=bottom, 2=side)
-            - Third dim = RGB
+    Get material color palette matching webgpu/src/core.ts blockPalette.
+    Returns tensor of shape (M, 3, 3).
     """
-    # Exact values from src/chunks.ts blockPalette
-    palette = [
-        # Air (index 0, not rendered)
-        [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-
-        # Grass (index 1)
-        [[0.34, 0.68, 0.36],  # top
-         [0.40, 0.30, 0.16],  # bottom
-         [0.45, 0.58, 0.30]], # side
-
-        # Dirt (index 2)
-        [[0.42, 0.32, 0.20],  # top
-         [0.38, 0.26, 0.16],  # bottom
-         [0.40, 0.30, 0.18]], # side
-
-        # Stone (index 3)
-        [[0.58, 0.60, 0.64],  # top
-         [0.55, 0.57, 0.60],  # bottom
-         [0.56, 0.58, 0.62]], # side
-
-        # Plank (index 4)
-        [[0.78, 0.68, 0.50],  # top
-         [0.72, 0.60, 0.42],  # bottom
-         [0.74, 0.63, 0.45]], # side
-
-        # Snow (index 5)
-        [[0.92, 0.94, 0.96],  # top
-         [0.90, 0.92, 0.94],  # bottom
-         [0.88, 0.90, 0.93]], # side
-
-        # Sand (index 6)
-        [[0.88, 0.82, 0.60],  # top
-         [0.86, 0.78, 0.56],  # bottom
-         [0.87, 0.80, 0.58]], # side
-
-        # Water (index 7)
-        [[0.22, 0.40, 0.66],  # top
-         [0.20, 0.34, 0.60],  # bottom
-         [0.20, 0.38, 0.64]], # side
-    ]
-
-    return torch.tensor(palette, dtype=torch.float32)
+    return get_palette_tensor()
 
 
 def get_material_densities() -> torch.Tensor:
     """
     Get material densities for volumetric rendering compatibility.
-
-    Returns:
-        Tensor of shape (M,) with density values
     """
-    # From model_stuff/materials.py:14-15
-    densities = [
-        0.0,   # Air
-        20.0,  # Grass
-        22.0,  # Dirt
-        30.0,  # Stone
-        15.0,  # Plank
-        10.0,  # Snow
-        18.0,  # Sand
-        2.0    # Water
-    ]
-
-    return torch.tensor(densities, dtype=torch.float32)
+    return get_default_densities()
 
 
 def material_name_to_index(name: str) -> int:
     """Convert material name to index."""
-    try:
-        return MATERIALS.index(name)
-    except ValueError:
-        raise ValueError(f"Unknown material: {name}. Valid: {MATERIALS}")
+    if name not in NAME_TO_BLOCK:
+        raise ValueError(f"Unknown material: {name}. Valid: {list(NAME_TO_BLOCK.keys())}")
+    return int(NAME_TO_BLOCK[name])
 
 
 def material_index_to_name(index: int) -> str:
     """Convert material index to name."""
-    if 0 <= index < len(MATERIALS):
-        return MATERIALS[index]
-    raise ValueError(f"Invalid material index: {index}. Range: [0, {len(MATERIALS)-1}]")
+    if index in BLOCK_NAMES:
+        return BLOCK_NAMES[index]
+    raise ValueError(f"Invalid material index: {index}. Range: [0, {len(BLOCK_NAMES)-1}]")

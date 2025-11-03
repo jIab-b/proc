@@ -238,6 +238,7 @@ class DifferentiableBlockRenderer(nn.Module):
         img_w: int,
         occupancy_probs: torch.Tensor | None = None,
         palette: torch.Tensor | None = None,
+        material_probs: torch.Tensor | None = None,
         **kwargs
     ) -> torch.Tensor:
         """
@@ -277,6 +278,7 @@ class DifferentiableBlockRenderer(nn.Module):
             hard_assignment=kwargs.get('hard_materials', False),
             occupancy_probs=occupancy_probs,
             palette=palette,
+            material_probs=material_probs,
         )
 
         if vertices.shape[0] == 0:
