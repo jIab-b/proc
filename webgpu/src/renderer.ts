@@ -1203,6 +1203,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         centerNodeSelected = false
         ellipsoidSelectedNode.set(null)
         lastCameraPos = null
+        lastOrbitTarget = null
       }
       if (get(ellipsoidEditAxis)) {
         ellipsoidEditAxis.set(null)
@@ -1213,6 +1214,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
 
   // Track last camera position for ellipsoid editing
   let lastCameraPos: Vec3 | null = null
+  let lastOrbitTarget: Vec3 | null = null
 
   // Track ellipsoid interaction modes
   let ellipsoidMovementActive = false // center translation along view axis while right-click held
@@ -1513,8 +1515,12 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         ellipsoidEditAxis.set(null)
         activatedNodes.add(node)
 
-        const overviewPos = getCameraWorldPosition()
-        lastCameraPos = [...overviewPos] as Vec3
+        // Initialize tracking variables for both camera modes
+        if (cameraMode === 'player') {
+          lastCameraPos = [...cameraPos] as Vec3
+        } else {
+          lastOrbitTarget = [...orbitTarget] as Vec3
+        }
 
       } else {
         // Side nodes: use node adjust mode for resizing
@@ -1550,6 +1556,88 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
 
     menu.appendChild(moveOption)
 
+    // Change Shape option
+    const shapeOption = document.createElement('div')
+    shapeOption.textContent = 'Change Shape'
+    shapeOption.style.padding = '8px 16px'
+    shapeOption.style.cursor = 'pointer'
+    shapeOption.style.color = '#fff'
+    shapeOption.style.fontSize = '14px'
+    shapeOption.style.transition = 'background 0.1s'
+    shapeOption.onmouseenter = () => shapeOption.style.background = 'rgba(255, 255, 255, 0.1)'
+    shapeOption.onmouseleave = () => shapeOption.style.background = 'transparent'
+
+    // Create submenu
+    const shapeSubmenu = document.createElement('div')
+    shapeSubmenu.style.display = 'none'
+    shapeSubmenu.style.position = 'absolute'
+    shapeSubmenu.style.left = '100%'
+    shapeSubmenu.style.top = '0'
+    shapeSubmenu.style.background = 'rgba(30, 30, 40, 0.95)'
+    shapeSubmenu.style.border = '1px solid rgba(255, 255, 255, 0.2)'
+    shapeSubmenu.style.borderRadius = '4px'
+    shapeSubmenu.style.padding = '4px 0'
+    shapeSubmenu.style.minWidth = '120px'
+    shapeSubmenu.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.3)'
+
+    const shapes = [
+      { value: 'sphere', label: 'Sphere' },
+      { value: 'cube', label: 'Cube' },
+      { value: 'ellipsoid', label: 'Ellipsoid' },
+      { value: 'plane', label: 'Plane' }
+    ]
+
+    shapes.forEach(shape => {
+      const shapeItem = document.createElement('div')
+      shapeItem.textContent = shape.label
+      shapeItem.style.padding = '8px 16px'
+      shapeItem.style.cursor = 'pointer'
+      shapeItem.style.color = '#fff'
+      shapeItem.style.fontSize = '14px'
+      shapeItem.style.transition = 'background 0.1s'
+      shapeItem.onmouseenter = () => shapeItem.style.background = 'rgba(255, 255, 255, 0.1)'
+      shapeItem.onmouseleave = () => shapeItem.style.background = 'transparent'
+      shapeItem.onclick = () => {
+        menu.remove()
+        const currentSelection = get(highlightSelectionStore)
+        if (currentSelection) {
+          const newSelection: HighlightSelection = {
+            ...currentSelection,
+            shape: shape.value as any
+          }
+          highlightShape.set(shape.value as any)
+          highlightSelectionStore.set(newSelection)
+          emitHighlight(newSelection, 'renderer.highlight.changeShape')
+        }
+      }
+      shapeSubmenu.appendChild(shapeItem)
+    })
+
+    shapeOption.onmouseenter = () => {
+      shapeOption.style.background = 'rgba(255, 255, 255, 0.1)'
+      shapeSubmenu.style.display = 'block'
+    }
+    shapeOption.onmouseleave = (e: MouseEvent) => {
+      const related = e.relatedTarget as HTMLElement
+      if (!shapeSubmenu.contains(related)) {
+        shapeOption.style.background = 'transparent'
+        shapeSubmenu.style.display = 'none'
+      }
+    }
+    shapeSubmenu.onmouseleave = (e: MouseEvent) => {
+      const related = e.relatedTarget as HTMLElement
+      if (!shapeOption.contains(related)) {
+        shapeSubmenu.style.display = 'none'
+        shapeOption.style.background = 'transparent'
+      }
+    }
+
+    const shapeWrapper = document.createElement('div')
+    shapeWrapper.style.position = 'relative'
+    shapeWrapper.appendChild(shapeOption)
+    shapeWrapper.appendChild(shapeSubmenu)
+    menu.appendChild(shapeWrapper)
+
     // Generate Terrain (LLM) option
     const llmOption = document.createElement('div')
     llmOption.textContent = 'Generate Terrain (LLM)'
@@ -1566,6 +1654,34 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
     }
 
     menu.appendChild(llmOption)
+
+    // Delete Highlight Selection option
+    const deleteOption = document.createElement('div')
+    deleteOption.textContent = 'Delete Highlight'
+    deleteOption.style.padding = '8px 16px'
+    deleteOption.style.cursor = 'pointer'
+    deleteOption.style.color = '#ff6b6b'
+    deleteOption.style.fontSize = '14px'
+    deleteOption.style.transition = 'background 0.1s'
+    deleteOption.onmouseenter = () => deleteOption.style.background = 'rgba(255, 107, 107, 0.15)'
+    deleteOption.onmouseleave = () => deleteOption.style.background = 'transparent'
+    deleteOption.onclick = () => {
+      menu.remove()
+      // Clear the highlight selection
+      clearHighlight('renderer.contextMenu.deleteHighlight')
+      highlightSelectionStore.set(null)
+      ellipsoidSelectedNode.set(null)
+      ellipsoidEditAxis.set(null)
+      centerNodeSelected = false
+      ellipsoidCenterDragActive = false
+      ellipsoidMovementActive = false
+      ellipsoidNodeAdjustActive = false
+      activatedNodes.clear()
+      lastCameraPos = null
+      lastOrbitTarget = null
+    }
+
+    menu.appendChild(deleteOption)
     document.body.appendChild(menu)
 
     // Close menu when clicking elsewhere
@@ -2452,39 +2568,65 @@ VALIDATION RULES (MUST follow exactly):
     // Handle ellipsoid center drag (moved by camera translation)
     const editAxis = get(ellipsoidEditAxis)
 
-    if (ellipsoidCenterDragActive && lastCameraPos) {
-      // Center drag: move ellipsoid/plane center based on camera translation
+    if (ellipsoidCenterDragActive) {
+      // Center drag: move ellipsoid/plane center based on camera/orbit movement
       const currentSelection = get(highlightSelectionStore)
 
-      if (currentSelection && currentSelection.shape === 'plane') {
-        // For plane, only move along Y axis (vertical)
-        const deltaY = position[1] - lastCameraPos[1]
-        const sensitivity = 0.5
-
-        const nextCenter: Vec3 = [
-          currentSelection.center[0],
-          currentSelection.center[1] + deltaY * sensitivity / worldScale,
-          currentSelection.center[2]
-        ]
-        const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
-        emitHighlight(updated, 'renderer.highlight.plane.dragCenter')
-
-        lastCameraPos = [...position] as Vec3
-      } else if (currentSelection && currentSelection.shape === 'ellipsoid') {
+      if (cameraMode === 'player' && lastCameraPos) {
+        // Player mode: track camera position changes
         const deltaX = position[0] - lastCameraPos[0]
         const deltaY = position[1] - lastCameraPos[1]
         const deltaZ = position[2] - lastCameraPos[2]
         const sensitivity = 0.5
 
-        const nextCenter: Vec3 = [
-          currentSelection.center[0] + deltaX * sensitivity / worldScale,
-          currentSelection.center[1] + deltaY * sensitivity / worldScale,
-          currentSelection.center[2] + deltaZ * sensitivity / worldScale
-        ]
-        const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
-        emitHighlight(updated, 'renderer.highlight.ellipsoid.dragCenter')
+        if (currentSelection && currentSelection.shape === 'plane') {
+          // For plane, only move along Y axis (vertical)
+          const nextCenter: Vec3 = [
+            currentSelection.center[0],
+            currentSelection.center[1] + deltaY * sensitivity / worldScale,
+            currentSelection.center[2]
+          ]
+          const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
+          emitHighlight(updated, 'renderer.highlight.plane.dragCenter')
+        } else if (currentSelection && currentSelection.shape === 'ellipsoid') {
+          const nextCenter: Vec3 = [
+            currentSelection.center[0] + deltaX * sensitivity / worldScale,
+            currentSelection.center[1] + deltaY * sensitivity / worldScale,
+            currentSelection.center[2] + deltaZ * sensitivity / worldScale
+          ]
+          const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
+          emitHighlight(updated, 'renderer.highlight.ellipsoid.dragCenter')
+        }
 
         lastCameraPos = [...position] as Vec3
+
+      } else if (cameraMode === 'overview' && lastOrbitTarget) {
+        // Overview mode: track orbit target changes (what WASD moves)
+        const deltaX = orbitTarget[0] - lastOrbitTarget[0]
+        const deltaY = orbitTarget[1] - lastOrbitTarget[1]
+        const deltaZ = orbitTarget[2] - lastOrbitTarget[2]
+        const sensitivity = 0.5
+
+        if (currentSelection && currentSelection.shape === 'plane') {
+          // For plane, only move along Y axis (vertical)
+          const nextCenter: Vec3 = [
+            currentSelection.center[0],
+            currentSelection.center[1] + deltaY * sensitivity / worldScale,
+            currentSelection.center[2]
+          ]
+          const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
+          emitHighlight(updated, 'renderer.highlight.plane.dragCenter')
+        } else if (currentSelection && currentSelection.shape === 'ellipsoid') {
+          const nextCenter: Vec3 = [
+            currentSelection.center[0] + deltaX * sensitivity / worldScale,
+            currentSelection.center[1] + deltaY * sensitivity / worldScale,
+            currentSelection.center[2] + deltaZ * sensitivity / worldScale
+          ]
+          const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
+          emitHighlight(updated, 'renderer.highlight.ellipsoid.dragCenter')
+        }
+
+        lastOrbitTarget = [...orbitTarget] as Vec3
       }
     } else if (editAxis && lastCameraPos) {
       // Axis-based editing: drag to expand/contract both ends symmetrically
