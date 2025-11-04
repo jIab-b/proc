@@ -1516,7 +1516,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
     if (ellipsoidMovementActive || ellipsoidCenterDragActive) {
       ev.preventDefault()
       const currentSelection = get(highlightSelectionStore)
-      if (currentSelection && currentSelection.shape === 'ellipsoid') {
+      if (currentSelection && (currentSelection.shape === 'ellipsoid' || currentSelection.shape === 'cube' || currentSelection.shape === 'plane')) {
         // Get camera forward vector
         const forward = cameraMode === 'player' ? getForwardVector() : normalize([
           orbitTarget[0] - (orbitTarget[0] + orbitDistance * Math.cos(orbitPitch) * Math.sin(orbitYaw)),
@@ -1524,7 +1524,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           orbitTarget[2] - (orbitTarget[2] + orbitDistance * Math.cos(orbitPitch) * Math.cos(orbitYaw))
         ])
 
-        // Move ellipsoid center along view axis
+        // Move selection center along view axis
         const moveSpeed = 0.5
         const movement = -ev.deltaY * 0.01 * moveSpeed / worldScale
         const newCenter: [number, number, number] = [
@@ -1640,7 +1640,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         nodeEditStartX = x
         nodeEditStartY = y
 
-        // Check if we're working with plane or ellipsoid
+        // Check if we're working with plane, ellipsoid, or cube
         const currentSelection = get(highlightSelectionStore)
         if (currentSelection && currentSelection.shape === 'plane') {
           // For plane, set starting radius based on which node (X or Z direction)
@@ -1649,7 +1649,11 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           } else if (node === '+z' || node === '-z') {
             nodeEditStartRadius = get(planeSizeZ)
           }
+        } else if (currentSelection && currentSelection.shape === 'cube') {
+          // For cube, use the single radius
+          nodeEditStartRadius = currentSelection.radius ?? get(highlightRadius)
         } else {
+          // For ellipsoid, use axis-specific radii
           const axis = node[1] as 'x' | 'y' | 'z'
           if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
           else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
@@ -2028,9 +2032,24 @@ VALIDATION RULES (MUST follow exactly):
             Math.floor(worldCenter[2] + sizeZ)
           ]
         }
+      } else if (currentSelection.shape === 'cube') {
+        const r = (currentSelection.radius ?? get(highlightRadius)) * worldScale
+
+        region = {
+          min: [
+            Math.floor(worldCenter[0] - r),
+            Math.floor(worldCenter[1] - r),
+            Math.floor(worldCenter[2] - r)
+          ],
+          max: [
+            Math.floor(worldCenter[0] + r),
+            Math.floor(worldCenter[1] + r),
+            Math.floor(worldCenter[2] + r)
+          ]
+        }
       } else {
-        // This should never happen since we check for ellipsoid/plane at the top
-        throw new Error('LLM generation requires an ellipsoid or plane selection')
+        // This should never happen since we check for ellipsoid/plane/cube at the top
+        throw new Error('LLM generation requires an ellipsoid, plane, or cube selection')
       }
 
       console.log('[LLM] Response:', JSON.stringify({ llmResponse, parsedParams: params }, null, 2))
