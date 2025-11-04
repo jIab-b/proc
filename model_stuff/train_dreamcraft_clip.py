@@ -467,23 +467,25 @@ def train(args):
         preview_dir.mkdir(parents=True, exist_ok=True)
 
     log_path = out_dir / "log.txt"
-    log_file = log_path.open("w", encoding="utf-8")
-    json.dump({
-        "event": "train_start",
-        "prompt": args.prompt,
-        "negative_prompt": args.negative_prompt,
-        "grid": list(grid),
-        "materials": total_materials,
-        "steps": args.steps,
-        "lr": args.lr,
-    }, log_file)
-    log_file.write("\n")
-    log_file.flush()
+    with log_path.open("w", encoding="utf-8") as log_file:
+        json.dump({
+            "event": "train_start",
+            "prompt": args.prompt,
+            "negative_prompt": args.negative_prompt,
+            "grid": list(grid),
+            "materials": total_materials,
+            "steps": args.steps,
+            "lr": args.lr,
+        }, log_file)
+        log_file.write("\n")
+        json.dump(vars(args), log_file, indent=2)
+        log_file.write("\n")
+        log_file.flush()
 
     debug_path = out_dir / "log2.txt"
-    debug_file = debug_path.open("w", encoding="utf-8")
-    debug_file.write("Detailed debug log started\n")
-    debug_file.flush()
+    with debug_path.open("w", encoding="utf-8") as debug_file:
+        debug_file.write("Detailed debug log started\n")
+        debug_file.flush()
 
     for step in range(1, args.steps + 1):
         opt.zero_grad()
@@ -517,7 +519,7 @@ def train(args):
         debug_entry["air_tau"] = args.air_tau
         debug_entry["solid_tau"] = args.solid_tau
 
-        a_mixed = mix_anneal(air_soft, air_hard, alpha_air)
+        a_mixed = mix_anneal(1 - air_soft, air_hard, alpha_air)
         a_mixed = torch.nan_to_num(a_mixed, nan=0.0, posinf=1.0, neginf=0.0)
         if torch.isnan(a_mixed).any() or torch.isinf(a_mixed).any():
             debug_entry["a_mixed_pre_num"] = "had NaN/inf, corrected"
@@ -658,9 +660,10 @@ def train(args):
         if not torch.isfinite(loss).item():
             print(f"Warning: non-finite loss at step {step}, skipping update.")
             step_record["warning"] = "non_finite_loss"
-            json.dump(step_record, log_file)
-            log_file.write("\n")
-            log_file.flush()
+            with log_path.open("a", encoding="utf-8") as log_file:
+                json.dump(step_record, log_file)
+                log_file.write("\n")
+                log_file.flush()
             opt.zero_grad(set_to_none=True)
             continue
 
@@ -712,9 +715,10 @@ def train(args):
             "clip_sim": float(clip_sim.detach().cpu()) if clip_sim is not None else None,
         })
 
-        json.dump(step_record, log_file)
-        log_file.write("\n")
-        log_file.flush()
+        with log_path.open("a", encoding="utf-8") as log_file:
+            json.dump(step_record, log_file)
+            log_file.write("\n")
+            log_file.flush()
 
         opt.step()
 
@@ -789,18 +793,19 @@ def train(args):
                 }
                 with open(out_dir / f"map_{step:05d}.json", "w", encoding="utf-8") as f:
                     json.dump(export_payload, f, indent=2)
-                json.dump({"event": "export", "step": step, "blockCount": len(block_records)}, log_file)
-                log_file.write("\n")
-                log_file.flush()
+                with log_path.open("a", encoding="utf-8") as log_file:
+                    json.dump({"event": "export", "step": step, "blockCount": len(block_records)}, log_file)
+                    log_file.write("\n")
+                    log_file.flush()
 
-    json.dump({"event": "train_end"}, log_file)
-    log_file.write("\n")
-    log_file.flush()
+    with log_path.open("a", encoding="utf-8") as log_file:
+        json.dump({"event": "train_end"}, log_file)
+        log_file.write("\n")
+        log_file.flush()
+
     with debug_path.open("a", encoding="utf-8") as debug_file:
-        debug_file.write(f"Training ended with loss: {loss.detach().cpu()}\n")
+        debug_file.write("Training ended\n")
         debug_file.flush()
-    log_file.close()
-    debug_file.close()
 
 def build_argparser():
     p = argparse.ArgumentParser("DreamCraft (paper-style) with SDXL SDS")
