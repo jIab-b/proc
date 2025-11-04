@@ -165,6 +165,7 @@ export type EllipsoidNode = '+x' | '-x' | '+y' | '-y' | '+z' | '-z' | 'center' |
 export const ellipsoidSelectedNode: Writable<EllipsoidNode> = writable(null)
 export const highlightSelection: Writable<HighlightSelection | null> = writable(null)
 export const cameraMode: Writable<'player' | 'overview'> = writable('overview')
+export const showChunkBoundaries: Writable<boolean> = writable(true)
 
 // === V2 STORES ===
 import type { MaterialParams, LightingParams, PointLight } from './dsl/commands'

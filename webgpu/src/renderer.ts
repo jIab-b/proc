@@ -29,6 +29,7 @@ import {
   blockMaterials,
   sceneLighting,
   pointLights,
+  showChunkBoundaries,
   type CustomBlock,
   type Vec3,
   type Mat4,
@@ -334,6 +335,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
   let latestCamera: CameraSnapshot | null = null
   let highlightSelection: HighlightSelection | null = null
   let overlayViews: Array<{ position: Vec3; id: string }> = []
+  let chunkBoundaries: Array<{ min: Vec3; max: Vec3 }> | null = null
   const stopWorld = world.onChange(() => {
     worldScale = world.getWorldScale()
     chunkOriginOffset = world.getChunkOriginOffset()
@@ -541,11 +543,19 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
     meshDirty = true
   }
 
+  function renderChunkBoundaries() {
+    // Grid rendering disabled
+    return
+  }
+
   function renderOverlay() {
     if (!overlayCtx || !overlayCanvas || !latestCamera) return
     const width = overlayCanvas.width || canvas.width
     const height = overlayCanvas.height || canvas.height
     overlayCtx.clearRect(0, 0, width, height)
+
+    // Render chunk boundaries first (so they appear under other UI)
+    renderChunkBoundaries()
 
     overlayCtx.save()
     overlayViews.forEach((view, idx) => {
@@ -2721,6 +2731,7 @@ VALIDATION RULES (MUST follow exactly):
     updateCustomTextures,
     setHighlightSelection: (sel: HighlightSelection | null) => { highlightSelection = sel },
     setOverlayViews: (views: Array<{ position: Vec3; id: string }>) => { overlayViews = views },
+    setChunkBoundaries: (boundaries: Array<{ min: Vec3; max: Vec3 }>) => { chunkBoundaries = boundaries },
     focusCameraOnBlocks: (blocks: Array<{ position: [number, number, number] }> | undefined) => {
       const fixedSpawnDistance = 12 // Fixed distance from block center
 

@@ -8,6 +8,7 @@
     BlockType, type CustomBlock, type FaceTileInfo, type BlockFaceKey
   } from './core'
   import CameraModeToggle from './lib/CameraModeToggle.svelte'
+  import ChunkBoundariesToggle from './lib/ChunkBoundariesToggle.svelte'
 
   // Block Grid State
   let blockGridEl: HTMLDivElement
@@ -30,11 +31,27 @@
     try {
       const terrainParamsDoc = await fetch('/TERRAIN_PARAMS.txt').then(r => r.text())
 
+      // Get camera position to determine which chunk region to generate in
+      const cameraPos = $gpuHooks.getCameraPosition?.() || [128, 64, 128]
+      const worldScale = $gpuHooks.getWorldScale?.() || 2
+
+      // Calculate camera chunk position (now using 256x128x256 chunks - entire world is 1 chunk)
+      const cameraChunkX = 0
+      const cameraChunkY = 0
+      const cameraChunkZ = 0
+
       const systemPrompt = `You are a terrain generation assistant. Given a user's description, generate DSL commands to create voxel terrain, structures, materials, and lighting.
+
+WORLD CONSTRAINTS:
+- World bounds: x[0-256], y[0-128], z[0-256]
+- World is ONE LARGE chunk region (256×128×256)
+- Generate terrain throughout the entire world space
+- Consider using multiple regions for varied terrain features
 
 ${terrainParamsDoc}
 
-Return ONLY valid JSON array of DSL commands. No explanations, no markdown code blocks - just the raw JSON array.`
+Return ONLY valid JSON array of DSL commands. No explanations, no markdown code blocks - just the raw JSON array.
+Commands should respect chunk boundaries and stay within world bounds.`
 
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -393,6 +410,7 @@ Return ONLY valid JSON array of DSL commands. No explanations, no markdown code 
 
 <div class="sidebar">
   <CameraModeToggle />
+  <ChunkBoundariesToggle />
 
   <!-- LLM Terrain Generation -->
   <div class="llm-prompt-section">

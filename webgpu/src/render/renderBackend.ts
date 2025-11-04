@@ -73,6 +73,11 @@ export interface RenderBackend {
   setOverlayViews(views: OverlayView[]): void
 
   /**
+   * Set chunk boundaries for visual rendering of grid divisions.
+   */
+  setChunkBoundaries(boundaries: Array<{ min: Vec3; max: Vec3 }>): void
+
+  /**
    * Keep custom block GPU textures in sync with UI edits.
    */
   applyCustomBlockTextures(

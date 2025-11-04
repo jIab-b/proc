@@ -43,6 +43,10 @@ class WebGPUBackend implements RenderBackend {
     this.renderer?.setOverlayViews(views)
   }
 
+  setChunkBoundaries(boundaries: Array<{ min: import('../core').Vec3; max: import('../core').Vec3 }>): void {
+    this.renderer?.setChunkBoundaries(boundaries)
+  }
+
   applyCustomBlockTextures(
     bitmaps: Record<BlockFaceKey, ImageBitmap>,
     customBlock: CustomBlock,

@@ -3,6 +3,8 @@ import { onMount } from 'svelte'
 import { get } from 'svelte/store'
 import { MapManager, CaptureSystem, DSLEngine, createWorldConfig, type CameraSnapshot } from './engine'
 import { WorldState } from './world'
+import { ChunkGrid } from './world/chunkGrid'
+import { RegionManager } from './world/regionManager'
 import { WorldEngine } from './engine/worldEngine'
 import { createWebGPUBackend } from './render/webgpuBackend'
 import type { RenderBackend } from './render/renderBackend'
@@ -50,6 +52,14 @@ import { withVersion } from './dsl/commands'
   let worldScale = 2
   const chunkOriginOffset: Vec3 = [-chunk.size.x * worldScale / 2, 0, -chunk.size.z * worldScale / 2]
   const world = new WorldState(chunk, { worldScale, chunkOriginOffset })
+
+  // Initialize chunk grid system (divide world into larger regions)
+  // Horizontal: 256 (4x 64) | Vertical: 128 (2x 64)
+  const chunkGrid = new ChunkGrid({
+    worldSize: worldConfig.dimensions,
+    chunkSize: { x: 256, y: 128, z: 256 }
+  })
+  const regionManager = new RegionManager(chunkGrid)
 
   let mapManager: MapManager
   let captureSystem: CaptureSystem
@@ -219,6 +229,11 @@ import { withVersion } from './dsl/commands'
         }
       })
 
+      // Set chunk boundaries for visual rendering
+      const boundaries = chunkGrid.getChunkBoundaries()
+      renderBackend?.setChunkBoundaries(boundaries)
+      console.log(`[ChunkGrid] Initialized ${chunkGrid.getAllChunks().length} chunk regions`)
+
       const loadedData = await mapManager.loadFirstAvailable(BlockType, worldConfig)
       renderBackend?.markWorldDirty()
       // Focus camera on loaded blocks, or reset to default if terrain was generated
@@ -233,6 +248,10 @@ import { withVersion } from './dsl/commands'
       }
 
       await fetchMaps()
+
+      // Expose chunk grid utilities for debugging
+      ;(window as any).chunkGrid = chunkGrid
+      ;(window as any).regionManager = regionManager
 
       ;(window as any).wgpuCaptureOnce = async () => {
         const b: any = renderBackend
