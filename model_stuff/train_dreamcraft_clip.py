@@ -467,254 +467,340 @@ def train(args):
         preview_dir.mkdir(parents=True, exist_ok=True)
 
     log_path = out_dir / "log.txt"
-    with log_path.open("w", encoding="utf-8") as log_file:
-        json.dump({
-            "event": "train_start",
-            "prompt": args.prompt,
-            "negative_prompt": args.negative_prompt,
-            "grid": list(grid),
-            "materials": total_materials,
-            "steps": args.steps,
-            "lr": args.lr,
-        }, log_file)
-        log_file.write("\n")
-        log_file.flush()
+    log_file = log_path.open("w", encoding="utf-8")
+    json.dump({
+        "event": "train_start",
+        "prompt": args.prompt,
+        "negative_prompt": args.negative_prompt,
+        "grid": list(grid),
+        "materials": total_materials,
+        "steps": args.steps,
+        "lr": args.lr,
+    }, log_file)
+    log_file.write("\n")
+    log_file.flush()
 
-        for step in range(1, args.steps + 1):
-            opt.zero_grad()
-            air_logits, mat_logits = model()
-            air_soft = torch.sigmoid(air_logits)
+    debug_path = out_dir / "log2.txt"
+    debug_file = debug_path.open("w", encoding="utf-8")
+    debug_file.write("Detailed debug log started\n")
+    debug_file.flush()
 
-            air_two_class = torch.stack([-air_logits, air_logits], dim=-1)
-            air_hard = F.gumbel_softmax(air_two_class, tau=max(1e-3, args.air_tau), hard=True, dim=-1)[..., 1]
-            solid_hard = F.gumbel_softmax(mat_logits, tau=max(1e-3, args.solid_tau), hard=True, dim=-1)
+    for step in range(1, args.steps + 1):
+        opt.zero_grad()
 
-            alpha_air = compute_alpha(step, args.steps, args.air_alpha_start, args.air_alpha_end)
-            alpha_solid = compute_alpha(step, args.steps, args.solid_alpha_start, args.solid_alpha_end)
+        air_logits, mat_logits = model()
+        def log_tensor_stats(name, tensor):
+            if not torch.isfinite(tensor).all():
+                return f"{name}: non-finite (min={tensor.min():.4f}, max={tensor.max():.4f}, mean={tensor.mean():.4f}, norm={torch.linalg.norm(tensor):.4f}, has_nan={torch.isnan(tensor).any()}, has_inf={torch.isinf(tensor).any()})"
+            else:
+                return f"{name}: finite (min={tensor.min():.4f}, max={tensor.max():.4f}, mean={tensor.mean():.4f}, norm={torch.linalg.norm(tensor):.4f})"
 
-            a_mixed = mix_anneal(air_soft, air_hard, alpha_air)
-            a_mixed = torch.nan_to_num(a_mixed, nan=0.0, posinf=1.0, neginf=0.0)
+        debug_entry = {
+            "step": step,
+            "air_logits": log_tensor_stats("air_logits", air_logits),
+            "mat_logits": log_tensor_stats("mat_logits", mat_logits),
+        }
 
-            solid_soft = torch.softmax(mat_logits / max(1e-6, args.tau), dim=-1)
-            mat_probs = mix_anneal(solid_soft, solid_hard, alpha_solid)
-            mat_probs = torch.nan_to_num(mat_probs, nan=0.0, posinf=1.0, neginf=0.0)
-            mat_probs = mat_probs.clamp(min=1e-6)
-            mat_probs = mat_probs / mat_probs.sum(dim=-1, keepdim=True).clamp(min=1e-6)
-            mat_logits_mixed = torch.log(mat_probs)
+        air_soft = torch.sigmoid(air_logits)
+        debug_entry["air_soft"] = log_tensor_stats("air_soft", air_soft)
 
-            block_grid = (a_mixed > args.occ_cull_thresh)
-            view, proj = sample_camera_orbit(
-                step,
-                args.steps,
-                grid,
-                args.train_w,
-                args.train_h,
-                radius_scale=args.cam_radius_scale,
-                fov_deg=args.fov_deg,
-                seed=args.seed,
-            )
-            view = view.to(device)
-            proj = proj.to(device)
+        air_two_class = torch.stack([-air_logits, air_logits], dim=-1)
+        air_hard = F.gumbel_softmax(air_two_class, tau=max(1e-3, args.air_tau), hard=True, dim=-1)[..., 1]
+        debug_entry["air_hard"] = log_tensor_stats("air_hard", air_hard)
+        solid_hard = F.gumbel_softmax(mat_logits, tau=max(1e-3, args.solid_tau), hard=True, dim=-1)
+        debug_entry["solid_hard"] = log_tensor_stats("solid_hard", solid_hard)
 
-            img_rgba = renderer.render_from_grid(
-                block_grid=block_grid,
-                material_logits=mat_logits_mixed,
-                camera_view=view,
-                camera_proj=proj,
-                img_h=args.train_h,
-                img_w=args.train_w,
-                occupancy_probs=a_mixed,
-                hard_materials=False,
-                temperature=1.0,
-                palette=palette_tensor,
-                material_probs=mat_probs,
-            )
-            rgb = img_rgba[:, :3, :, :]
+        alpha_air = compute_alpha(step, args.steps, args.air_alpha_start, args.air_alpha_end)
+        alpha_solid = compute_alpha(step, args.steps, args.solid_alpha_start, args.solid_alpha_end)
+        debug_entry["alpha_air"] = alpha_air
+        debug_entry["alpha_solid"] = alpha_solid
+        debug_entry["air_tau"] = args.air_tau
+        debug_entry["solid_tau"] = args.solid_tau
 
-            sds_stats = sds.step_sds(rgb, prompt=args.prompt, negative_prompt=args.negative_prompt)
-            clip_loss = torch.tensor(0.0, device=device)
-            clip_sim = None
-            if clip_model is not None:
-                img_for_clip = F.interpolate(rgb, size=args.clip_image_res, mode="bilinear", align_corners=False)
-                img_for_clip = img_for_clip.clamp(0.0, 1.0)
-                img_for_clip = img_for_clip * 2.0 - 1.0
-                image_feat = clip_model.encode_image(img_for_clip.to(device))
-                image_feat = image_feat / image_feat.norm(dim=-1, keepdim=True)
-                clip_sim = torch.sum(image_feat * clip_text_feat)
-                clip_loss = -args.clip_weight * clip_sim
+        a_mixed = mix_anneal(air_soft, air_hard, alpha_air)
+        a_mixed = torch.nan_to_num(a_mixed, nan=0.0, posinf=1.0, neginf=0.0)
+        if torch.isnan(a_mixed).any() or torch.isinf(a_mixed).any():
+            debug_entry["a_mixed_pre_num"] = "had NaN/inf, corrected"
+        debug_entry["a_mixed"] = log_tensor_stats("a_mixed", a_mixed)
 
-            occ_reg = args.occ_reg * a_mixed.mean()
-            tv = torch.tensor(0.0, device=device)
-            if args.tv_reg > 0.0:
-                dx = (a_mixed[1:, :, :] - a_mixed[:-1, :, :]).abs().mean()
-                dy = (a_mixed[:, 1:, :] - a_mixed[:, :-1, :]).abs().mean()
-                dz = (a_mixed[:, :, 1:] - a_mixed[:, :, :-1]).abs().mean()
-                tv = args.tv_reg * (dx + dy + dz)
+        solid_soft = torch.softmax(mat_logits / max(1e-6, args.tau), dim=-1)
+        debug_entry["solid_soft"] = log_tensor_stats("solid_soft", solid_soft)
+        mat_probs = mix_anneal(solid_soft, solid_hard, alpha_solid)
+        mat_probs = torch.nan_to_num(mat_probs, nan=0.0, posinf=1.0, neginf=0.0)
+        if torch.isnan(mat_probs).any() or torch.isinf(mat_probs).any():
+            debug_entry["mat_probs_pre_num"] = "had NaN/inf, corrected"
+        mat_probs = mat_probs.clamp(min=1e-6)
+        mat_probs = mat_probs / mat_probs.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+        mat_logits_mixed = torch.log(mat_probs)
+        debug_entry["mat_probs"] = log_tensor_stats("mat_probs", mat_probs)
+        debug_entry["mat_logits_mixed"] = log_tensor_stats("mat_logits_mixed", mat_logits_mixed)
 
-            dist_loss = torch.tensor(0.0, device=device)
-            if args.dist_weight > 0.0 and args.dist_target is not None and len(args.dist_target) > 0:
-                tgt = torch.tensor(args.dist_target, device=device, dtype=torch.float32)
-                tgt = tgt.clamp(min=0)
-                if tgt.sum() > 0:
-                    tgt = tgt / tgt.sum()
-                    probs_non_air = mat_probs[..., 1:]
-                    weights = a_mixed[..., None]
-                    counts = (weights * probs_non_air).sum(dim=(0, 1, 2))
-                    if counts.sum() > 0:
-                        counts = counts / counts.sum()
-                        counts = torch.nan_to_num(counts, nan=0.0)
-                        dist_loss = args.dist_weight * (counts - tgt).abs().sum()
+        block_grid = (a_mixed > args.occ_cull_thresh)
+        active_voxels = int(block_grid.sum().item())
+        debug_entry["active_voxels"] = active_voxels
+        debug_entry["block_grid_sum"] = active_voxels
 
-            adjacency_loss = torch.tensor(0.0, device=device)
-            if adjacency_patterns:
-                hard_volume = solid_hard.permute(3, 2, 1, 0).unsqueeze(0)  # (1, M, Z, Y, X)
-                for pattern in adjacency_patterns:
-                    conv = F.conv3d(hard_volume, pattern.kernel, stride=1)
-                    activation = torch.relu(conv - pattern.threshold)
-                    mean_activation = activation.mean()
-                    mean_activation = torch.nan_to_num(mean_activation, nan=0.0)
-                    if pattern.reward:
-                        adjacency_loss = adjacency_loss - pattern.weight * mean_activation
-                    else:
-                        adjacency_loss = adjacency_loss + pattern.weight * mean_activation
+        view, proj = sample_camera_orbit(
+            step,
+            args.steps,
+            grid,
+            args.train_w,
+            args.train_h,
+            radius_scale=args.cam_radius_scale,
+            fov_deg=args.fov_deg,
+            seed=args.seed,
+        )
+        view = view.to(device)
+        proj = proj.to(device)
 
-            loss = occ_reg + tv + dist_loss + adjacency_loss + clip_loss
+        img_rgba = renderer.render_from_grid(
+            block_grid=block_grid,
+            material_logits=mat_logits_mixed,
+            camera_view=view,
+            camera_proj=proj,
+            img_h=args.train_h,
+            img_w=args.train_w,
+            occupancy_probs=a_mixed,
+            hard_materials=False,
+            temperature=1.0,
+            palette=palette_tensor,
+            material_probs=mat_probs,
+            debug_path=str(debug_path),
+            step=step
+        )
+        debug_entry["img_rgba"] = log_tensor_stats("img_rgba", img_rgba)
+        rgb = img_rgba[:, :3, :, :]
 
-            active_voxels = int((a_mixed > args.occ_cull_thresh).sum().item())
-            step_record = {
-                "event": "step",
-                "step": step,
-                "alpha_air": alpha_air,
-                "alpha_solid": alpha_solid,
-                "occ_mean": float(a_mixed.mean().detach().cpu()),
-                "occ_max": float(a_mixed.max().detach().cpu()),
-                "active_voxels": active_voxels,
-                "sds": sds_stats,
-            }
+        sds_stats = sds.step_sds(rgb, prompt=args.prompt, negative_prompt=args.negative_prompt)
+        debug_entry["sds_applied"] = sds_stats["applied"]
+        debug_entry["sds_raw_norm"] = sds_stats["grad_raw_norm"]
+        debug_entry["sds_clipped"] = sds_stats["clipped"]
+        debug_entry["sds_normalized"] = sds_stats["normalized"]
 
-            if not torch.isfinite(loss).item():
-                print(f"Warning: non-finite loss at step {step}, skipping update.")
-                step_record["warning"] = "non_finite_loss"
-                json.dump(step_record, log_file)
-                log_file.write("\n")
-                log_file.flush()
-                opt.zero_grad(set_to_none=True)
-                continue
+        clip_loss = torch.tensor(0.0, device=device)
+        clip_sim = None
+        if clip_model is not None:
+            img_for_clip = F.interpolate(rgb, size=args.clip_image_res, mode="bilinear", align_corners=False)
+            img_for_clip = img_for_clip.clamp(0.0, 1.0)
+            img_for_clip = img_for_clip * 2.0 - 1.0
+            image_feat = clip_model.encode_image(img_for_clip.to(device))
+            image_feat = image_feat / image_feat.norm(dim=-1, keepdim=True)
+            clip_sim = torch.sum(image_feat * clip_text_feat)
+            clip_loss = -args.clip_weight * clip_sim
+            debug_entry["clip_sim"] = float(clip_sim.detach().cpu()) if torch.isfinite(clip_sim) else "non-finite"
 
-            loss.backward()
+        occ_reg = args.occ_reg * a_mixed.mean()
+        tv = torch.tensor(0.0, device=device)
+        if args.tv_reg > 0.0:
+            dx = (a_mixed[1:, :, :] - a_mixed[:-1, :, :]).abs().mean()
+            dy = (a_mixed[:, 1:, :] - a_mixed[:, :-1, :]).abs().mean()
+            dz = (a_mixed[:, :, 1:] - a_mixed[:, :, :-1]).abs().mean()
+            tv = args.tv_reg * (dx + dy + dz)
+        dist_loss = torch.tensor(0.0, device=device)
+        if args.dist_weight > 0.0 and args.dist_target is not None and len(args.dist_target) > 0:
+            tgt = torch.tensor(args.dist_target, device=device, dtype=torch.float32)
+            tgt = tgt.clamp(min=0)
+            if tgt.sum() > 0:
+                tgt = tgt / tgt.sum()
+                probs_non_air = mat_probs[..., 1:]
+                weights = a_mixed[..., None]
+                counts = (weights * probs_non_air).sum(dim=(0, 1, 2))
+                if counts.sum() > 0:
+                    counts = counts / counts.sum()
+                    counts = torch.nan_to_num(counts, nan=0.0)
+                    dist_loss = args.dist_weight * (counts - tgt).abs().sum()
+        adjacency_loss = torch.tensor(0.0, device=device)
+        if adjacency_patterns:
+            hard_volume = solid_hard.permute(3, 2, 1, 0).unsqueeze(0)  # (1, M, Z, Y, X)
+            for pattern in adjacency_patterns:
+                conv = F.conv3d(hard_volume, pattern.kernel, stride=1)
+                if not torch.isfinite(conv).all():
+                    debug_entry[f"conv_nonfinite_{pattern.weight}"] = "conv has NaN/inf"
+                activation = torch.relu(conv - pattern.threshold)
+                mean_activation = activation.mean()
+                mean_activation = torch.nan_to_num(mean_activation, nan=0.0)
+                if pattern.reward:
+                    adjacency_loss = adjacency_loss - pattern.weight * mean_activation
+                else:
+                    adjacency_loss = adjacency_loss + pattern.weight * mean_activation
 
-            grads_corrected = False
-            for param in model.parameters():
-                if param.grad is not None and not torch.isfinite(param.grad).all():
-                    param.grad = torch.nan_to_num(param.grad, nan=0.0, posinf=0.0, neginf=0.0)
-                    grads_corrected = True
+        loss = occ_reg + tv + dist_loss + adjacency_loss + clip_loss
+        debug_entry["loss"] = float(loss.detach().cpu()) if torch.isfinite(loss) else "non-finite"
+        debug_entry["occ_reg"] = float(occ_reg.detach().cpu())
+        debug_entry["tv"] = float(tv.detach().cpu())
+        debug_entry["dist_loss"] = float(dist_loss.detach().cpu())
+        debug_entry["adjacency_loss"] = float(adjacency_loss.detach().cpu())
+        debug_entry["clip_loss"] = float(clip_loss.detach().cpu())
 
-            if grads_corrected:
-                print(f"Warning: non-finite gradients corrected at step {step}.")
-                step_record.setdefault("warnings", []).append("non_finite_grad_corrected")
+        with torch.no_grad():
+            mat_counts = (a_mixed[..., None] * mat_probs).sum(dim=(0, 1, 2))
+            debug_entry["material_counts"] = [float(x) for x in mat_counts.cpu()]
 
-            if args.grad_clip is not None and args.grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+        # Write debug log
+        with debug_path.open("a", encoding="utf-8") as debug_file:
+            debug_file.write(f"Step {step}:\n")
+            for k, v in debug_entry.items():
+                debug_file.write(f"  {k}: {v}\n")
+            debug_file.write("\n")
+            debug_file.flush()
 
-            step_record.update({
-                "loss": float(loss.detach().cpu()),
-                "occ_reg": float(occ_reg.detach().cpu()),
-                "tv": float(tv.detach().cpu()),
-                "dist_loss": float(dist_loss.detach().cpu()),
-                "adj_loss": float(adjacency_loss.detach().cpu()),
-                "clip_loss": float(clip_loss.detach().cpu()),
-                "clip_sim": float(clip_sim.detach().cpu()) if clip_sim is not None else None,
-            })
+        step_record = {
+            "event": "step",
+            "step": step,
+            "alpha_air": alpha_air,
+            "alpha_solid": alpha_solid,
+            "occ_mean": float(a_mixed.mean().detach().cpu()),
+            "occ_max": float(a_mixed.max().detach().cpu()),
+            "active_voxels": active_voxels,
+            "sds": sds_stats,
+        }
 
-            with torch.no_grad():
-                mat_counts = (a_mixed[..., None] * mat_probs).sum(dim=(0, 1, 2))
-                step_record["material_counts"] = [float(x) for x in mat_counts.cpu()]
-
+        if not torch.isfinite(loss).item():
+            print(f"Warning: non-finite loss at step {step}, skipping update.")
+            step_record["warning"] = "non_finite_loss"
             json.dump(step_record, log_file)
             log_file.write("\n")
             log_file.flush()
+            opt.zero_grad(set_to_none=True)
+            continue
 
-            opt.step()
+        loss.backward()
 
-            if args.preview_every > 0 and (step % args.preview_every == 0 or step == 1):
-                save_rgb(preview_dir / f"step_{step:05d}_rgb.png", rgb[0])
-                save_slice(preview_dir / f"step_{step:05d}_occ.png", a_mixed)
+        total_grad_norm = 0.0
+        grads_corrected = False
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                g = param.grad
+                gnorm = torch.linalg.norm(g)
+                total_grad_norm += gnorm.item() ** 2
+                if not torch.isfinite(g).all():
+                    debug_entry[f"{name}_grad_nonfinite_pre"] = f"min={g.min():.4f}, max={g.max():.4f}, norm={gnorm:.4f}"
+                    param.grad = torch.nan_to_num(param.grad, nan=0.0, posinf=0.0, neginf=0.0)
+                    g = param.grad
+                    debug_entry[f"{name}_grad_corrected"] = f"norm after={torch.linalg.norm(g):.4f}"
+                    grads_corrected = True
+                else:
+                    debug_entry[f"{name}_grad"] = f"norm={gnorm:.4f}"
 
-            if step % args.log_every == 0 or step == 1:
-                print(
-                    f"step {step}/{args.steps} "
-                    f"loss={step_record['loss']:.4f} "
-                    f"occ_reg={step_record['occ_reg']:.4f} "
-                    f"tv={step_record['tv']:.4f} "
-                    f"dist={step_record['dist_loss']:.4f} "
-                    f"adj={step_record['adj_loss']:.4f} "
-                    f"clip={step_record['clip_loss']:.4f} "
-                    f"alpha_air={alpha_air:.2f} "
-                    f"alpha_solid={alpha_solid:.2f}"
-                )
+        total_grad_norm = math.sqrt(total_grad_norm)
+        debug_entry["total_grad_norm"] = total_grad_norm
 
-            if args.save_every > 0 and (step % args.save_every == 0 or step == args.steps):
-                with torch.no_grad():
-                    save_path = out_dir / f"step_{step:05d}.png"
-                    save_rgb(save_path, rgb[0])
-                    types = torch.argmax(mat_probs, dim=-1)
-                    present = (a_mixed > args.occ_cull_thresh)
-                    types_masked = torch.where(present, types, torch.zeros_like(types))
-                    nz = torch.nonzero(types_masked != 0, as_tuple=False)
-                    blocks: List[List[int]]
-                    if nz.numel() > 0:
-                        tvals = types_masked[nz[:, 0], nz[:, 1], nz[:, 2]].unsqueeze(1)
-                        blocks = torch.cat([nz, tvals], dim=1).cpu().tolist()
-                    else:
-                        blocks = []
-                        if args.export_force_nonempty:
-                            flat = a_mixed.reshape(-1)
-                            k = int(max(1, args.export_topk))
-                            k = min(k, flat.numel())
-                            vals, idxs = torch.topk(flat, k, largest=True)
-                            xi = (idxs // (grid[1] * grid[2])).to(torch.long)
-                            yi = ((idxs // grid[2]) % grid[1]).to(torch.long)
-                            zi = (idxs % grid[2]).to(torch.long)
-                            tsel = types[xi, yi, zi].unsqueeze(1)
-                            keep = (tsel.squeeze(1) != 0)
-                            xi, yi, zi, tsel = xi[keep], yi[keep], zi[keep], tsel[keep]
-                            blocks = torch.stack([xi, yi, zi], dim=1)
-                            if blocks.numel() > 0:
-                                blocks = torch.cat([blocks, tsel], dim=1).cpu().tolist()
-                            else:
-                                blocks = []
-                    block_records = []
-                    for x, y, z, t in blocks:
-                        t_int = int(t)
-                        type_name = name_for_index(t_int)
-                        block_records.append(
-                            {
-                                "position": [int(x), int(y), int(z)],
-                                "typeIndex": t_int,
-                                "blockType": type_name,
-                                "typeName": type_name,
-                            }
-                        )
-                    export_payload = {
-                        "size": [int(grid[0]), int(grid[1]), int(grid[2])],
-                        "blocks": block_records,
-                        "prompt": args.prompt,
-                        "worldScale": args.world_scale,
-                        "alphaAir": alpha_air,
-                        "alphaSolid": alpha_solid,
-                        "materials": [name_for_index(i) for i in range(total_materials)],
-                        "blockCount": len(block_records),
-                    }
-                    with open(out_dir / f"map_{step:05d}.json", "w", encoding="utf-8") as f:
-                        json.dump(export_payload, f, indent=2)
-                    json.dump({"event": "export", "step": step, "blockCount": len(block_records)}, log_file)
-                    log_file.write("\n")
-                    log_file.flush()
+        # Rewrite debug with grad info
+        with debug_path.open("a", encoding="utf-8") as debug_file:
+            debug_file.write("Grad details:\n")
+            for k, v in debug_entry.items():
+                if "grad" in k:
+                    debug_file.write(f"  {k}: {v}\n")
+            debug_file.write("\n")
+            debug_file.flush()
 
-        json.dump({"event": "train_end"}, log_file)
+        if grads_corrected:
+            print(f"Warning: non-finite gradients corrected at step {step}.")
+            step_record.setdefault("warnings", []).append("non_finite_grad_corrected")
+
+        if args.grad_clip is not None and args.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            debug_entry["grad_clipped"] = True
+
+        step_record.update({
+            "loss": float(loss.detach().cpu()),
+            "occ_reg": float(occ_reg.detach().cpu()),
+            "tv": float(tv.detach().cpu()),
+            "dist_loss": float(dist_loss.detach().cpu()),
+            "adj_loss": float(adjacency_loss.detach().cpu()),
+            "clip_loss": float(clip_loss.detach().cpu()),
+            "clip_sim": float(clip_sim.detach().cpu()) if clip_sim is not None else None,
+        })
+
+        json.dump(step_record, log_file)
         log_file.write("\n")
         log_file.flush()
 
+        opt.step()
+
+        if args.preview_every > 0 and (step % args.preview_every == 0 or step == 1):
+            save_rgb(preview_dir / f"step_{step:05d}_rgb.png", rgb[0])
+            save_slice(preview_dir / f"step_{step:05d}_occ.png", a_mixed)
+
+        if step % args.log_every == 0 or step == 1:
+            print(
+                f"step {step}/{args.steps} "
+                f"loss={step_record['loss']:.4f} "
+                f"occ_reg={step_record['occ_reg']:.4f} "
+                f"tv={step_record['tv']:.4f} "
+                f"dist={step_record['dist_loss']:.4f} "
+                f"adj={step_record['adj_loss']:.4f} "
+                f"clip={step_record['clip_loss']:.4f} "
+                f"alpha_air={alpha_air:.2f} "
+                f"alpha_solid={alpha_solid:.2f}"
+            )
+
+        if args.save_every > 0 and (step % args.save_every == 0 or step == args.steps):
+            with torch.no_grad():
+                save_path = out_dir / f"step_{step:05d}.png"
+                save_rgb(save_path, rgb[0])
+                types = torch.argmax(mat_probs, dim=-1)
+                present = (a_mixed > args.occ_cull_thresh)
+                types_masked = torch.where(present, types, torch.zeros_like(types))
+                nz = torch.nonzero(types_masked != 0, as_tuple=False)
+                blocks: List[List[int]]
+                if nz.numel() > 0:
+                    tvals = types_masked[nz[:, 0], nz[:, 1], nz[:, 2]].unsqueeze(1)
+                    blocks = torch.cat([nz, tvals], dim=1).cpu().tolist()
+                else:
+                    blocks = []
+                    if args.export_force_nonempty:
+                        flat = a_mixed.reshape(-1)
+                        k = int(max(1, args.export_topk))
+                        k = min(k, flat.numel())
+                        vals, idxs = torch.topk(flat, k, largest=True)
+                        xi = (idxs // (grid[1] * grid[2])).to(torch.long)
+                        yi = ((idxs // grid[2]) % grid[1]).to(torch.long)
+                        zi = (idxs % grid[2]).to(torch.long)
+                        tsel = types[xi, yi, zi].unsqueeze(1)
+                        keep = (tsel.squeeze(1) != 0)
+                        xi, yi, zi, tsel = xi[keep], yi[keep], zi[keep], tsel[keep]
+                        blocks = torch.stack([xi, yi, zi], dim=1)
+                        if blocks.numel() > 0:
+                            blocks = torch.cat([blocks, tsel], dim=1).cpu().tolist()
+                        else:
+                            blocks = []
+                block_records = []
+                for x, y, z, t in blocks:
+                    t_int = int(t)
+                    type_name = name_for_index(t_int)
+                    block_records.append(
+                        {
+                            "position": [int(x), int(y), int(z)],
+                            "typeIndex": t_int,
+                            "blockType": type_name,
+                            "typeName": type_name,
+                        }
+                    )
+                export_payload = {
+                    "size": [int(grid[0]), int(grid[1]), int(grid[2])],
+                    "blocks": block_records,
+                    "prompt": args.prompt,
+                    "worldScale": args.world_scale,
+                    "alphaAir": alpha_air,
+                    "alphaSolid": alpha_solid,
+                    "materials": [name_for_index(i) for i in range(total_materials)],
+                    "blockCount": len(block_records),
+                }
+                with open(out_dir / f"map_{step:05d}.json", "w", encoding="utf-8") as f:
+                    json.dump(export_payload, f, indent=2)
+                json.dump({"event": "export", "step": step, "blockCount": len(block_records)}, log_file)
+                log_file.write("\n")
+                log_file.flush()
+
+    json.dump({"event": "train_end"}, log_file)
+    log_file.write("\n")
+    log_file.flush()
+    with debug_path.open("a", encoding="utf-8") as debug_file:
+        debug_file.write(f"Training ended with loss: {loss.detach().cpu()}\n")
+        debug_file.flush()
+    log_file.close()
+    debug_file.close()
 
 def build_argparser():
     p = argparse.ArgumentParser("DreamCraft (paper-style) with SDXL SDS")
