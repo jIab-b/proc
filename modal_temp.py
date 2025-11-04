@@ -70,6 +70,8 @@ def compute_hashes(dir_path: str) -> dict:
         for file in files:
             file_path = os.path.join(root, file)
             rel_path = os.path.relpath(file_path, dir_path)
+            # Normalize path separators to forward slashes for cross-platform compatibility
+            rel_path = rel_path.replace("\\", "/")
             with open(file_path, 'rb') as f:
                 h = hashlib.sha256(f.read()).hexdigest()
             hashes[rel_path] = h
@@ -99,26 +101,36 @@ def _sync_workspace_dirs(dirs_to_sync):
         local_hashes = compute_hashes(src)
         remote_hashes = get_remote_hashes.remote(remote_abs_root)
 
-        for rel in set(remote_hashes) - set(local_hashes):
-            remote_file = os.path.join(remote_rel_root, rel).replace("\\", "/")
-            subprocess.run(["modal", "volume", "rm", "workspace", remote_file], check=False)
-
+        files_to_upload = []
         for rel, lh in local_hashes.items():
             remote_file = os.path.join(remote_rel_root, rel).replace("\\", "/")
-            if rel not in remote_hashes or remote_hashes[rel] != lh:
+            if rel not in remote_hashes:
+                reason = "new file"
+                files_to_upload.append((rel, reason))
+            elif remote_hashes[rel] != lh:
+                reason = "hash changed"
+                files_to_upload.append((rel, reason))
+
+        if files_to_upload:
+            print(f"Uploading {len(files_to_upload)} changed files:")
+            for rel, reason in files_to_upload:
+                print(f"  {rel} ({reason})")
+                remote_file = os.path.join(remote_rel_root, rel).replace("\\", "/")
                 local_file = os.path.join(src, rel)
                 subprocess.run(["modal", "volume", "rm", "workspace", remote_file], check=False)
                 subprocess.run(["modal", "volume", "put", "workspace", local_file, remote_file], check=True)
+        else:
+            print("No files need uploading - all hashes match")
 
         print(f"Done syncing {src}.")
 
     # Also sync top-level requirements.txt if present (needed for installs)
-    req = os.path.abspath("requirements.txt")
-    if os.path.exists(req):
-        print("Syncing requirements.txt -> /workspace/requirements.txt ...")
-        subprocess.run(["modal", "volume", "rm", "workspace", "requirements.txt"], check=False)
-        subprocess.run(["modal", "volume", "put", "workspace", req, "requirements.txt"], check=True)
-        print("Done syncing requirements.txt.")
+    # req = os.path.abspath("requirements.txt")
+    # if os.path.exists(req):
+    #     print("Syncing requirements.txt -> /workspace/requirements.txt ...")
+    #     subprocess.run(["modal", "volume", "rm", "workspace", "requirements.txt"], check=False)
+    #     subprocess.run(["modal", "volume", "put", "workspace", req, "requirements.txt"], check=True)
+    #     print("Done syncing requirements.txt.")
 
 
 
@@ -265,3 +277,4 @@ def run_model():
     print(f"HF cached at {path}")
     run_smoke_remote.remote(script)
     sync_outputs(local_dir="./out_local")
+
