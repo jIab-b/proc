@@ -117,7 +117,7 @@ class SDXLSDS:
     ):
         if not DIFFUSERS_AVAILABLE:
             raise ImportError("diffusers is required. Install with: pip install diffusers transformers accelerate scipy safetensors")
-        dtype = torch.float16 if (device.type == "cuda") else torch.float32
+        dtype = torch.float32
         cache_dir_env = os.environ.get("HF_HOME")
         local_only = str(os.environ.get("HF_HUB_OFFLINE", "0")).lower() in ("1", "true", "yes")
         loader_kwargs = {
@@ -137,7 +137,7 @@ class SDXLSDS:
                 load_id = ref_dir
                 loader_kwargs.pop("cache_dir", None)
         self.pipe = StableDiffusionXLPipeline.from_pretrained(load_id, **loader_kwargs)
-        self.pipe.to(device)
+        self.pipe.to(device, dtype=dtype)
         self.pipe.vae.requires_grad_(False)
         self.pipe.unet.requires_grad_(False)
         if hasattr(self.pipe, "text_encoder"):
@@ -151,7 +151,7 @@ class SDXLSDS:
         self.t_min = int(t_min)
         self.t_max = int(t_max)
         self.sdxl_scale = self.pipe.vae.config.scaling_factor
-        self.model_dtype = self.pipe.unet.dtype
+        self.model_dtype = torch.float32
         self.grad_scale = float(grad_scale)
         self.grad_clip = float(grad_clip) if grad_clip is not None else None
         self.normalize_grad = bool(normalize_grad)
@@ -177,12 +177,15 @@ class SDXLSDS:
         img = img.clamp(0.0, 1.0)
         img = img * 2.0 - 1.0
         vae_dtype = self.pipe.vae.dtype
+        if vae_dtype == torch.float16:
+            vae_dtype = torch.float32
         return img.to(device=self.device, dtype=vae_dtype)
 
     def _prepare_time_ids(self, batch, dtype):
-        orig = torch.tensor([self.resolution, self.resolution], device=self.device, dtype=dtype)
-        crop = torch.tensor([0, 0], device=self.device, dtype=dtype)
-        targ = torch.tensor([self.resolution, self.resolution], device=self.device, dtype=dtype)
+        target_dtype = torch.float32 if dtype == torch.float16 else dtype
+        orig = torch.tensor([self.resolution, self.resolution], device=self.device, dtype=target_dtype)
+        crop = torch.tensor([0, 0], device=self.device, dtype=target_dtype)
+        targ = torch.tensor([self.resolution, self.resolution], device=self.device, dtype=target_dtype)
         time_ids = torch.cat([orig, crop, targ], dim=0).view(1, -1).repeat(batch, 1)
         return time_ids
 
@@ -190,30 +193,48 @@ class SDXLSDS:
         B = rgb_bchw.shape[0]
         with torch.no_grad():
             prompt_embeds, neg_prompt_embeds, pooled, neg_pooled = self._encode_prompt(prompt, negative_prompt, B)
-        added_cond = {"text_embeds": pooled, "time_ids": self._prepare_time_ids(B, pooled.dtype)}
-        added_cond_uncond = {"text_embeds": neg_pooled, "time_ids": self._prepare_time_ids(B, neg_pooled.dtype)}
+
+        # Prepare conditioning for classifier-free guidance.
+        text_embeds = torch.cat([neg_prompt_embeds, prompt_embeds], dim=0).to(self.device, dtype=self.model_dtype)
+        pooled_embeds = torch.cat([neg_pooled, pooled], dim=0).to(self.device, dtype=self.model_dtype)
+        time_ids = self._prepare_time_ids(B, pooled.dtype)
+        time_ids = torch.cat([time_ids.to(self.device), time_ids.to(self.device)], dim=0)
+
         img = self._prep_image(rgb_bchw)
         latents = self.pipe.vae.encode(img).latent_dist.sample()
         latents = latents * self.sdxl_scale
+        latents = latents.to(self.device, dtype=self.model_dtype)
         latents.requires_grad_(True)
-        t = torch.randint(low=self.t_min, high=self.t_max + 1, size=(B,), device=self.device, dtype=torch.long)
+
+        t = torch.randint(
+            low=self.t_min,
+            high=self.t_max + 1,
+            size=(B,),
+            device=self.device,
+            dtype=torch.long,
+        )
         noise = torch.randn_like(latents)
-        alphas_cumprod = self.scheduler.alphas_cumprod.to(self.device)
-        a = alphas_cumprod.gather(0, t).view(B, 1, 1, 1).sqrt().to(dtype=latents.dtype)
-        s = (1.0 - alphas_cumprod.gather(0, t)).view(B, 1, 1, 1).sqrt().to(dtype=latents.dtype)
-        xt = a * latents + s * noise
-        model_in = torch.cat([xt, xt], dim=0)
-        t_in = torch.cat([t, t], dim=0)
-        cond = torch.cat([neg_prompt_embeds, prompt_embeds], dim=0)
-        added = {
-            "text_embeds": torch.cat([added_cond_uncond["text_embeds"], added_cond["text_embeds"]], dim=0),
-            "time_ids": torch.cat([added_cond_uncond["time_ids"], added_cond["time_ids"]], dim=0),
+        xt = self.scheduler.add_noise(latents, noise, t)
+
+        latent_model_input = torch.cat([xt, xt], dim=0)
+        timesteps = torch.cat([t, t], dim=0)
+        latent_model_input = self.scheduler.scale_model_input(latent_model_input, timesteps)
+
+        added_cond_kwargs = {
+            "text_embeds": pooled_embeds,
+            "time_ids": time_ids,
         }
-        noise_pred = self.pipe.unet(model_in, t_in, encoder_hidden_states=cond, added_cond_kwargs=added).sample
+
+        noise_pred = self.pipe.unet(
+            latent_model_input,
+            timesteps,
+            encoder_hidden_states=text_embeds.to(self.device),
+            added_cond_kwargs=added_cond_kwargs,
+        ).sample
         noise_uncond, noise_text = noise_pred.chunk(2, dim=0)
+        diff_mean = torch.mean(torch.abs(noise_text - noise_uncond)).detach()
         noise_guided = noise_uncond + self.guidance_scale * (noise_text - noise_uncond)
-        noise_guided = noise_guided.detach()
-        raw_grad = noise_guided - noise
+        raw_grad = (noise_guided - noise).detach()
         raw_grad = torch.nan_to_num(raw_grad, nan=0.0, posinf=0.0, neginf=0.0)
         raw_norm = torch.linalg.norm(raw_grad.float())
         stats = {
@@ -222,7 +243,15 @@ class SDXLSDS:
             "clipped": False,
             "normalized": bool(self.normalize_grad),
             "applied": False,
+            "noise_delta": float(diff_mean.cpu()) if torch.isfinite(diff_mean) else float("nan"),
         }
+        stats.update({
+            "t_min": int(t.min().item()),
+            "t_max": int(t.max().item()),
+            "t_mean": float(t.float().mean().item()),
+            "xt_norm": float(xt.detach().float().norm().cpu()),
+            "latents_norm": float(latents.detach().float().norm().cpu()),
+        })
         if not torch.isfinite(raw_norm) or raw_norm.item() < 1e-12:
             return stats
         grad = raw_grad
@@ -232,9 +261,9 @@ class SDXLSDS:
             grad = torch.clamp(grad, -self.grad_clip, self.grad_clip)
             stats["clipped"] = True
         grad = grad * self.grad_scale
-        xt.backward(gradient=grad, retain_graph=False)
+        sds_loss = (xt * grad).sum()
         stats["applied"] = True
-        return stats
+        return stats, sds_loss
 
 
 def get_clip_model(device, model_name="ViT-B-32", pretrained="laion2b_s34b_b79k", local_dir: str | None = None):
@@ -502,7 +531,21 @@ def train(args):
             mat_probs = mat_probs / mat_probs.sum(dim=-1, keepdim=True).clamp(min=1e-6)
             mat_logits_mixed = torch.log(mat_probs)
 
-            block_grid = (a_mixed > args.occ_cull_thresh)
+            warmup = step <= max(5, int(0.1 * args.steps))
+            thresh = min(args.occ_cull_thresh, 1e-6) if warmup else args.occ_cull_thresh
+            block_grid = (a_mixed > thresh)
+            fallback_used = False
+            if not torch.any(block_grid):
+                flat = a_mixed.reshape(-1)
+                k = int(max(1, args.export_topk)) if hasattr(args, 'export_topk') else 512
+                k = min(k, flat.numel())
+                vals, idxs = torch.topk(flat, k, largest=True)
+                xi = (idxs // (grid[1] * grid[2])).to(torch.long)
+                yi = ((idxs // grid[2]) % grid[1]).to(torch.long)
+                zi = (idxs % grid[2]).to(torch.long)
+                block_grid = torch.zeros_like(a_mixed, dtype=torch.bool)
+                block_grid[xi, yi, zi] = True
+                fallback_used = True
             view, proj = sample_camera_orbit(
                 step,
                 args.steps,
@@ -531,7 +574,18 @@ def train(args):
             )
             rgb = img_rgba[:, :3, :, :]
 
-            sds_stats = sds.step_sds(rgb, prompt=args.prompt, negative_prompt=args.negative_prompt)
+            rgb_requires_grad = bool(rgb.requires_grad)
+            if rgb_requires_grad:
+                rgb.retain_grad()
+            rgb_mean = float(rgb.mean().detach().cpu())
+            rgb_std = float(rgb.std().detach().cpu())
+            a_min = float(a_mixed.min().detach().cpu())
+            a_max = float(a_mixed.max().detach().cpu())
+            mp = mat_probs.clamp(min=1e-8)
+            mat_entropy = float((-(mp * mp.log()).sum(dim=-1).mean()).detach().cpu())
+
+            sds_stats, sds_loss = sds.step_sds(rgb, prompt=args.prompt, negative_prompt=args.negative_prompt)
+            sds_rgb_grad_norm = float(rgb.grad.detach().norm().cpu()) if rgb.grad is not None else 0.0
             clip_loss = torch.tensor(0.0, device=device)
             clip_sim = None
             if clip_model is not None:
@@ -578,7 +632,7 @@ def train(args):
                     else:
                         adjacency_loss = adjacency_loss + pattern.weight * mean_activation
 
-            loss = occ_reg + tv + dist_loss + adjacency_loss + clip_loss
+            loss = occ_reg + tv + dist_loss + adjacency_loss + clip_loss + sds_loss
 
             active_voxels = int((a_mixed > args.occ_cull_thresh).sum().item())
             step_record = {
@@ -589,8 +643,24 @@ def train(args):
                 "occ_mean": float(a_mixed.mean().detach().cpu()),
                 "occ_max": float(a_mixed.max().detach().cpu()),
                 "active_voxels": active_voxels,
+                "frac_active": float(active_voxels) / float(X * Y * Z),
+                "a_min": a_min,
+                "a_max": a_max,
+                "mat_entropy": mat_entropy,
+                "rgb_mean": rgb_mean,
+                "rgb_std": rgb_std,
+                "warmup": bool(warmup),
+                "occ_thresh_used": float(thresh),
+                "fallback_used": bool(fallback_used),
+                "rgb_requires_grad": rgb_requires_grad,
                 "sds": sds_stats,
+                "sds_rgb_grad_norm": sds_rgb_grad_norm,
             }
+
+            if active_voxels == 0:
+                step_record.setdefault("warnings", []).append("no_active_voxels")
+            if sds_stats.get("applied") and sds_rgb_grad_norm <= 1e-9:
+                step_record.setdefault("warnings", []).append("sds_no_rgb_grad")
 
             if not torch.isfinite(loss).item():
                 print(f"Warning: non-finite loss at step {step}, skipping update.")
@@ -616,6 +686,38 @@ def train(args):
             if args.grad_clip is not None and args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
+            total_g2 = 0.0
+            air_g2 = 0.0
+            solid_g2 = 0.0
+            n_with_grad = 0
+            for name, p in model.named_parameters():
+                if p.grad is not None:
+                    g = p.grad.detach().float()
+                    v = float(g.norm().cpu())
+                    total_g2 += v * v
+                    n_with_grad += 1
+                    if name.startswith("air_mlp."):
+                        air_g2 += v * v
+                    elif name.startswith("solid_mlp."):
+                        solid_g2 += v * v
+            total_grad_norm = total_g2 ** 0.5
+            air_grad_norm = air_g2 ** 0.5
+            solid_grad_norm = solid_g2 ** 0.5
+            if total_grad_norm <= 1e-9:
+                step_record.setdefault("warnings", []).append("no_param_grads")
+
+            # Renderer debug
+            rdbg = getattr(renderer, 'last_debug', {}) or {}
+            if rdbg:
+                step_record.update({
+                    "rast_vertices": float(rdbg.get("num_vertices", 0.0)),
+                    "rast_faces": float(rdbg.get("num_faces", 0.0)),
+                    "rast_mask_mean": float(rdbg.get("mask_mean", 0.0)),
+                    "rast_colors_req_grad": bool(rdbg.get("colors_req_grad", 0.0) != 0.0),
+                    "frustum_occ_total": float(rdbg.get("occ_total", 0.0)),
+                    "frustum_occ_kept": float(rdbg.get("occ_kept", 0.0)),
+                })
+
             step_record.update({
                 "loss": float(loss.detach().cpu()),
                 "occ_reg": float(occ_reg.detach().cpu()),
@@ -624,6 +726,11 @@ def train(args):
                 "adj_loss": float(adjacency_loss.detach().cpu()),
                 "clip_loss": float(clip_loss.detach().cpu()),
                 "clip_sim": float(clip_sim.detach().cpu()) if clip_sim is not None else None,
+                "sds_loss": float(sds_loss.detach().cpu()),
+                "grad_norm_total": total_grad_norm,
+                "grad_norm_air": air_grad_norm,
+                "grad_norm_solid": solid_grad_norm,
+                "params_with_grad": n_with_grad,
             })
 
             with torch.no_grad():

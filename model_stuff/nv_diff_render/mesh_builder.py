@@ -209,6 +209,7 @@ def build_mesh_from_grid(
 
     # Block AABB frustum culling (conservative)
     occ_idx = torch.nonzero(block_grid, as_tuple=False)
+    occ_total = int(occ_idx.shape[0])
     if occ_idx.shape[0] > 0:
         offset_x = -sx / 2.0
         offset_y = 0.0
@@ -352,10 +353,13 @@ def build_mesh_from_grid(
     occupancy = torch.cat(faces_out_occupancy, dim=0)
 
     faces = torch.arange(vertices.shape[0], dtype=torch.int32, device=device).reshape(-1, 3)
+    kept_count = int(torch.count_nonzero(block_grid).item())
     attributes = {
         'normals': normals,
         'colors': colors,
         'uvs': uvs,
-        'occupancy': occupancy
+        'occupancy': occupancy,
+        'debug_total_occ': torch.tensor(occ_total, dtype=torch.int32, device=device),
+        'debug_kept_occ': torch.tensor(kept_count, dtype=torch.int32, device=device)
     }
     return vertices, faces, attributes
