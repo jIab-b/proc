@@ -1,8 +1,8 @@
-import type { DSLCommand, VoxelEdit } from './commands'
+import type { DSLCommand, VoxelEdit, MaterialParams, LightingParams, PointLight, StructureGenerator } from './commands'
 import { withVersion } from './commands'
 import type { TerrainGenerateParams, HighlightSelection, Vec3 } from '../core'
 import type { WorldState } from '../world'
-import { highlightSelection as highlightSelectionStore } from '../core'
+import { highlightSelection as highlightSelectionStore, blockMaterials, sceneLighting, pointLights } from '../core'
 
 export type CommandDispatcher = (command: DSLCommand) => void
 
@@ -73,6 +73,34 @@ export function createCommandEmitter(
       case 'highlight_clear':
         (deps.fallbackHighlightSet ?? highlightSelectionStore.set)(null)
         break
+      case 'set_material':
+        blockMaterials.update(m => {
+          m.set(command.blockType, command.material)
+          return m
+        })
+        break
+      case 'set_lighting':
+        sceneLighting.set(command.params)
+        break
+      case 'add_point_light':
+        pointLights.update(lights => {
+          lights.set(command.id, command.light)
+          return lights
+        })
+        break
+      case 'remove_point_light':
+        pointLights.update(lights => {
+          lights.delete(command.id)
+          return lights
+        })
+        break
+      case 'generate_structure':
+        deps.world.apply({
+          type: 'generate_structure',
+          generator: command.generator,
+          source: command.source
+        })
+        break
       default:
         throw new Error(`Unhandled fallback DSL command ${(command as DSLCommand).type}`)
     }
@@ -96,6 +124,21 @@ export function createCommandEmitter(
     },
     clearHighlight(source: string) {
       dispatch(withVersion({ type: 'highlight_clear', source }))
+    },
+    setMaterial(blockType: number, material: MaterialParams, source: string) {
+      dispatch(withVersion({ type: 'set_material', blockType, material, source }))
+    },
+    setLighting(params: LightingParams, source: string) {
+      dispatch(withVersion({ type: 'set_lighting', params, source }))
+    },
+    addPointLight(id: string, light: PointLight, source: string) {
+      dispatch(withVersion({ type: 'add_point_light', id, light, source }))
+    },
+    removePointLight(id: string, source: string) {
+      dispatch(withVersion({ type: 'remove_point_light', id, source }))
+    },
+    generateStructure(generator: StructureGenerator, source: string) {
+      dispatch(withVersion({ type: 'generate_structure', generator, source }))
     }
   }
 }

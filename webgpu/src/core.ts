@@ -166,6 +166,39 @@ export const ellipsoidSelectedNode: Writable<EllipsoidNode> = writable(null)
 export const highlightSelection: Writable<HighlightSelection | null> = writable(null)
 export const cameraMode: Writable<'player' | 'overview'> = writable('overview')
 
+// === V2 STORES ===
+import type { MaterialParams, LightingParams, PointLight } from './dsl/commands'
+
+// Material registry (blockType -> MaterialParams)
+export const blockMaterials: Writable<Map<number, MaterialParams>> = writable(new Map())
+
+// Scene lighting
+function normalize(v: Vec3): Vec3 {
+  const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+  return len > 0 ? [v[0] / len, v[1] / len, v[2] / len] : [0, 1, 0]
+}
+
+export const sceneLighting: Writable<LightingParams> = writable({
+  sun: {
+    direction: normalize([-0.4, -0.85, -0.5]),
+    color: [1.0, 0.97, 0.9],
+    intensity: 5.0  // Well-balanced brightness
+  },
+  sky: {
+    zenithColor: [0.53, 0.81, 0.92],
+    horizonColor: [0.8, 0.85, 0.9],
+    groundColor: [0.18, 0.16, 0.12],
+    intensity: 1.3  // Moderate sky contribution
+  },
+  ambient: {
+    color: [1, 1, 1],
+    intensity: 1.3  // Good ambient light
+  }
+})
+
+// Point lights registry (id -> PointLight)
+export const pointLights: Writable<Map<string, PointLight>> = writable(new Map())
+
 // ============================================================================
 // CHUNK MANAGER
 // ============================================================================
@@ -252,7 +285,7 @@ export function buildChunkMesh(chunk: ChunkManager, worldScale = 1) {
               (bx + cx) * worldScale, (by + cy) * worldScale, (bz + cz) * worldScale,
               face.n[0], face.n[1], face.n[2],
               color[0], color[1], color[2],
-              u, v, texLayer
+              u, v, texLayer, block
             )
           }
         }
@@ -260,7 +293,7 @@ export function buildChunkMesh(chunk: ChunkManager, worldScale = 1) {
     }
   }
 
-  return { vertexData: new Float32Array(vertices), vertexCount: vertices.length / 12 }
+  return { vertexData: new Float32Array(vertices), vertexCount: vertices.length / 13 }
 }
 
 // ============================================================================

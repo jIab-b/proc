@@ -6,6 +6,8 @@ import {
   type TerrainGeneratorState
 } from '../procedural/terrainGenerator'
 import { type WorldCommand, type VoxelEdit } from './commands'
+import { generateLSystem } from '../procedural/lsystem'
+import { generateCellularAutomata } from '../procedural/cellularAutomata'
 
 export type WorldChange =
   | { kind: 'set'; edits?: VoxelEdit[]; count: number; source?: string }
@@ -75,6 +77,8 @@ export class WorldState {
         return this.applyLoadSnapshot(command.blocks, command.clear, command.worldScale, command.source)
       case 'terrain_region':
         return this.applyTerrainRegion(command.params, command.source)
+      case 'generate_structure':
+        return this.applyGenerateStructure(command.generator, command.source)
       default:
         return { success: false, message: `Unhandled command ${(command as any).type}` }
     }
@@ -151,6 +155,43 @@ export class WorldState {
     }
     this.notify(change)
     return { success: true, change }
+  }
+
+  private applyGenerateStructure(generator: any, source?: string): WorldResult {
+    const seed = generator.seed ?? Math.floor(Math.random() * 1000000)
+    let edits: VoxelEdit[] = []
+
+    switch (generator.type) {
+      case 'l-system':
+        if (!generator.lSystem) {
+          return { success: false, message: 'Missing L-system parameters' }
+        }
+        // Use center of region as start position
+        const startPos: Vec3 = [
+          Math.floor((generator.region.min[0] + generator.region.max[0]) / 2),
+          generator.region.min[1],
+          Math.floor((generator.region.min[2] + generator.region.max[2]) / 2)
+        ]
+        edits = generateLSystem(this.chunk, generator.lSystem, startPos)
+        break
+
+      case 'cellular_automata':
+        if (!generator.cellularAutomata) {
+          return { success: false, message: 'Missing cellular automata parameters' }
+        }
+        edits = generateCellularAutomata(this.chunk, generator.cellularAutomata, generator.region, seed)
+        break
+
+      case 'noise_sculpt':
+        // TODO: Implement noise sculpting when needed
+        return { success: false, message: 'Noise sculpt not yet implemented' }
+
+      default:
+        return { success: false, message: `Unknown generator type: ${generator.type}` }
+    }
+
+    // Apply all generated edits
+    return this.applySetBlocks(edits, source)
   }
 
   private clearRegion(region: TerrainRegion, params: TerrainGenerateParams, source?: string) {

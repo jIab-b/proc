@@ -117,7 +117,7 @@ export class MapManager {
     return { blocks, worldScale: this.worldScale }
   }
 
-  async createNew(copyFromSequence?: number, BlockType?: any) {
+  async createNew(copyFromSequence?: number, BlockType?: any, worldConfig?: WorldConfig) {
     if (copyFromSequence !== undefined && BlockType) {
       const { blocks } = await this.load(copyFromSequence, BlockType)
       this.activeSequence = null
@@ -125,6 +125,10 @@ export class MapManager {
     } else if (BlockType) {
       this.world.apply({ type: 'clear_all', source: 'map.createNew' })
       this.activeSequence = null
+      // Generate default terrain for new map
+      if (worldConfig) {
+        this.generateDefaultTerrain(worldConfig)
+      }
       return []
     }
     return []
@@ -159,18 +163,93 @@ export class MapManager {
       origin[1] + (sy - 1) * scale,
       origin[2] + (sz - 1) * scale
     ]
+
+    // Generate rolling terrain with variety
     const params: TerrainGenerateParams = {
       action: 'generate',
       region: { min: origin, max },
       selectionType: 'default',
       params: {
         seed: worldConfig.seed,
-        amplitude: 10,
-        roughness: 2.4,
-        elevation: 0.35
+        amplitude: 14,  // More dramatic height variation
+        roughness: 2.5,  // Balanced detail
+        elevation: 0.38
       }
     }
     this.world.apply({ type: 'terrain_region', params, source: 'map.defaultTerrain' })
+
+    // Add procedural trees scattered across the landscape
+    const treeCount = 8
+    const chunkCenterX = Math.floor(sx / 2)
+    const chunkCenterZ = Math.floor(sz / 2)
+    const treeSpread = Math.min(sx, sz) / 3
+
+    for (let i = 0; i < treeCount; i++) {
+      const angle = (i / treeCount) * Math.PI * 2
+      const dist = treeSpread * (0.5 + Math.random() * 0.5)
+      const treeX = Math.floor(chunkCenterX + Math.cos(angle) * dist)
+      const treeZ = Math.floor(chunkCenterZ + Math.sin(angle) * dist)
+      const treeY = this.findSurfaceY(treeX, treeZ)
+
+      if (treeY > 0 && treeY < sy - 20) {
+        this.world.apply({
+          type: 'generate_structure',
+          generator: {
+            type: 'l-system',
+            region: {
+              min: [treeX - 6, treeY, treeZ - 6],
+              max: [treeX + 6, treeY + 18, treeZ + 6]
+            },
+            seed: worldConfig.seed + i,
+            lSystem: {
+              axiom: 'F',
+              rules: { 'F': 'F[+F]F[-F][F]' },
+              iterations: 4,
+              angle: 22 + Math.random() * 6,
+              thickness: 1.8 + Math.random() * 0.4,
+              taper: 0.82,
+              blockType: 4, // Plank (wood)
+              leafBlockType: 2, // Grass (leaves)
+              leafProbability: 0.35
+            }
+          },
+          source: 'map.defaultTerrain'
+        })
+      }
+    }
+
+    // Add a cave system underground
+    const caveY = Math.floor(sy * 0.25)
+    const caveSize = Math.min(sx, sz) / 4
+    this.world.apply({
+      type: 'generate_structure',
+      generator: {
+        type: 'cellular_automata',
+        region: {
+          min: [Math.floor(chunkCenterX - caveSize), caveY - 8, Math.floor(chunkCenterZ - caveSize)],
+          max: [Math.floor(chunkCenterX + caveSize), caveY + 8, Math.floor(chunkCenterZ + caveSize)]
+        },
+        seed: worldConfig.seed + 999,
+        cellularAutomata: {
+          fillProbability: 0.48,
+          birthLimit: 4,
+          deathLimit: 3,
+          iterations: 4,
+          fillBlockType: 3, // Stone
+          emptyBlockType: 0  // Air
+        }
+      },
+      source: 'map.defaultTerrain'
+    })
+  }
+
+  private findSurfaceY(x: number, z: number): number {
+    const { y: sy } = this.chunk.size
+    for (let y = sy - 1; y >= 0; y--) {
+      const block = this.chunk.getBlock(x, y, z)
+      if (block !== 0) return y + 1 // Return position above first non-air block
+    }
+    return 0
   }
 
   private inBounds([x, y, z]: Vec3) {

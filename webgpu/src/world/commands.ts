@@ -1,6 +1,6 @@
 import type { TerrainGenerateParams, Vec3 } from '../core'
 import { BlockType } from '../core'
-import type { DSLCommand, VoxelEdit } from '../dsl/commands'
+import type { DSLCommand, VoxelEdit, StructureGenerator } from '../dsl/commands'
 import { createCommandEmitter } from '../dsl/commandEmitter'
 
 export type { VoxelEdit }
@@ -11,6 +11,7 @@ export type WorldCommand =
   | { type: 'load_snapshot'; blocks: VoxelEdit[]; clear?: boolean; worldScale?: number; source?: string }
   | { type: 'clear_all'; source?: string }
   | { type: 'terrain_region'; params: TerrainGenerateParams; source?: string }
+  | { type: 'generate_structure'; generator: StructureGenerator; source?: string }
 
 export type ParseResult = { commands: WorldCommand[]; errors: string[] }
 

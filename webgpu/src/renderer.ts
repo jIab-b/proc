@@ -26,6 +26,9 @@ import {
   highlightSelection as highlightSelectionStore,
   cameraMode as cameraModeStore,
   openaiApiKey,
+  blockMaterials,
+  sceneLighting,
+  pointLights,
   type CustomBlock,
   type Vec3,
   type Mat4,
@@ -159,7 +162,24 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
   window.addEventListener('resize', resize)
   resize()
 
-  const cameraBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+  const cameraBuffer = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }) // 64 (viewProj) + 16 (position + pad)
+
+  // Material buffer: 256 block types * 64 bytes each (properly aligned for WGSL)
+  // Struct layout: vec3 albedo (16 bytes), 4x f32 (16 bytes), vec4 pad (16 bytes), vec3 emissive (16 bytes) = 64 bytes
+  // Storage buffers need proper alignment - align to 256 bytes
+  const materialBufferSize = Math.ceil((256 * 64) / 256) * 256
+  const materialBuffer = device.createBuffer({ size: materialBufferSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+
+  // Lighting buffer: uniform struct (112 bytes with padding)
+  // Uniform buffers need to align to 256 bytes
+  const lightingBufferSize = 256
+  const lightingBuffer = device.createBuffer({ size: lightingBufferSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+
+  // Point lights buffer: storage buffer (16 + 16 * 32 bytes)
+  // Storage buffers need proper alignment - align to 256 bytes
+  const pointLightsBufferSize = Math.ceil((16 + 16 * 32) / 256) * 256
+  const pointLightsBuffer = device.createBuffer({ size: pointLightsBufferSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+
   const tileLayerCount = blockFaceOrder.length
   const tileSampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' })
   let tileTextureSize = 1
@@ -175,7 +195,10 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
       { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
       { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
-      { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } }, // materials
+      { binding: 5, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }, // lighting
+      { binding: 6, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } }  // point lights
     ]
   })
 
@@ -188,7 +211,10 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         { binding: 0, resource: { buffer: cameraBuffer } },
         { binding: 1, resource: tileSampler },
         { binding: 2, resource: tileArrayView },
-        { binding: 3, resource: { buffer: cameraParamsBuffer } }
+        { binding: 3, resource: { buffer: cameraParamsBuffer } },
+        { binding: 4, resource: { buffer: materialBuffer } },
+        { binding: 5, resource: { buffer: lightingBuffer } },
+        { binding: 6, resource: { buffer: pointLightsBuffer } }
       ]
     })
   }
@@ -206,13 +232,14 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
       module: shaderModule,
       entryPoint: 'vs_main',
       buffers: [{
-        arrayStride: 12 * 4,
+        arrayStride: 13 * 4, // 3 + 3 + 3 + 2 + 1 + 1 floats = 13
         attributes: [
-          { shaderLocation: 0, offset: 0, format: 'float32x3' },
-          { shaderLocation: 1, offset: 12, format: 'float32x3' },
-          { shaderLocation: 2, offset: 24, format: 'float32x3' },
-          { shaderLocation: 3, offset: 36, format: 'float32x2' },
-          { shaderLocation: 4, offset: 44, format: 'float32' }
+          { shaderLocation: 0, offset: 0, format: 'float32x3' },    // position
+          { shaderLocation: 1, offset: 12, format: 'float32x3' },   // normal
+          { shaderLocation: 2, offset: 24, format: 'float32x3' },   // color
+          { shaderLocation: 3, offset: 36, format: 'float32x2' },   // uv
+          { shaderLocation: 4, offset: 44, format: 'float32' },     // textureIndex
+          { shaderLocation: 5, offset: 48, format: 'float32' }      // blockType
         ]
       }]
     },
@@ -333,6 +360,110 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
     }
     device.queue.writeBuffer(vertexBuffer, 0, mesh.vertexData.buffer, mesh.vertexData.byteOffset, mesh.vertexData.byteLength)
   }
+
+  function updateMaterialBuffer() {
+    const materials = get(blockMaterials)
+    const data = new Float32Array(256 * 16) // 256 materials * 16 floats each (64 bytes with WGSL alignment)
+
+    materials.forEach((mat, blockType) => {
+      const offset = blockType * 16
+      // albedo (vec3 + pad) - vec3 aligned to 16 bytes
+      data[offset + 0] = mat.albedo?.[0] ?? 1.0
+      data[offset + 1] = mat.albedo?.[1] ?? 1.0
+      data[offset + 2] = mat.albedo?.[2] ?? 1.0
+      data[offset + 3] = 0 // vec3 padding
+      // roughness, metallic, emissiveStrength, ao
+      data[offset + 4] = mat.roughness
+      data[offset + 5] = mat.metallic
+      data[offset + 6] = mat.emissiveStrength ?? 0
+      data[offset + 7] = mat.ao ?? 1.0
+      // _pad1 vec4 (16 bytes)
+      data[offset + 8] = 0
+      data[offset + 9] = 0
+      data[offset + 10] = 0
+      data[offset + 11] = 0
+      // emissive (vec3 + pad) - vec3 aligned to 16 bytes
+      data[offset + 12] = mat.emissive?.[0] ?? 0
+      data[offset + 13] = mat.emissive?.[1] ?? 0
+      data[offset + 14] = mat.emissive?.[2] ?? 0
+      data[offset + 15] = 0 // vec3 padding
+    })
+
+    device.queue.writeBuffer(materialBuffer, 0, data)
+  }
+
+  function updateLightingBuffer() {
+    const lighting = get(sceneLighting)
+    const data = new Float32Array(28) // 112 bytes / 4
+
+    // sunDirection (vec3) + sunIntensity (f32)
+    data[0] = lighting.sun.direction[0]
+    data[1] = lighting.sun.direction[1]
+    data[2] = lighting.sun.direction[2]
+    data[3] = lighting.sun.intensity
+    // sunColor (vec3) + skyIntensity (f32)
+    data[4] = lighting.sun.color[0]
+    data[5] = lighting.sun.color[1]
+    data[6] = lighting.sun.color[2]
+    data[7] = lighting.sky.intensity
+    // skyZenith (vec3) + pad
+    data[8] = lighting.sky.zenithColor[0]
+    data[9] = lighting.sky.zenithColor[1]
+    data[10] = lighting.sky.zenithColor[2]
+    data[11] = 0
+    // skyHorizon (vec3) + pad
+    data[12] = lighting.sky.horizonColor[0]
+    data[13] = lighting.sky.horizonColor[1]
+    data[14] = lighting.sky.horizonColor[2]
+    data[15] = 0
+    // skyGround (vec3) + pad
+    data[16] = lighting.sky.groundColor[0]
+    data[17] = lighting.sky.groundColor[1]
+    data[18] = lighting.sky.groundColor[2]
+    data[19] = 0
+    // ambientColor (vec3) + ambientIntensity (f32)
+    data[20] = lighting.ambient.color[0]
+    data[21] = lighting.ambient.color[1]
+    data[22] = lighting.ambient.color[2]
+    data[23] = lighting.ambient.intensity
+
+    device.queue.writeBuffer(lightingBuffer, 0, data)
+  }
+
+  function updatePointLightsBuffer() {
+    const lights = get(pointLights)
+    const data = new Float32Array(4 + 16 * 8) // count(4) + 16 lights * 8 floats each (32 bytes)
+
+    const lightArray = Array.from(lights.values())
+    data[0] = Math.min(lightArray.length, 16) // count
+    // data[1-3] = pad (vec3)
+
+    lightArray.slice(0, 16).forEach((light, i) => {
+      const offset = 4 + i * 8
+      // position (vec3) + intensity (f32)
+      data[offset + 0] = light.position[0]
+      data[offset + 1] = light.position[1]
+      data[offset + 2] = light.position[2]
+      data[offset + 3] = light.intensity
+      // color (vec3) + radius (f32)
+      data[offset + 4] = light.color[0]
+      data[offset + 5] = light.color[1]
+      data[offset + 6] = light.color[2]
+      data[offset + 7] = light.radius
+    })
+
+    device.queue.writeBuffer(pointLightsBuffer, 0, data)
+  }
+
+  // Initialize buffers with default values
+  updateMaterialBuffer()
+  updateLightingBuffer()
+  updatePointLightsBuffer()
+
+  // Subscribe to store changes
+  blockMaterials.subscribe(() => updateMaterialBuffer())
+  sceneLighting.subscribe(() => updateLightingBuffer())
+  pointLights.subscribe(() => updatePointLightsBuffer())
 
   function updateCustomTextures(customBlocks: CustomBlock[]) {
     const usedLayers = new Set<number>()
@@ -2393,7 +2524,13 @@ VALIDATION RULES (MUST follow exactly):
     }
 
     const viewProj = multiplyMat4(proj, view)
-    device.queue.writeBuffer(cameraBuffer, 0, viewProj)
+    const cameraData = new Float32Array(20) // 16 (viewProj) + 4 (position + pad)
+    cameraData.set(viewProj, 0)
+    cameraData[16] = position[0]
+    cameraData[17] = position[1]
+    cameraData[18] = position[2]
+    cameraData[19] = 0 // padding
+    device.queue.writeBuffer(cameraBuffer, 0, cameraData)
     const camParams = new Float32Array([near, far, 0, 0])
     device.queue.writeBuffer(cameraParamsBuffer, 0, camParams)
 

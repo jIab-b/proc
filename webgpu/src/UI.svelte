@@ -21,6 +21,68 @@
   let buttonText = 'Generate Face Tile'
   $: canGenerate = $texturePrompt.trim().length > 0 && $selectedFace !== null && !isGenerating
 
+  // LLM Terrain Generation
+  async function generateTerrainFromLLM() {
+    const prompt = $texturePrompt.trim()
+    if (!prompt || !$openaiApiKey) return
+
+    isGenerating = true
+    try {
+      const terrainParamsDoc = await fetch('/TERRAIN_PARAMS.txt').then(r => r.text())
+
+      const systemPrompt = `You are a terrain generation assistant. Given a user's description, generate DSL commands to create voxel terrain, structures, materials, and lighting.
+
+${terrainParamsDoc}
+
+Return ONLY valid JSON array of DSL commands. No explanations, no markdown code blocks - just the raw JSON array.`
+
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${$openaiApiKey}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-4',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: `Generate terrain: ${prompt}` }
+          ],
+          temperature: 0.7
+        })
+      })
+
+      if (!res.ok) throw new Error(`OpenAI API error: ${res.status}`)
+
+      const data = await res.json()
+      const content = data.choices?.[0]?.message?.content || ''
+
+      // Parse JSON commands
+      const cleaned = content.replace(/^```json?\s*|\s*```$/gi, '').trim()
+      const commands = JSON.parse(cleaned)
+
+      // Execute commands through terrain generation hook
+      if (Array.isArray(commands)) {
+        for (const cmd of commands) {
+          if (cmd.type === 'terrain_region' && cmd.params) {
+            $gpuHooks.generateTerrain?.(cmd.params)
+          } else if (cmd.type === 'set_lighting' || cmd.type === 'generate_structure' || cmd.type === 'add_point_light') {
+            // These need to be sent through the DSL engine/world engine
+            console.log('DSL command:', cmd)
+            // For now, just log - would need world engine access to properly dispatch
+          }
+        }
+        console.log(`Executed ${commands.length} DSL commands from LLM`)
+        alert('Terrain generated! Check the viewport.')
+      }
+    } catch (err) {
+      console.error('LLM terrain generation failed:', err)
+      alert(`Failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      isGenerating = false
+    }
+  }
+
   // Block selection handlers
   function selectDefaultBlock(type: BlockType) {
     selectedBlockType.set(type)
@@ -332,6 +394,23 @@
 <div class="sidebar">
   <CameraModeToggle />
 
+  <!-- LLM Terrain Generation -->
+  <div class="llm-prompt-section">
+    <h3>AI Terrain Generator</h3>
+    <textarea
+      class="llm-textarea"
+      placeholder="Describe terrain (e.g., 'mountainous landscape with trees and caves')"
+      rows="3"
+      bind:value={$texturePrompt}
+    ></textarea>
+    <button class="llm-generate-btn" on:click={generateTerrainFromLLM} disabled={!$openaiApiKey || isGenerating}>
+      {isGenerating ? 'Generating...' : 'Generate Terrain'}
+    </button>
+    {#if !$openaiApiKey}
+      <p class="api-key-warning">⚠️ OpenAI API key required</p>
+    {/if}
+  </div>
+
   <!-- Block Grid -->
   <div class="block-grid" bind:this={blockGridEl}>
     <div class="grid-header">
@@ -393,6 +472,59 @@
     font-size: clamp(12px, 3vw, 14px);
     font-weight: 600;
     color: #d2dff4;
+  }
+
+  /* LLM Terrain Generation */
+  .llm-prompt-section {
+    padding: 12px;
+    border-bottom: 1px solid rgba(210, 223, 244, 0.15);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .llm-textarea {
+    width: 100%;
+    padding: 8px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(210, 223, 244, 0.2);
+    border-radius: 4px;
+    color: #d2dff4;
+    font-size: 12px;
+    font-family: inherit;
+    resize: vertical;
+  }
+
+  .llm-textarea::placeholder {
+    color: rgba(210, 223, 244, 0.4);
+  }
+
+  .llm-generate-btn {
+    padding: 8px 12px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    border-radius: 4px;
+    color: white;
+    font-weight: 600;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .llm-generate-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(102, 126, 234, 0.4);
+  }
+
+  .llm-generate-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .api-key-warning {
+    margin: 0;
+    font-size: 11px;
+    color: #ff9800;
   }
 
   /* Block Grid */

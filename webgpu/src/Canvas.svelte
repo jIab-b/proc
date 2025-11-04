@@ -115,9 +115,9 @@ import { withVersion } from './dsl/commands'
   async function handleNewMap(copyFrom?: number) {
     closeContextMenu()
     try {
-      const blocks = await mapManager.createNew(copyFrom, BlockType)
+      const blocks = await mapManager.createNew(copyFrom, BlockType, worldConfig)
       renderBackend?.markWorldDirty()
-      renderBackend?.focusCameraOnBlocks(blocks)
+      renderBackend?.focusCameraOnBlocks(blocks.length > 0 ? blocks : [{ position: [Math.floor(chunk.size.x/2), Math.floor(chunk.size.y/2), Math.floor(chunk.size.z/2)] }])
       console.log('Created new map')
     } catch (err) {
       console.error('Create failed:', err)

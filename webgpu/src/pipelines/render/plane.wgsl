@@ -1,5 +1,9 @@
 // Plane shader with dots for highlight visualization
-struct Camera { viewProj : mat4x4<f32> }
+struct Camera {
+  viewProj : mat4x4<f32>,
+  position : vec3<f32>,
+  _pad : f32
+}
 @group(0) @binding(0) var<uniform> uCamera : Camera;
 
 struct PlaneUniforms {

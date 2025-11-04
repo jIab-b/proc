@@ -118,3 +118,267 @@ amplitude must be >= 8.0 and <= 18.0
 roughness must be >= 2.2 and <= 2.8
 elevation must be >= 0.35 and <= 0.50
 seed must be an integer or undefined
+
+=== DSL VERSION 2: EXTENDED COMMANDS ===
+
+The following commands extend the DSL with PBR materials, lighting, and procedural generation.
+
+=== MATERIALS (PBR) ===
+
+Set material properties for a specific block type:
+
+{
+  "type": "set_material",
+  "blockType": number,  // 0-255
+  "material": {
+    "albedo": [r, g, b],         // [0,1] RGB base color, optional
+    "roughness": number,          // [0, 1] surface roughness
+    "metallic": number,           // [0, 1] metalness
+    "emissive": [r, g, b],       // [0,1] RGB emissive color, optional
+    "emissiveStrength": number,   // [0, 100] emissive intensity, optional
+    "ao": number                  // [0, 1] ambient occlusion, optional
+  }
+}
+
+Example: Metallic reflective block
+{
+  "type": "set_material",
+  "blockType": 5,
+  "material": {
+    "albedo": [0.8, 0.8, 0.9],
+    "roughness": 0.2,
+    "metallic": 1.0,
+    "ao": 1.0
+  }
+}
+
+Example: Glowing emissive block
+{
+  "type": "set_material",
+  "blockType": 7,
+  "material": {
+    "albedo": [0.1, 0.1, 0.1],
+    "roughness": 0.5,
+    "metallic": 0.0,
+    "emissive": [1.0, 0.6, 0.2],
+    "emissiveStrength": 8.0
+  }
+}
+
+=== LIGHTING ===
+
+Set global lighting parameters:
+
+{
+  "type": "set_lighting",
+  "params": {
+    "sun": {
+      "direction": [x, y, z],    // normalized direction vector
+      "color": [r, g, b],        // [0,1] RGB color
+      "intensity": number        // [0, 10] brightness
+    },
+    "sky": {
+      "zenithColor": [r, g, b],   // [0,1] RGB sky color at top
+      "horizonColor": [r, g, b],  // [0,1] RGB sky color at horizon
+      "groundColor": [r, g, b],   // [0,1] RGB ground reflection color
+      "intensity": number         // [0, 2] sky ambient strength
+    },
+    "ambient": {
+      "color": [r, g, b],        // [0,1] RGB ambient color
+      "intensity": number        // [0, 2] ambient strength
+    },
+    "timeOfDay": number          // [0, 24] optional, auto-computes sun direction
+  }
+}
+
+Example: Sunset lighting
+{
+  "type": "set_lighting",
+  "params": {
+    "sun": {
+      "direction": [-0.3, -0.7, -0.6],
+      "color": [1.0, 0.7, 0.5],
+      "intensity": 1.2
+    },
+    "sky": {
+      "zenithColor": [0.3, 0.4, 0.7],
+      "horizonColor": [1.0, 0.6, 0.4],
+      "groundColor": [0.2, 0.15, 0.1],
+      "intensity": 0.6
+    },
+    "ambient": {
+      "color": [0.9, 0.8, 0.7],
+      "intensity": 0.25
+    }
+  }
+}
+
+=== POINT LIGHTS ===
+
+Add a point light source:
+
+{
+  "type": "add_point_light",
+  "id": string,  // unique identifier
+  "light": {
+    "position": [x, y, z],
+    "color": [r, g, b],      // [0,1] RGB color
+    "intensity": number,     // [0, 100] brightness
+    "radius": number         // [0.1, 50] influence distance
+  }
+}
+
+Remove a point light:
+
+{
+  "type": "remove_point_light",
+  "id": string
+}
+
+Example: Torch light
+{
+  "type": "add_point_light",
+  "id": "torch_1",
+  "light": {
+    "position": [10, 35, 10],
+    "color": [1.0, 0.7, 0.3],
+    "intensity": 8.0,
+    "radius": 15.0
+  }
+}
+
+=== PROCEDURAL GENERATION ===
+
+Generate structures using L-systems or cellular automata:
+
+{
+  "type": "generate_structure",
+  "generator": {
+    "type": "l-system" | "cellular_automata" | "noise_sculpt",
+    "region": {
+      "min": [x, y, z],
+      "max": [x, y, z]
+    },
+    "seed": integer,  // optional
+
+    // For L-system trees/fractals
+    "lSystem": {
+      "axiom": string,                // starting string (e.g. "F")
+      "rules": { char: string },      // production rules (e.g. {"F": "F[+F]F[-F]"})
+      "iterations": number,           // [1, 8] expansion iterations
+      "angle": number,                // [10, 90] rotation angle in degrees
+      "thickness": number,            // [0.5, 3] branch thickness
+      "taper": number,                // [0.7, 0.95] thickness reduction per segment
+      "blockType": number,            // trunk/branch block type
+      "leafBlockType": number,        // optional leaf block type
+      "leafProbability": number       // [0, 1] optional leaf spawn chance
+    },
+
+    // For caves/organic structures
+    "cellularAutomata": {
+      "fillProbability": number,     // [0, 1] initial random fill
+      "birthLimit": number,          // [3, 8] neighbors to birth cell
+      "deathLimit": number,          // [3, 8] neighbors to keep cell alive
+      "iterations": number,          // [1, 20] smoothing iterations
+      "fillBlockType": number,       // block type for filled cells
+      "emptyBlockType": number       // block type for empty cells (usually Air)
+    }
+  }
+}
+
+Example: L-system tree
+{
+  "type": "generate_structure",
+  "generator": {
+    "type": "l-system",
+    "region": {
+      "min": [10, 30, 10],
+      "max": [20, 50, 20]
+    },
+    "seed": 12345,
+    "lSystem": {
+      "axiom": "F",
+      "rules": {
+        "F": "F[+F]F[-F][F]"
+      },
+      "iterations": 4,
+      "angle": 25,
+      "thickness": 2.0,
+      "taper": 0.85,
+      "blockType": 4,
+      "leafBlockType": 2,
+      "leafProbability": 0.3
+    }
+  }
+}
+
+Example: Cave generation
+{
+  "type": "generate_structure",
+  "generator": {
+    "type": "cellular_automata",
+    "region": {
+      "min": [0, 20, 0],
+      "max": [20, 30, 20]
+    },
+    "seed": 99999,
+    "cellularAutomata": {
+      "fillProbability": 0.45,
+      "birthLimit": 4,
+      "deathLimit": 3,
+      "iterations": 5,
+      "fillBlockType": 3,
+      "emptyBlockType": 0
+    }
+  }
+}
+
+=== BLOCK TYPES REFERENCE ===
+
+0: Air
+1: Dirt
+2: Grass
+3: Stone
+4: Plank (wood)
+5+: Custom blocks (can assign materials)
+
+=== COMMAND WORKFLOW SUGGESTIONS ===
+
+For creating compelling scenes:
+1. Set lighting first (set_lighting) to establish mood
+2. Apply materials to block types (set_material) for visual variety
+3. Generate base terrain (terrain_region)
+4. Add procedural structures (generate_structure) like trees or caves
+5. Place point lights (add_point_light) for atmosphere
+6. Optionally add individual blocks (set_block) for details
+
+=== VALIDATION V2 ===
+
+Material validation:
+- albedo, emissive: each component [0, 1]
+- roughness, metallic, ao: [0, 1]
+- emissiveStrength: [0, 100]
+
+Lighting validation:
+- All color components: [0, 1]
+- sun.intensity: [0, 10]
+- sky.intensity, ambient.intensity: [0, 2]
+- timeOfDay (optional): [0, 24]
+
+Point lights validation:
+- color components: [0, 1]
+- intensity: [0, 100]
+- radius: [0.1, 50]
+- Maximum 16 point lights active at once
+
+L-system validation:
+- iterations: [1, 8]
+- angle: [10, 90]
+- thickness: [0.5, 3]
+- taper: [0.7, 0.95]
+- leafProbability: [0, 1]
+
+Cellular automata validation:
+- fillProbability: [0, 1]
+- birthLimit, deathLimit: [3, 8]
+- iterations: [1, 20]
