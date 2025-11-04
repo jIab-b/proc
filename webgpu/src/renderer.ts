@@ -1057,7 +1057,18 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
         } else if (currentSelection && currentSelection.shape === 'cube') {
           const r = currentSelection.radius ?? get(highlightRadius)
 
+          // Calculate if cube is visible
+          const centerWorld = chunkToWorld([
+            currentSelection.center[0] + 0.5,
+            currentSelection.center[1] + 0.5,
+            currentSelection.center[2] + 0.5
+          ])
+          const isVisible = latestCamera && projectToScreen(centerWorld, latestCamera.viewProjectionMatrix, canvas.width, canvas.height) !== null
+
           clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, r, r, r, 'ellipsoid')
+
+          if (!isVisible) {
+          }
         }
 
         if (ev.button === 2) {
@@ -1150,10 +1161,10 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           }
         }
 
-        if (ev.button === 0 && currentSelection && currentSelection.shape === 'ellipsoid') {
+        if (ev.button === 0 && currentSelection && (currentSelection.shape === 'ellipsoid' || currentSelection.shape === 'cube')) {
 
           // Left-click on axis node: activate mouse-controlled scaling
-          if (clickedNode) {
+          if (clickedNode && clickedNode !== 'center') {
             ev.preventDefault()
             ellipsoidNodeAdjustActive = true
             ellipsoidSelectedNode.set(clickedNode)
@@ -1167,9 +1178,13 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
             nodeEditStartX = ev.clientX
             nodeEditStartY = ev.clientY
             const axis = clickedNode[1] as 'x' | 'y' | 'z'
-            if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
-            else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
-            else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
+            if (currentSelection.shape === 'ellipsoid') {
+              if (axis === 'x') nodeEditStartRadius = get(ellipsoidRadiusX)
+              else if (axis === 'y') nodeEditStartRadius = get(ellipsoidRadiusY)
+              else if (axis === 'z') nodeEditStartRadius = get(ellipsoidRadiusZ)
+            } else if (currentSelection.shape === 'cube') {
+              nodeEditStartRadius = currentSelection.radius ?? get(highlightRadius)
+            }
 
             ev.stopPropagation()
             return
@@ -1424,6 +1439,11 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
             const updated: HighlightSelection = { ...currentSelection, radiusZ: newRadius }
             emitHighlight(updated, 'renderer.highlight.ellipsoid.resizeZ')
           }
+        } else if (currentSelection && currentSelection.shape === 'cube') {
+          // For cube, all axis nodes adjust the same radius (uniform scaling)
+          highlightRadius.set(newRadius)
+          const updated: HighlightSelection = { ...currentSelection, radius: newRadius }
+          emitHighlight(updated, 'renderer.highlight.cube.resize')
         }
 
         // Don't orbit camera while adjusting nodes
@@ -1434,7 +1454,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
     // Hover detection for nodes (only in overview mode and not actively dragging a node)
     if (cameraMode === 'overview' && !ellipsoidNodeAdjustActive && !ellipsoidCenterDragActive) {
       const currentSelection = get(highlightSelectionStore)
-      if (currentSelection && (currentSelection.shape === 'ellipsoid' || currentSelection.shape === 'plane')) {
+      if (currentSelection && (currentSelection.shape === 'ellipsoid' || currentSelection.shape === 'plane' || currentSelection.shape === 'cube')) {
         const rect = canvas.getBoundingClientRect()
         const canvasX = ((ev.clientX - rect.left) / rect.width) * canvas.width
         const canvasY = ((ev.clientY - rect.top) / rect.height) * canvas.height
@@ -1450,6 +1470,9 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           const sizeX = currentSelection.planeSizeX ?? 8
           const sizeZ = currentSelection.planeSizeZ ?? 8
           newHoveredNode = getClickedNode(canvasX, canvasY, currentSelection.center, sizeX, 0, sizeZ, 'plane')
+        } else if (currentSelection.shape === 'cube') {
+          const r = currentSelection.radius ?? get(highlightRadius)
+          newHoveredNode = getClickedNode(canvasX, canvasY, currentSelection.center, r, r, r, 'ellipsoid')
         }
 
         hoveredNode = newHoveredNode
@@ -2227,7 +2250,7 @@ VALIDATION RULES (MUST follow exactly):
         } else {
           ellipsoidMovementActive = false
         }
-      } else if (ev.button === 0 && currentSelection && (currentSelection.shape === 'ellipsoid' || currentSelection.shape === 'plane')) {
+      } else if (ev.button === 0 && currentSelection && (currentSelection.shape === 'ellipsoid' || currentSelection.shape === 'plane' || currentSelection.shape === 'cube')) {
         if (clickedNode === 'center') {
           ev.preventDefault()
           ellipsoidCenterDragActive = true
