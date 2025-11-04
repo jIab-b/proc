@@ -353,16 +353,6 @@ class DifferentiableBlockRenderer(nn.Module):
             device = material_logits.device
             rgb = self.shader.sky_color.view(1, 3, 1, 1).expand(1, 3, img_h, img_w).to(device)
             alpha = torch.zeros(1, 1, img_h, img_w, device=device)
-<<<<<<< HEAD
-            self.last_debug = {
-                'num_vertices': 0.0,
-                'num_faces': 0.0,
-                'mask_mean': 0.0,
-                'colors_req_grad': 0.0,
-                'occ_total': float(attributes.get('debug_total_occ', torch.tensor(0)).item()) if isinstance(attributes.get('debug_total_occ', None), torch.Tensor) else 0.0,
-                'occ_kept': float(attributes.get('debug_kept_occ', torch.tensor(0)).item()) if isinstance(attributes.get('debug_kept_occ', None), torch.Tensor) else 0.0,
-            }
-=======
             debug_entry["mesh_empty"] = True
             # Write empty log
             with open(debug_path, "a", encoding="utf-8") as f:
@@ -371,21 +361,24 @@ class DifferentiableBlockRenderer(nn.Module):
                     f.write(f"  {k}: {v}\n")
                 f.write("\n")
                 f.flush()
->>>>>>> d6210d93b310fd5862d24541de732cbd6bc68227
+            self.last_debug = {
+                'num_vertices': 0.0,
+                'num_faces': 0.0,
+                'mask_mean': 0.0,
+                'colors_req_grad': 0.0,
+                'occ_total': float(attributes.get('debug_total_occ', torch.tensor(0)).item()) if isinstance(attributes.get('debug_total_occ', None), torch.Tensor) else 0.0,
+                'occ_kept': float(attributes.get('debug_kept_occ', torch.tensor(0)).item()) if isinstance(attributes.get('debug_kept_occ', None), torch.Tensor) else 0.0,
+            }
             return torch.cat([rgb, alpha], dim=1)
 
         clip_pos = world_to_clip(vertices, camera_view.to(vertices.device), camera_proj.to(vertices.device))
         clip_pos_batch = clip_pos.unsqueeze(0)
         faces_int32 = faces.int()
 
-<<<<<<< HEAD
-        rast, _ = dr.rasterize(self.glctx, clip_pos_batch, faces_int32, resolution=[img_h, img_w], grad_db=True)
-=======
         rast, _ = dr.rasterize(self.glctx, clip_pos_batch, faces_int32, resolution=[img_h, img_w], grad_db=False)
         # Log rast stats (barycentrics in [0,1,2], z, w)
         rast_flat = rast[0].view(-1, 4)  # H*W x 4
         log_tensor_stats("rast_bary_z_w", rast_flat, debug_entry)
->>>>>>> d6210d93b310fd5862d24541de732cbd6bc68227
 
         normals, _ = dr.interpolate(attributes['normals'].unsqueeze(0), rast, faces_int32)
         normals = normals[0]
@@ -429,16 +422,6 @@ class DifferentiableBlockRenderer(nn.Module):
         alpha_out = mask.permute(2, 0, 1).unsqueeze(0)
         result = torch.cat([rgb_out, alpha_out], dim=1)
         result = torch.nan_to_num(result.clamp(0.0, 1.0))
-<<<<<<< HEAD
-        self.last_debug = {
-            'num_vertices': float(vertices.shape[0]),
-            'num_faces': float(faces_int32.shape[0]),
-            'mask_mean': float(mask.mean().detach().cpu()),
-            'colors_req_grad': 1.0 if attributes['colors'].requires_grad else 0.0,
-            'occ_total': float(attributes.get('debug_total_occ', torch.tensor(0)).item()) if isinstance(attributes.get('debug_total_occ', None), torch.Tensor) else 0.0,
-            'occ_kept': float(attributes.get('debug_kept_occ', torch.tensor(0)).item()) if isinstance(attributes.get('debug_kept_occ', None), torch.Tensor) else 0.0,
-        }
-=======
         if torch.isnan(result).any() or torch.isinf(result).any():
             debug_entry["result_corrected"] = "NaN/inf fixed"
         log_tensor_stats("result_rgba", result, debug_entry)
@@ -452,5 +435,12 @@ class DifferentiableBlockRenderer(nn.Module):
                 f.write("\n")
                 f.flush()
 
->>>>>>> d6210d93b310fd5862d24541de732cbd6bc68227
+        self.last_debug = {
+            'num_vertices': float(vertices.shape[0]),
+            'num_faces': float(faces_int32.shape[0]),
+            'mask_mean': float(mask.mean().detach().cpu()),
+            'colors_req_grad': 1.0 if attributes['colors'].requires_grad else 0.0,
+            'occ_total': float(attributes.get('debug_total_occ', torch.tensor(0)).item()) if isinstance(attributes.get('debug_total_occ', None), torch.Tensor) else 0.0,
+            'occ_kept': float(attributes.get('debug_kept_occ', torch.tensor(0)).item()) if isinstance(attributes.get('debug_kept_occ', None), torch.Tensor) else 0.0,
+        }
         return result

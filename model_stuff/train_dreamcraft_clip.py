@@ -535,41 +535,11 @@ def train(args):
         air_soft = torch.sigmoid(air_logits)
         debug_entry["air_soft"] = log_tensor_stats("air_soft", air_soft)
 
-<<<<<<< HEAD
-            warmup = step <= max(5, int(0.1 * args.steps))
-            thresh = min(args.occ_cull_thresh, 1e-6) if warmup else args.occ_cull_thresh
-            block_grid = (a_mixed > thresh)
-            fallback_used = False
-            if not torch.any(block_grid):
-                flat = a_mixed.reshape(-1)
-                k = int(max(1, args.export_topk)) if hasattr(args, 'export_topk') else 512
-                k = min(k, flat.numel())
-                vals, idxs = torch.topk(flat, k, largest=True)
-                xi = (idxs // (grid[1] * grid[2])).to(torch.long)
-                yi = ((idxs // grid[2]) % grid[1]).to(torch.long)
-                zi = (idxs % grid[2]).to(torch.long)
-                block_grid = torch.zeros_like(a_mixed, dtype=torch.bool)
-                block_grid[xi, yi, zi] = True
-                fallback_used = True
-            view, proj = sample_camera_orbit(
-                step,
-                args.steps,
-                grid,
-                args.train_w,
-                args.train_h,
-                radius_scale=args.cam_radius_scale,
-                fov_deg=args.fov_deg,
-                seed=args.seed,
-            )
-            view = view.to(device)
-            proj = proj.to(device)
-=======
         air_two_class = torch.stack([-air_logits, air_logits], dim=-1)
         air_hard = F.gumbel_softmax(air_two_class, tau=max(1e-3, args.air_tau), hard=True, dim=-1)[..., 1]
         debug_entry["air_hard"] = log_tensor_stats("air_hard", air_hard)
         solid_hard = F.gumbel_softmax(mat_logits, tau=max(1e-3, args.solid_tau), hard=True, dim=-1)
         debug_entry["solid_hard"] = log_tensor_stats("solid_hard", solid_hard)
->>>>>>> d6210d93b310fd5862d24541de732cbd6bc68227
 
         alpha_air = compute_alpha(step, args.steps, args.air_alpha_start, args.air_alpha_end)
         alpha_solid = compute_alpha(step, args.steps, args.solid_alpha_start, args.solid_alpha_end)
@@ -578,36 +548,11 @@ def train(args):
         debug_entry["air_tau"] = args.air_tau
         debug_entry["solid_tau"] = args.solid_tau
 
-<<<<<<< HEAD
-            rgb_requires_grad = bool(rgb.requires_grad)
-            if rgb_requires_grad:
-                rgb.retain_grad()
-            rgb_mean = float(rgb.mean().detach().cpu())
-            rgb_std = float(rgb.std().detach().cpu())
-            a_min = float(a_mixed.min().detach().cpu())
-            a_max = float(a_mixed.max().detach().cpu())
-            mp = mat_probs.clamp(min=1e-8)
-            mat_entropy = float((-(mp * mp.log()).sum(dim=-1).mean()).detach().cpu())
-
-            sds_stats, sds_loss = sds.step_sds(rgb, prompt=args.prompt, negative_prompt=args.negative_prompt)
-            sds_rgb_grad_norm = float(rgb.grad.detach().norm().cpu()) if rgb.grad is not None else 0.0
-            clip_loss = torch.tensor(0.0, device=device)
-            clip_sim = None
-            if clip_model is not None:
-                img_for_clip = F.interpolate(rgb, size=args.clip_image_res, mode="bilinear", align_corners=False)
-                img_for_clip = img_for_clip.clamp(0.0, 1.0)
-                img_for_clip = img_for_clip * 2.0 - 1.0
-                image_feat = clip_model.encode_image(img_for_clip.to(device))
-                image_feat = image_feat / image_feat.norm(dim=-1, keepdim=True)
-                clip_sim = torch.sum(image_feat * clip_text_feat)
-                clip_loss = -args.clip_weight * clip_sim
-=======
-        a_mixed = mix_anneal(1 - air_soft, air_hard, alpha_air)
+        a_mixed = mix_anneal(air_soft, air_hard, alpha_air)
         a_mixed = torch.nan_to_num(a_mixed, nan=0.0, posinf=1.0, neginf=0.0)
         if torch.isnan(a_mixed).any() or torch.isinf(a_mixed).any():
             debug_entry["a_mixed_pre_num"] = "had NaN/inf, corrected"
         debug_entry["a_mixed"] = log_tensor_stats("a_mixed", a_mixed)
->>>>>>> d6210d93b310fd5862d24541de732cbd6bc68227
 
         solid_soft = torch.softmax(mat_logits / max(1e-6, args.tau), dim=-1)
         debug_entry["solid_soft"] = log_tensor_stats("solid_soft", solid_soft)
@@ -621,10 +566,27 @@ def train(args):
         debug_entry["mat_probs"] = log_tensor_stats("mat_probs", mat_probs)
         debug_entry["mat_logits_mixed"] = log_tensor_stats("mat_logits_mixed", mat_logits_mixed)
 
-        block_grid = (a_mixed > args.occ_cull_thresh)
+        warmup = step <= max(5, int(0.1 * args.steps))
+        thresh = min(args.occ_cull_thresh, 1e-6) if warmup else args.occ_cull_thresh
+        block_grid = (a_mixed > thresh)
+        fallback_used = False
+        if not torch.any(block_grid):
+            flat = a_mixed.reshape(-1)
+            k = int(max(1, args.export_topk)) if hasattr(args, 'export_topk') else 512
+            k = min(k, flat.numel())
+            vals, idxs = torch.topk(flat, k, largest=True)
+            xi = (idxs // (grid[1] * grid[2])).to(torch.long)
+            yi = ((idxs // grid[2]) % grid[1]).to(torch.long)
+            zi = (idxs % grid[2]).to(torch.long)
+            block_grid = torch.zeros_like(a_mixed, dtype=torch.bool)
+            block_grid[xi, yi, zi] = True
+            fallback_used = True
         active_voxels = int(block_grid.sum().item())
         debug_entry["active_voxels"] = active_voxels
         debug_entry["block_grid_sum"] = active_voxels
+        debug_entry["warmup"] = bool(warmup)
+        debug_entry["occ_thresh_used"] = float(thresh)
+        debug_entry["fallback_used"] = bool(fallback_used)
 
         view, proj = sample_camera_orbit(
             step,
@@ -639,41 +601,6 @@ def train(args):
         view = view.to(device)
         proj = proj.to(device)
 
-<<<<<<< HEAD
-            loss = occ_reg + tv + dist_loss + adjacency_loss + clip_loss + sds_loss
-
-            active_voxels = int((a_mixed > args.occ_cull_thresh).sum().item())
-            step_record = {
-                "event": "step",
-                "step": step,
-                "alpha_air": alpha_air,
-                "alpha_solid": alpha_solid,
-                "occ_mean": float(a_mixed.mean().detach().cpu()),
-                "occ_max": float(a_mixed.max().detach().cpu()),
-                "active_voxels": active_voxels,
-                "frac_active": float(active_voxels) / float(X * Y * Z),
-                "a_min": a_min,
-                "a_max": a_max,
-                "mat_entropy": mat_entropy,
-                "rgb_mean": rgb_mean,
-                "rgb_std": rgb_std,
-                "warmup": bool(warmup),
-                "occ_thresh_used": float(thresh),
-                "fallback_used": bool(fallback_used),
-                "rgb_requires_grad": rgb_requires_grad,
-                "sds": sds_stats,
-                "sds_rgb_grad_norm": sds_rgb_grad_norm,
-            }
-
-            if active_voxels == 0:
-                step_record.setdefault("warnings", []).append("no_active_voxels")
-            if sds_stats.get("applied") and sds_rgb_grad_norm <= 1e-9:
-                step_record.setdefault("warnings", []).append("sds_no_rgb_grad")
-
-            if not torch.isfinite(loss).item():
-                print(f"Warning: non-finite loss at step {step}, skipping update.")
-                step_record["warning"] = "non_finite_loss"
-=======
         img_rgba = renderer.render_from_grid(
             block_grid=block_grid,
             material_logits=mat_logits_mixed,
@@ -692,11 +619,29 @@ def train(args):
         debug_entry["img_rgba"] = log_tensor_stats("img_rgba", img_rgba)
         rgb = img_rgba[:, :3, :, :]
 
-        sds_stats = sds.step_sds(rgb, prompt=args.prompt, negative_prompt=args.negative_prompt)
+        rgb_requires_grad = bool(rgb.requires_grad)
+        if rgb_requires_grad:
+            rgb.retain_grad()
+        rgb_mean = float(rgb.mean().detach().cpu())
+        rgb_std = float(rgb.std().detach().cpu())
+        a_min = float(a_mixed.min().detach().cpu())
+        a_max = float(a_mixed.max().detach().cpu())
+        mp = mat_probs.clamp(min=1e-8)
+        mat_entropy = float((-(mp * mp.log()).sum(dim=-1).mean()).detach().cpu())
+        debug_entry["rgb_mean"] = rgb_mean
+        debug_entry["rgb_std"] = rgb_std
+        debug_entry["a_min"] = a_min
+        debug_entry["a_max"] = a_max
+        debug_entry["mat_entropy"] = mat_entropy
+
+        sds_stats, sds_loss = sds.step_sds(rgb, prompt=args.prompt, negative_prompt=args.negative_prompt)
+        sds_rgb_grad_norm = float(rgb.grad.detach().norm().cpu()) if rgb.grad is not None else 0.0
         debug_entry["sds_applied"] = sds_stats["applied"]
         debug_entry["sds_raw_norm"] = sds_stats["grad_raw_norm"]
         debug_entry["sds_clipped"] = sds_stats["clipped"]
         debug_entry["sds_normalized"] = sds_stats["normalized"]
+        debug_entry["sds_rgb_grad_norm"] = sds_rgb_grad_norm
+        debug_entry["sds_loss"] = float(sds_loss.detach().cpu()) if torch.isfinite(sds_loss) else "non-finite"
 
         clip_loss = torch.tensor(0.0, device=device)
         clip_sim = None
@@ -745,7 +690,7 @@ def train(args):
                 else:
                     adjacency_loss = adjacency_loss + pattern.weight * mean_activation
 
-        loss = occ_reg + tv + dist_loss + adjacency_loss + clip_loss
+        loss = occ_reg + tv + dist_loss + adjacency_loss + clip_loss + sds_loss
         debug_entry["loss"] = float(loss.detach().cpu()) if torch.isfinite(loss) else "non-finite"
         debug_entry["occ_reg"] = float(occ_reg.detach().cpu())
         debug_entry["tv"] = float(tv.detach().cpu())
@@ -773,14 +718,29 @@ def train(args):
             "occ_mean": float(a_mixed.mean().detach().cpu()),
             "occ_max": float(a_mixed.max().detach().cpu()),
             "active_voxels": active_voxels,
+            "frac_active": float(active_voxels) / float(X * Y * Z),
+            "a_min": a_min,
+            "a_max": a_max,
+            "mat_entropy": mat_entropy,
+            "rgb_mean": rgb_mean,
+            "rgb_std": rgb_std,
+            "warmup": bool(warmup),
+            "occ_thresh_used": float(thresh),
+            "fallback_used": bool(fallback_used),
+            "rgb_requires_grad": rgb_requires_grad,
             "sds": sds_stats,
+            "sds_rgb_grad_norm": sds_rgb_grad_norm,
         }
+
+        if active_voxels == 0:
+            step_record.setdefault("warnings", []).append("no_active_voxels")
+        if sds_stats.get("applied") and sds_rgb_grad_norm <= 1e-9:
+            step_record.setdefault("warnings", []).append("sds_no_rgb_grad")
 
         if not torch.isfinite(loss).item():
             print(f"Warning: non-finite loss at step {step}, skipping update.")
             step_record["warning"] = "non_finite_loss"
             with log_path.open("a", encoding="utf-8") as log_file:
->>>>>>> d6210d93b310fd5862d24541de732cbd6bc68227
                 json.dump(step_record, log_file)
                 log_file.write("\n")
                 log_file.flush()
@@ -791,6 +751,9 @@ def train(args):
 
         total_grad_norm = 0.0
         grads_corrected = False
+        air_g2 = 0.0
+        solid_g2 = 0.0
+        n_with_grad = 0
         for name, param in model.named_parameters():
             if param.grad is not None:
                 g = param.grad
@@ -804,9 +767,20 @@ def train(args):
                     grads_corrected = True
                 else:
                     debug_entry[f"{name}_grad"] = f"norm={gnorm:.4f}"
+                v = float(g.detach().float().norm().cpu())
+                if name.startswith("air_mlp."):
+                    air_g2 += v * v
+                elif name.startswith("solid_mlp."):
+                    solid_g2 += v * v
+                n_with_grad += 1
 
-        total_grad_norm = math.sqrt(total_grad_norm)
+        total_grad_norm = total_grad_norm ** 0.5
+        air_grad_norm = air_g2 ** 0.5
+        solid_grad_norm = solid_g2 ** 0.5
         debug_entry["total_grad_norm"] = total_grad_norm
+        debug_entry["grad_norm_air"] = air_grad_norm
+        debug_entry["grad_norm_solid"] = solid_grad_norm
+        debug_entry["params_with_grad"] = n_with_grad
 
         # Rewrite debug with grad info
         with debug_path.open("a", encoding="utf-8") as debug_file:
@@ -817,62 +791,24 @@ def train(args):
             debug_file.write("\n")
             debug_file.flush()
 
-<<<<<<< HEAD
-            total_g2 = 0.0
-            air_g2 = 0.0
-            solid_g2 = 0.0
-            n_with_grad = 0
-            for name, p in model.named_parameters():
-                if p.grad is not None:
-                    g = p.grad.detach().float()
-                    v = float(g.norm().cpu())
-                    total_g2 += v * v
-                    n_with_grad += 1
-                    if name.startswith("air_mlp."):
-                        air_g2 += v * v
-                    elif name.startswith("solid_mlp."):
-                        solid_g2 += v * v
-            total_grad_norm = total_g2 ** 0.5
-            air_grad_norm = air_g2 ** 0.5
-            solid_grad_norm = solid_g2 ** 0.5
-            if total_grad_norm <= 1e-9:
-                step_record.setdefault("warnings", []).append("no_param_grads")
-
-            # Renderer debug
-            rdbg = getattr(renderer, 'last_debug', {}) or {}
-            if rdbg:
-                step_record.update({
-                    "rast_vertices": float(rdbg.get("num_vertices", 0.0)),
-                    "rast_faces": float(rdbg.get("num_faces", 0.0)),
-                    "rast_mask_mean": float(rdbg.get("mask_mean", 0.0)),
-                    "rast_colors_req_grad": bool(rdbg.get("colors_req_grad", 0.0) != 0.0),
-                    "frustum_occ_total": float(rdbg.get("occ_total", 0.0)),
-                    "frustum_occ_kept": float(rdbg.get("occ_kept", 0.0)),
-                })
-
-            step_record.update({
-                "loss": float(loss.detach().cpu()),
-                "occ_reg": float(occ_reg.detach().cpu()),
-                "tv": float(tv.detach().cpu()),
-                "dist_loss": float(dist_loss.detach().cpu()),
-                "adj_loss": float(adjacency_loss.detach().cpu()),
-                "clip_loss": float(clip_loss.detach().cpu()),
-                "clip_sim": float(clip_sim.detach().cpu()) if clip_sim is not None else None,
-                "sds_loss": float(sds_loss.detach().cpu()),
-                "grad_norm_total": total_grad_norm,
-                "grad_norm_air": air_grad_norm,
-                "grad_norm_solid": solid_grad_norm,
-                "params_with_grad": n_with_grad,
-            })
-=======
         if grads_corrected:
             print(f"Warning: non-finite gradients corrected at step {step}.")
             step_record.setdefault("warnings", []).append("non_finite_grad_corrected")
->>>>>>> d6210d93b310fd5862d24541de732cbd6bc68227
 
-        if args.grad_clip is not None and args.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            debug_entry["grad_clipped"] = True
+        if total_grad_norm <= 1e-9:
+            step_record.setdefault("warnings", []).append("no_param_grads")
+
+        # Renderer debug
+        rdbg = getattr(renderer, 'last_debug', {}) or {}
+        if rdbg:
+            step_record.update({
+                "rast_vertices": float(rdbg.get("num_vertices", 0.0)),
+                "rast_faces": float(rdbg.get("num_faces", 0.0)),
+                "rast_mask_mean": float(rdbg.get("mask_mean", 0.0)),
+                "rast_colors_req_grad": bool(rdbg.get("colors_req_grad", 0.0) != 0.0),
+                "frustum_occ_total": float(rdbg.get("occ_total", 0.0)),
+                "frustum_occ_kept": float(rdbg.get("occ_kept", 0.0)),
+            })
 
         step_record.update({
             "loss": float(loss.detach().cpu()),
@@ -882,12 +818,21 @@ def train(args):
             "adj_loss": float(adjacency_loss.detach().cpu()),
             "clip_loss": float(clip_loss.detach().cpu()),
             "clip_sim": float(clip_sim.detach().cpu()) if clip_sim is not None else None,
+            "sds_loss": float(sds_loss.detach().cpu()),
+            "grad_norm_total": total_grad_norm,
+            "grad_norm_air": air_grad_norm,
+            "grad_norm_solid": solid_grad_norm,
+            "params_with_grad": n_with_grad,
         })
 
         with log_path.open("a", encoding="utf-8") as log_file:
             json.dump(step_record, log_file)
             log_file.write("\n")
             log_file.flush()
+
+        if args.grad_clip is not None and args.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            debug_entry["grad_clipped"] = True
 
         opt.step()
 
