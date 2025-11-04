@@ -93,7 +93,16 @@
 
     <button class="context-menu-item" on:click={() => dispatch('saveView')}>Save Current View</button>
 
-    
+    <div class="context-divider"></div>
+
+    <div class="context-section">
+      <label for="highlight-shape-select">Highlight Shape:</label>
+      <select id="highlight-shape-select" bind:value={$highlightShape}>
+        <option value="cube">Cube</option>
+        <option value="ellipsoid">Ellipsoid</option>
+        <option value="plane">Plane</option>
+      </select>
+    </div>
   </div>
 {/if}
 

@@ -830,7 +830,8 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           overlayCtx.fill()
           overlayCtx.stroke()
         })
-      } else {
+      } else if (highlightSelection.shape === 'cube') {
+        // Draw cube wireframe
         const r = highlightSelection.radius + halfStep
         const corners: Vec3[] = [
           [baseCenter[0] - r, baseCenter[1] - r, baseCenter[2] - r],
@@ -854,6 +855,78 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           overlayCtx.lineTo(pB[0], pB[1])
           overlayCtx.stroke()
         }
+
+        // Draw axis nodes (similar to ellipsoid)
+        const nodeRadius = 6
+        const selectedNode = get(ellipsoidSelectedNode)
+        const nodes: Array<{ pos: Vec3; id: EllipsoidNode }> = [
+          { pos: [baseCenter[0] + r, baseCenter[1], baseCenter[2]], id: '+x' },
+          { pos: [baseCenter[0] - r, baseCenter[1], baseCenter[2]], id: '-x' },
+          { pos: [baseCenter[0], baseCenter[1] + r, baseCenter[2]], id: '+y' },
+          { pos: [baseCenter[0], baseCenter[1] - r, baseCenter[2]], id: '-y' },
+          { pos: [baseCenter[0], baseCenter[1], baseCenter[2] + r], id: '+z' },
+          { pos: [baseCenter[0], baseCenter[1], baseCenter[2] - r], id: '-z' },
+          { pos: [baseCenter[0], baseCenter[1], baseCenter[2]], id: 'center' }
+        ]
+
+        nodes.forEach(node => {
+          const screen = projectChunk(node.pos)
+          if (!screen) return
+
+          const isCenter = node.id === 'center'
+          const isActivelyAdjusting = ellipsoidNodeAdjustActive && selectedNode === node.id
+          const isHovered = hoveredNode === node.id
+          const wasActivated = activatedNodes.has(node.id)
+          const isSelected = selectedNode === node.id || (isCenter && centerNodeSelected)
+
+          let nodeFillColor: string
+          let nodeStrokeColor: string
+
+          if (isCenter) {
+            if (isSelected) {
+              nodeFillColor = 'rgba(120, 220, 255, 0.95)'
+              nodeStrokeColor = 'rgba(255, 255, 255, 0.95)'
+            } else if (isHovered) {
+              nodeFillColor = 'rgba(100, 200, 255, 0.95)'
+              nodeStrokeColor = 'rgba(200, 240, 255, 0.95)'
+            } else {
+              nodeFillColor = 'rgba(120, 200, 255, 0.85)'
+              nodeStrokeColor = 'rgba(80, 180, 255, 0.9)'
+            }
+          } else if (isActivelyAdjusting) {
+            nodeFillColor = 'rgba(80, 140, 255, 0.95)'
+            nodeStrokeColor = 'rgba(255, 255, 255, 0.95)'
+          } else if (wasActivated) {
+            if (isHovered) {
+              nodeFillColor = 'rgba(255, 100, 100, 0.95)'
+              nodeStrokeColor = 'rgba(255, 150, 150, 0.95)'
+            } else {
+              nodeFillColor = 'rgba(255, 60, 60, 0.95)'
+              nodeStrokeColor = 'rgba(200, 30, 30, 0.95)'
+            }
+          } else {
+            if (isHovered) {
+              nodeFillColor = 'rgba(255, 150, 130, 0.95)'
+              nodeStrokeColor = 'rgba(255, 180, 160, 0.95)'
+            } else {
+              nodeFillColor = 'rgba(255, 120, 100, 0.85)'
+              nodeStrokeColor = 'rgba(255, 60, 40, 0.95)'
+            }
+          }
+
+          const nodeSize = (isActivelyAdjusting || isSelected || isHovered) ? nodeRadius + 2 : (wasActivated ? nodeRadius + 1 : nodeRadius)
+
+          overlayCtx.fillStyle = nodeFillColor
+          overlayCtx.strokeStyle = nodeStrokeColor
+          overlayCtx.lineWidth = (isActivelyAdjusting || isSelected || isHovered) ? 2.5 : 2
+          overlayCtx.beginPath()
+          overlayCtx.arc(screen[0], screen[1], nodeSize, 0, Math.PI * 2)
+          overlayCtx.fill()
+          overlayCtx.stroke()
+        })
+
+        overlayCtx.lineWidth = 1.5
+        overlayCtx.strokeStyle = 'rgba(120, 200, 255, 0.9)'
       }
       overlayCtx.restore()
     }
@@ -935,7 +1008,7 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
       ])
 
 
-      if (mode === 'highlight' && (shape === 'ellipsoid' || shape === 'plane')) {
+      if (mode === 'highlight' && (shape === 'ellipsoid' || shape === 'plane' || shape === 'cube')) {
         // Convert client coordinates to canvas coordinates
         // IMPORTANT: Use main canvas rect, not overlay, since internal resolution is based on main canvas size
         const rect = canvas.getBoundingClientRect()
@@ -981,6 +1054,10 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
 
           if (!isVisible) {
           }
+        } else if (currentSelection && currentSelection.shape === 'cube') {
+          const r = currentSelection.radius ?? get(highlightRadius)
+
+          clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, r, r, r, 'ellipsoid')
         }
 
         if (ev.button === 2) {
@@ -1055,7 +1132,8 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
           return
         }
 
-        if (ev.button === 0 && currentSelection && currentSelection.shape === 'ellipsoid') {
+        // Left-click on center node works for all shapes
+        if (ev.button === 0 && currentSelection) {
 
           if (clickedNode === 'center') {
             ev.preventDefault()
@@ -1065,10 +1143,14 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
             ellipsoidNodeAdjustActive = false
             ellipsoidSelectedNode.set('center')
             ellipsoidEditAxis.set(null)
-            lastCameraPos = [...overviewPos] as Vec3
+            // Initialize tracking variable (this is overview mode)
+            lastOrbitTarget = [...orbitTarget] as Vec3
             ev.stopPropagation()
             return
           }
+        }
+
+        if (ev.button === 0 && currentSelection && currentSelection.shape === 'ellipsoid') {
 
           // Left-click on axis node: activate mouse-controlled scaling
           if (clickedNode) {
@@ -1555,88 +1637,6 @@ export async function createRenderer(opts: RendererOptions, world: WorldState) {
     }
 
     menu.appendChild(moveOption)
-
-    // Change Shape option
-    const shapeOption = document.createElement('div')
-    shapeOption.textContent = 'Change Shape'
-    shapeOption.style.padding = '8px 16px'
-    shapeOption.style.cursor = 'pointer'
-    shapeOption.style.color = '#fff'
-    shapeOption.style.fontSize = '14px'
-    shapeOption.style.transition = 'background 0.1s'
-    shapeOption.onmouseenter = () => shapeOption.style.background = 'rgba(255, 255, 255, 0.1)'
-    shapeOption.onmouseleave = () => shapeOption.style.background = 'transparent'
-
-    // Create submenu
-    const shapeSubmenu = document.createElement('div')
-    shapeSubmenu.style.display = 'none'
-    shapeSubmenu.style.position = 'absolute'
-    shapeSubmenu.style.left = '100%'
-    shapeSubmenu.style.top = '0'
-    shapeSubmenu.style.background = 'rgba(30, 30, 40, 0.95)'
-    shapeSubmenu.style.border = '1px solid rgba(255, 255, 255, 0.2)'
-    shapeSubmenu.style.borderRadius = '4px'
-    shapeSubmenu.style.padding = '4px 0'
-    shapeSubmenu.style.minWidth = '120px'
-    shapeSubmenu.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.3)'
-
-    const shapes = [
-      { value: 'sphere', label: 'Sphere' },
-      { value: 'cube', label: 'Cube' },
-      { value: 'ellipsoid', label: 'Ellipsoid' },
-      { value: 'plane', label: 'Plane' }
-    ]
-
-    shapes.forEach(shape => {
-      const shapeItem = document.createElement('div')
-      shapeItem.textContent = shape.label
-      shapeItem.style.padding = '8px 16px'
-      shapeItem.style.cursor = 'pointer'
-      shapeItem.style.color = '#fff'
-      shapeItem.style.fontSize = '14px'
-      shapeItem.style.transition = 'background 0.1s'
-      shapeItem.onmouseenter = () => shapeItem.style.background = 'rgba(255, 255, 255, 0.1)'
-      shapeItem.onmouseleave = () => shapeItem.style.background = 'transparent'
-      shapeItem.onclick = () => {
-        menu.remove()
-        const currentSelection = get(highlightSelectionStore)
-        if (currentSelection) {
-          const newSelection: HighlightSelection = {
-            ...currentSelection,
-            shape: shape.value as any
-          }
-          highlightShape.set(shape.value as any)
-          highlightSelectionStore.set(newSelection)
-          emitHighlight(newSelection, 'renderer.highlight.changeShape')
-        }
-      }
-      shapeSubmenu.appendChild(shapeItem)
-    })
-
-    shapeOption.onmouseenter = () => {
-      shapeOption.style.background = 'rgba(255, 255, 255, 0.1)'
-      shapeSubmenu.style.display = 'block'
-    }
-    shapeOption.onmouseleave = (e: MouseEvent) => {
-      const related = e.relatedTarget as HTMLElement
-      if (!shapeSubmenu.contains(related)) {
-        shapeOption.style.background = 'transparent'
-        shapeSubmenu.style.display = 'none'
-      }
-    }
-    shapeSubmenu.onmouseleave = (e: MouseEvent) => {
-      const related = e.relatedTarget as HTMLElement
-      if (!shapeOption.contains(related)) {
-        shapeSubmenu.style.display = 'none'
-        shapeOption.style.background = 'transparent'
-      }
-    }
-
-    const shapeWrapper = document.createElement('div')
-    shapeWrapper.style.position = 'relative'
-    shapeWrapper.appendChild(shapeOption)
-    shapeWrapper.appendChild(shapeSubmenu)
-    menu.appendChild(shapeWrapper)
 
     // Generate Terrain (LLM) option
     const llmOption = document.createElement('div')
@@ -2159,7 +2159,7 @@ VALIDATION RULES (MUST follow exactly):
 
     let handledEllipsoidInteraction = false
     const currentShape = get(highlightShape)
-    if ((isCanvasEvent || isOverlayEvent) && mode === 'highlight' && (currentShape === 'ellipsoid' || currentShape === 'plane')) {
+    if ((isCanvasEvent || isOverlayEvent) && mode === 'highlight' && (currentShape === 'ellipsoid' || currentShape === 'plane' || currentShape === 'cube')) {
       // Convert client coordinates to canvas coordinates
       // IMPORTANT: Use main canvas rect, not overlay, since internal resolution is based on main canvas size
       const rect = canvas.getBoundingClientRect()
@@ -2182,6 +2182,10 @@ VALIDATION RULES (MUST follow exactly):
         const sizeZ = currentSelection.planeSizeZ ?? 8
 
         clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, sizeX, 0, sizeZ, 'plane')
+      } else if (currentSelection && currentSelection.shape === 'cube') {
+        const r = currentSelection.radius ?? radiusDefault
+
+        clickedNode = getClickedNode(canvasX, canvasY, currentSelection.center, r, r, r, 'ellipsoid')
       }
 
       if (ev.button === 2) {
@@ -2588,14 +2592,14 @@ VALIDATION RULES (MUST follow exactly):
           ]
           const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
           emitHighlight(updated, 'renderer.highlight.plane.dragCenter')
-        } else if (currentSelection && currentSelection.shape === 'ellipsoid') {
+        } else if (currentSelection && (currentSelection.shape === 'ellipsoid' || currentSelection.shape === 'cube')) {
           const nextCenter: Vec3 = [
             currentSelection.center[0] + deltaX * sensitivity / worldScale,
             currentSelection.center[1] + deltaY * sensitivity / worldScale,
             currentSelection.center[2] + deltaZ * sensitivity / worldScale
           ]
           const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
-          emitHighlight(updated, 'renderer.highlight.ellipsoid.dragCenter')
+          emitHighlight(updated, `renderer.highlight.${currentSelection.shape}.dragCenter`)
         }
 
         lastCameraPos = [...position] as Vec3
@@ -2616,14 +2620,14 @@ VALIDATION RULES (MUST follow exactly):
           ]
           const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
           emitHighlight(updated, 'renderer.highlight.plane.dragCenter')
-        } else if (currentSelection && currentSelection.shape === 'ellipsoid') {
+        } else if (currentSelection && (currentSelection.shape === 'ellipsoid' || currentSelection.shape === 'cube')) {
           const nextCenter: Vec3 = [
             currentSelection.center[0] + deltaX * sensitivity / worldScale,
             currentSelection.center[1] + deltaY * sensitivity / worldScale,
             currentSelection.center[2] + deltaZ * sensitivity / worldScale
           ]
           const updated: HighlightSelection = { ...currentSelection, center: nextCenter }
-          emitHighlight(updated, 'renderer.highlight.ellipsoid.dragCenter')
+          emitHighlight(updated, `renderer.highlight.${currentSelection.shape}.dragCenter`)
         }
 
         lastOrbitTarget = [...orbitTarget] as Vec3
