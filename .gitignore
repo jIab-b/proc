@@ -14,3 +14,4 @@ out_local/
 *.png
 model_stuff/tests/outs/
 package-lock.json
+.claude/
