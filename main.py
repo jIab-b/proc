@@ -395,6 +395,17 @@ async def call_llm_for_reconstruction(
         "max_tokens": 1024,
     }
 
+    # Print verbatim LLM generation command
+    print("\n" + "="*80)
+    print("LLM GENERATION REQUEST")
+    print("="*80)
+    print(f"Provider: openai")
+    print(f"Model: {target_model}")
+    print(f"Endpoint: https://api.openai.com/v1/chat/completions")
+    print(f"\nPayload:")
+    print(json.dumps(payload, indent=2))
+    print("="*80 + "\n")
+
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
             "https://api.openai.com/v1/chat/completions", json=payload, headers=headers
@@ -408,6 +419,16 @@ async def call_llm_for_reconstruction(
     output_text = ""
     if choices:
         output_text = choices[0].get("message", {}).get("content", "")
+
+    # Print verbatim LLM generation response
+    print("\n" + "="*80)
+    print("LLM GENERATION RESPONSE")
+    print("="*80)
+    print(f"Status: {response.status_code}")
+    print(f"Tokens used: {data.get('usage', {})}")
+    print(f"\nResponse:")
+    print(json.dumps(data, indent=2))
+    print("="*80 + "\n")
 
     return ReconstructionResponse(
         provider="openai",

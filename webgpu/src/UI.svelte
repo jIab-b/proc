@@ -40,7 +40,7 @@
       const cameraChunkY = 0
       const cameraChunkZ = 0
 
-      const systemPrompt = `You are a terrain generation assistant. Given a user's description, generate DSL commands to create voxel terrain, structures, materials, and lighting.
+      const systemPrompt = `You are a creative voxel world designer with expertise in procedural generation, lighting, materials, and atmospheric effects.
 
 WORLD CONSTRAINTS:
 - World bounds: x[0-256], y[0-128], z[0-256]
@@ -48,10 +48,61 @@ WORLD CONSTRAINTS:
 - Generate terrain throughout the entire world space
 - Consider using multiple regions for varied terrain features
 
+YOUR MISSION:
+Create visually stunning and immersive voxel worlds by leveraging ALL available DSL commands:
+1. 🌍 TERRAIN (terrain_region) - Base landscape with varied topography
+2. 🎨 MATERIALS (set_material) - PBR materials with albedo, roughness, metallic, emissive properties
+3. 💡 LIGHTING (set_lighting) - Dynamic sun, sky, and ambient lighting to set the mood
+4. 🔦 POINT LIGHTS (add_point_light) - Localized lighting for drama and atmosphere
+5. 🌳 L-SYSTEMS (generate_structure) - Organic branching structures like trees and plants
+6. 🕳️ CELLULAR AUTOMATA (generate_structure) - Caves, organic patterns, natural formations
+7. 🗿 NOISE SCULPT (generate_structure) - Sculptural forms with noise-based density
+
+CREATIVE DIRECTIVES:
+✨ BE BOLD: Use dramatic lighting angles, colored lights, emissive materials
+✨ BE DETAILED: Apply custom materials to multiple block types for visual richness
+✨ BE ATMOSPHERIC: Set appropriate lighting (dawn, noon, dusk, night, stormy, mystical)
+✨ BE DIVERSE: Combine multiple structure types in a single scene
+✨ BE THOUGHTFUL: Match materials and lighting to the scene's theme
+
+WORKFLOW (aim to use 5-10+ commands per scene):
+1. Set global lighting (set_lighting) - establish mood and time of day
+2. Configure materials (set_material) - customize appearance of terrain blocks
+3. Generate base terrain (terrain_region) - create the landscape
+4. Add organic structures (generate_structure with l-system) - trees, plants, coral
+5. Add architectural/cave structures (generate_structure with cellular_automata)
+6. Add accent lighting (add_point_light) - torches, glows, mystical lights
+
+EXAMPLES OF CREATIVE COMBINATIONS:
+- "Mystical forest": Purple/blue lighting + emissive mushrooms + L-system trees + fog-like ambient
+- "Volcanic landscape": Red/orange sun + glowing lava materials + rough rocky terrain
+- "Crystal caves": Blue point lights + metallic/emissive crystals + cellular automata caves
+- "Ancient ruins": Warm sunset + weathered stone materials + procedural architecture
+
 ${terrainParamsDoc}
 
 Return ONLY valid JSON array of DSL commands. No explanations, no markdown code blocks - just the raw JSON array.
-Commands should respect chunk boundaries and stay within world bounds.`
+Commands should respect chunk boundaries and stay within world bounds.
+IMPORTANT: Aim for 5-10+ commands to create rich, detailed scenes. Use the full DSL palette!`
+
+      const requestPayload = {
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Generate terrain: ${prompt}` }
+        ],
+        temperature: 0.7
+      }
+
+      // Log the complete LLM request
+      console.log('\n' + '='.repeat(80))
+      console.log('COMPLETE LLM API REQUEST')
+      console.log('='.repeat(80))
+      console.log('Endpoint: https://api.openai.com/v1/chat/completions')
+      console.log('Method: POST')
+      console.log('Request payload:')
+      console.log(JSON.stringify(requestPayload, null, 2))
+      console.log('='.repeat(80) + '\n')
 
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -59,20 +110,30 @@ Commands should respect chunk boundaries and stay within world bounds.`
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${$openaiApiKey}`
         },
-        body: JSON.stringify({
-          model: 'gpt-4',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: `Generate terrain: ${prompt}` }
-          ],
-          temperature: 0.7
-        })
+        body: JSON.stringify(requestPayload)
       })
 
       if (!res.ok) throw new Error(`OpenAI API error: ${res.status}`)
 
       const data = await res.json()
+
+      // Log the full API response with metadata
+      console.log('\n' + '='.repeat(80))
+      console.log('COMPLETE LLM API RESPONSE')
+      console.log('='.repeat(80))
+      console.log('Full response data:')
+      console.log(JSON.stringify(data, null, 2))
+      console.log('='.repeat(80) + '\n')
+
       const content = data.choices?.[0]?.message?.content || ''
+
+      // Log the complete verbatim LLM response
+      console.log('\n' + '='.repeat(80))
+      console.log('COMPLETE LLM RESPONSE (VERBATIM)')
+      console.log('='.repeat(80))
+      console.log('Raw content from LLM:')
+      console.log(content)
+      console.log('='.repeat(80) + '\n')
 
       // Parse JSON commands
       const cleaned = content.replace(/^```json?\s*|\s*```$/gi, '').trim()
