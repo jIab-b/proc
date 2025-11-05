@@ -15,48 +15,67 @@ class _Defer:
 class _AppProxy:
     def __init__(self):
         self._app = None
+    def _resolve_kwargs(self, dkwargs: Dict) -> Dict:
+        resolved = {}
+        for k, v in dkwargs.items():
+            if isinstance(v, _Defer):
+                v = globals().get(v.name)
+            if k == "volumes" and isinstance(v, dict):
+                nv = {}
+                for mp, vol in v.items():
+                    if isinstance(vol, _Defer):
+                        vol = globals().get(vol.name)
+                    nv[mp] = vol
+                if any(val is None for val in nv.values()):
+                    v = None
+                else:
+                    v = nv
+            if v is None:
+                continue
+            resolved[k] = v
+        return resolved
     def bind(self, app_obj):
+        import sys
         self._app = app_obj
+        mod = sys.modules[__name__]
+        for name, obj in list(vars(mod).items()):
+            if callable(obj) and hasattr(obj, "_modal_defer"):
+                dargs, dkwargs = getattr(obj, "_modal_defer")
+                resolved = self._resolve_kwargs(dkwargs)
+                wrapped = self._app.function(*dargs, **resolved)(obj)
+                setattr(mod, name, wrapped)
         return self
     def function(self, *dargs, **dkwargs):
         def decorator(fn):
-            if self._app is None:
-                return fn
-            resolved = {}
-            for k, v in dkwargs.items():
-                if isinstance(v, _Defer):
-                    v = globals().get(v.name)
-                if k == "volumes" and isinstance(v, dict):
-                    nv = {}
-                    for mp, vol in v.items():
-                        if isinstance(vol, _Defer):
-                            vol = globals().get(vol.name)
-                        nv[mp] = vol
-                    if any(val is None for val in nv.values()):
-                        v = None
-                    else:
-                        v = nv
-                if v is None:
-                    continue
-                resolved[k] = v
-            return self._app.function(*dargs, **resolved)(fn)
+            setattr(fn, "_modal_defer", (dargs, dkwargs))
+            return fn
         return decorator
 
 app = _AppProxy()
 _image = None
 _vol = None
+_gpu = None
 DEFER_IMAGE = _Defer("_image")
 DEFER_VOLUME = _Defer("_vol")
+DEFER_GPU = _Defer("_gpu")
 
 
-def _iter_files(base_path: str, exclude: Optional[List[str]]) -> Iterable[Tuple[str, str]]:
+def _iter_files(base_path: str, exclude: Optional[List[str]], exclude_dirs: Optional[List[str]] = None) -> Iterable[Tuple[str, str]]:
     base_path = os.path.abspath(base_path)
     if os.path.isfile(base_path):
         rel = os.path.basename(base_path)
         if not _excluded(rel, exclude):
             yield rel.replace("\\", "/"), base_path
         return
-    for root, _, files in os.walk(base_path):
+    for root, dirs, files in os.walk(base_path):
+        if exclude_dirs and dirs:
+            keep: List[str] = []
+            for d in dirs:
+                rel_dir = os.path.relpath(os.path.join(root, d), base_path).replace("\\", "/")
+                if any(fnmatch.fnmatch(rel_dir, pat) or fnmatch.fnmatch(rel_dir + "/", pat) for pat in exclude_dirs):
+                    continue
+                keep.append(d)
+            dirs[:] = keep
         for name in files:
             abs_path = os.path.join(root, name)
             rel_path = os.path.relpath(abs_path, base_path).replace("\\", "/")
@@ -85,8 +104,8 @@ def _hash_file(path: str, chunk_size: int = 1024 * 1024) -> str:
     return h.hexdigest()
 
 
-def compute_hashes(path: str, exclude: Optional[List[str]] = None) -> Dict[str, str]:
-    pairs = list(_iter_files(path, exclude))
+def compute_hashes(path: str, exclude: Optional[List[str]] = None, exclude_dirs: Optional[List[str]] = None) -> Dict[str, str]:
+    pairs = list(_iter_files(path, exclude, exclude_dirs))
     results: Dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
         futs = {ex.submit(_hash_file, ap): rp for rp, ap in pairs}
@@ -125,7 +144,7 @@ def zip_remote_dir_remote(remote_dir: str) -> Optional[bytes]:
     return buf.read()
 
 
-@app.function(image=DEFER_IMAGE, volumes={DEFAULT_REMOTE_ROOT: DEFER_VOLUME})
+@app.function(image=DEFER_IMAGE, volumes={DEFAULT_REMOTE_ROOT: DEFER_VOLUME}, gpu=DEFER_GPU, timeout=86400)
 def run_script_remote(script_path: str, venv: Optional[str] = None, workdir: str = DEFAULT_REMOTE_ROOT, gpu: Optional[str] = None) -> str:
     import subprocess as sp
     os.chdir(workdir)
@@ -163,14 +182,21 @@ def _volume_cli(args: List[str]) -> None:
     subprocess.run(["modal", "volume", *args], check=True)
 
 
-def sync_workspace(paths: List[str], exclude: Optional[List[str]] = None, volume_name: str = DEFAULT_VOLUME_NAME, remote_root: str = DEFAULT_REMOTE_ROOT) -> None:
+def sync_workspace(paths: List[str], exclude: Optional[List[str]] = None, exclude_dirs_map: Optional[Dict[str, List[str]]] = None, volume_name: str = DEFAULT_VOLUME_NAME, remote_root: str = DEFAULT_REMOTE_ROOT) -> None:
     for src in paths:
         src_abs = os.path.abspath(src)
         if not os.path.exists(src_abs):
             continue
         is_dir = os.path.isdir(src_abs)
         base = os.path.basename(src_abs.rstrip(os.sep)) if is_dir else os.path.basename(src_abs)
-        local_hashes = compute_hashes(src_abs, exclude)
+        ex_dirs = None
+        if exclude_dirs_map:
+            ex_dirs = (
+                exclude_dirs_map.get(src)
+                or exclude_dirs_map.get(src_abs)
+                or exclude_dirs_map.get(base)
+            )
+        local_hashes = compute_hashes(src_abs, exclude, ex_dirs)
         remote_target = os.path.join(remote_root, base) if is_dir else os.path.join(remote_root, base)
         remote_hashes = get_remote_hashes_remote.remote(remote_target)
         files_to_upload: List[Tuple[str, str]] = []
@@ -203,14 +229,8 @@ def sync_outputs(local_dir: str, remote_dir: str = f"{DEFAULT_REMOTE_ROOT}/out_l
         zf.extractall(local_path)
 
 
-def run_scripts(script_path: str, venv: Optional[str] = None, workdir: str = DEFAULT_REMOTE_ROOT, gpu: Optional[str] = None) -> str:
-    fn = run_script_remote
-    if gpu and hasattr(fn, "options"):
-        try:
-            return fn.options(gpu=gpu).remote(script_path, venv, workdir, gpu)
-        except Exception:
-            pass
-    return fn.remote(script_path, venv, workdir, gpu)
+def run_scripts(script_path: str, venv: Optional[str] = None, workdir: str = DEFAULT_REMOTE_ROOT, gpu: Optional[str] = None, timeout: Optional[int] = 86400) -> str:
+    return run_script_remote.remote(script_path, venv, workdir, gpu)
 
 
 def prefetch_hf_models(repos: List, hf_home: str = DEFAULT_HF_HOME) -> str:
